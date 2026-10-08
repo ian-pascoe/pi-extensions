@@ -1,5 +1,14 @@
 import type { MessageRenderer } from "@earendil-works/pi-coding-agent";
 import { Text, type Component } from "@earendil-works/pi-tui";
+import {
+  COLLAPSED_LINES,
+  customMessageBox,
+  expandHint,
+  joinInline,
+  previewBody,
+  statusMark,
+  summaryExpandHint,
+} from "@ian-pascoe/pi-utils/ui";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import type { ExitNotice } from "./termctrl-registry.js";
@@ -110,19 +119,55 @@ function messageText(content: RenderedMessage["content"]): string {
   return content.map((part) => (part.type === "text" ? part.text : "")).join("");
 }
 
-/** Compact renderer: one line per exit, with the full text when expanded. */
+type MessageTheme = Parameters<ExitNotificationRenderer>[2];
+
+function exitRow(theme: MessageTheme, exit: ExitNotificationDetails["exits"][number]): string {
+  const done = exit.exit_code === 0 && exit.signal === null;
+  const body = (text: string) => theme.fg("customMessageText", text);
+  const status = describeExitStatus({ code: exit.exit_code, signal: exit.signal });
+  return `${statusMark(theme, done ? "done" : "stopped")} ${body(theme.bold(exit.id))} ${joinInline(
+    theme,
+    [body(status), body(formatDuration(exit.duration_ms)), theme.fg("muted", exit.command)],
+  )}`;
+}
+
+/** The Collapsed View's rows: at most 10, then the Expand Hint for the rest or for the full text. */
+function collapsedRows(theme: MessageTheme, rows: readonly string[]): string[] {
+  const hidden = rows.length - COLLAPSED_LINES.fallback;
+  if (hidden > 0) return [...rows.slice(0, COLLAPSED_LINES.fallback), expandHint(theme, hidden)];
+  const last = rows.length - 1;
+  return rows.map((row, index) => (index === last ? `${row}${summaryExpandHint(theme)}` : row));
+}
+
+/** `exit`, or `N exits` when several Terminals or Background jobs ended together. */
+function exitHeading(details: ExitNotificationDetails | undefined): string {
+  const count = Value.Check(ExitNotificationDetailsSchema, details) ? details.exits.length : 1;
+  return count === 1 ? "exit" : `${count} exits`;
+}
+
+/**
+ * Pi's custom-message look: a `customMessageBg` box under a bold `[termctrl] exit` label.
+ * Collapsed, it shows one Status Mark row per exit; expanded, the full text.
+ */
 export const renderExitNotification: ExitNotificationRenderer = (
   message,
   options,
   theme,
 ): Component => {
-  if (options.expanded || !Value.Check(ExitNotificationDetailsSchema, message.details)) {
-    return new Text(theme.fg("muted", messageText(message.content)), options.outputPad, 0);
-  }
-  const lines = message.details.exits.map((exit) => {
-    const failed = exit.exit_code !== 0 || exit.signal !== null;
-    const status = describeExitStatus({ code: exit.exit_code, signal: exit.signal });
-    return `${theme.fg(failed ? "warning" : "success", "■")} ${theme.bold(exit.id)} ${status} · ${formatDuration(exit.duration_ms)} · ${theme.fg("muted", exit.command)}`;
-  });
-  return new Text(lines.join("\n"), options.outputPad, 0);
+  const details = message.details;
+  const rows =
+    !options.expanded && Value.Check(ExitNotificationDetailsSchema, details)
+      ? collapsedRows(
+          theme,
+          details.exits.map((exit) => exitRow(theme, exit)),
+        )
+      : previewBody(theme, messageText(message.content).replace(/\n+$/u, "").split("\n"), {
+          limit: COLLAPSED_LINES.fallback,
+          expanded: options.expanded,
+          color: "customMessageText",
+        });
+  const heading = theme.fg("customMessageText", exitHeading(details));
+  return customMessageBox(theme, { outputPad: options.outputPad, source: "termctrl", heading }, [
+    new Text(rows.join("\n"), 0, 0),
+  ]);
 };

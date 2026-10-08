@@ -158,7 +158,7 @@ describe("Pi Web Tools extension", () => {
           renderContext(searchArguments, false),
         ),
       ),
-    ).toContain('Web  Search  "current facts"');
+    ).toContain('web_search "current facts"');
     expect(
       renderText(
         search.renderResult(
@@ -168,7 +168,7 @@ describe("Pi Web Tools extension", () => {
           renderContext(searchArguments, false),
         ),
       ),
-    ).toContain("✓ completed  ·  Exa");
+    ).toContain("Exa");
     expect(
       renderText(
         fetch.renderCall(
@@ -177,7 +177,7 @@ describe("Pi Web Tools extension", () => {
           renderContext(fetchArguments, false),
         ),
       ),
-    ).toContain("Web  Fetch  example.com/page");
+    ).toContain("web_fetch example.com/page");
     expect(
       renderText(
         fetch.renderResult(
@@ -190,7 +190,7 @@ describe("Pi Web Tools extension", () => {
           renderContext(fetchArguments, false),
         ),
       ),
-    ).toContain("✓ fetched  ·  text  ·  text/plain");
+    ).toContain("text · text/plain");
   });
 
   test("executes both tools through the composed extension with one environment snapshot", async () => {

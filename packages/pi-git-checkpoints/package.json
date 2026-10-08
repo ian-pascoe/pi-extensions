@@ -36,8 +36,11 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
+  "dependencies": {
+    "@ian-pascoe/pi-utils": "^0.4.0"
+  },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.99.0",
+    "@earendil-works/pi-coding-agent": ">=1.1.0",
     "typebox": "*"
   },
   "engines": {

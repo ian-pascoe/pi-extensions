@@ -567,13 +567,13 @@ export function createWebSearchTool(
     },
     parameters: WEB_SEARCH_PARAMETERS,
     outputSchema: WebSearchOutputSchema,
-    renderCall: (parameters, theme, context) =>
-      renderWebSearchToolCall(parameters, theme, context.expanded),
+    renderCall: (parameters, theme, context) => renderWebSearchToolCall(parameters, theme, context),
     renderResult: (result, renderOptions, theme, context) =>
       renderWebSearchToolResult(
         result,
         renderOptions,
         theme,
+        context,
         context.isError,
         Value.Check(WebSearchDetailsSchema, result.details) ? result.details : undefined,
       ),

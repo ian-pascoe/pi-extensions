@@ -2,7 +2,7 @@
 
 `@ian-pascoe/pi-context-management` lets a Pi agent continue work across native Context Windows using its own **Notes**, an explicit **Handoff**, a bounded recent **Tail**, and retrievable original **History**.
 
-Requires Node `>=22.19.0`, Pi `>=0.99.0`, and a Pi runtime exposing the required checkpoint capabilities. The adapter checks runtime methods, writable hooks, and native append ownership rather than requiring an exact Pi version. Missing or lost capabilities fail closed before checkpoint mutation.
+Requires Node `>=22.19.0`, Pi `>=1.1.0`, and a Pi runtime exposing the required checkpoint capabilities. The adapter checks runtime methods, writable hooks, and native append ownership rather than requiring an exact Pi version. Missing or lost capabilities fail closed before checkpoint mutation.
 
 Development dependencies and the native compaction scheduling regression baseline are pinned to Pi `1.0.0`. Runtime checks validate interface shape, not persistence ordering or compatibility with every future Pi release. Pi still lacks arbitrary-time checkpoint mutation through its public extension API.
 

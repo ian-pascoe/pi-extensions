@@ -1,16 +1,25 @@
 import type { Usage } from "@earendil-works/pi-ai";
 import {
   getMarkdownTheme,
-  keyHint,
   type AgentToolResult,
   type MessageRenderer,
   type MessageRenderOptions,
   type Theme,
-  type ThemeColor,
   type ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
 import {
-  Box,
+  COLLAPSED_LINES,
+  CollapsedPreview,
+  customMessageBox,
+  joinInline,
+  previewBody,
+  statusMark,
+  summaryExpandHint,
+  toolHeader,
+  treePrefix,
+  type StatusKind,
+} from "@ian-pascoe/pi-utils/ui";
+import {
   Container,
   Markdown,
   sliceByColumn,
@@ -56,40 +65,19 @@ export type MinimalSubagentsStatusTheme = Pick<Theme, "fg">;
 
 type RenderableCoordinatorMessage = Pick<Parameters<MessageRenderer>[0], "content" | "details">;
 
-type SubagentPresentationStatus =
-  | "running"
-  | "waiting"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "interrupted"
-  | "unavailable"
-  | "idle"
-  | "delivered"
-  | "delivered-via-wait"
-  | "queued"
-  | "started-turn"
-  | "message"
-  | "timed out";
-
-type SubagentStatusPresentation = { readonly symbol: string; readonly color: ThemeColor };
-
-const SUBAGENT_STATUS_PRESENTATION = {
-  running: { symbol: "◉", color: "accent" },
-  waiting: { symbol: "◌", color: "accent" },
-  completed: { symbol: "✓", color: "success" },
-  failed: { symbol: "×", color: "error" },
-  cancelled: { symbol: "■", color: "warning" },
-  interrupted: { symbol: "!", color: "warning" },
-  unavailable: { symbol: "!", color: "warning" },
-  idle: { symbol: "○", color: "dim" },
-  delivered: { symbol: "→", color: "accent" },
-  "delivered-via-wait": { symbol: "→", color: "accent" },
-  queued: { symbol: "↗", color: "accent" },
-  "started-turn": { symbol: "◉", color: "accent" },
-  message: { symbol: "→", color: "accent" },
-  "timed out": { symbol: "!", color: "warning" },
-} satisfies { readonly [Status in SubagentPresentationStatus]: SubagentStatusPresentation };
+/** Status Mark kind of each subagent status that has one; any other status reads as idle. */
+const SUBAGENT_STATUS_KIND = new Map<string, StatusKind>([
+  ["running", "active"],
+  ["waiting", "active"],
+  ["started-turn", "active"],
+  ["completed", "done"],
+  ["failed", "failed"],
+  ["cancelled", "stopped"],
+  ["interrupted", "warning"],
+  ["unavailable", "warning"],
+  ["timed out", "warning"],
+  ["idle", "idle"],
+]);
 
 function coordinatorMessageText(content: RenderableCoordinatorMessage["content"]): string {
   if (!Array.isArray(content)) return stripCoordinatorMessageEnvelope(content);
@@ -134,46 +122,64 @@ export function subagentStatusLadder(agent: {
   return agent.latest_turn?.status ?? "idle";
 }
 
-function subagentStatusPresentation(status: string): SubagentStatusPresentation {
-  // SAFETY: unknown statuses fall back to the idle presentation below.
-  const known = status as keyof typeof SUBAGENT_STATUS_PRESENTATION;
-  return SUBAGENT_STATUS_PRESENTATION[known] ?? SUBAGENT_STATUS_PRESENTATION.idle;
+function subagentStatusKind(status: string): StatusKind {
+  return SUBAGENT_STATUS_KIND.get(status) ?? "idle";
 }
 
-/** Render the shared semantic symbol and color for one subagent status. */
-export function renderSubagentStatusSymbol(
+/** Render the Status Mark of one subagent status, for widgets and overlay rows. */
+export function renderSubagentStatusMark(
   theme: MinimalSubagentsStatusTheme,
   status: string,
 ): string {
-  const presentation = subagentStatusPresentation(status);
-  return theme.fg(presentation.color, presentation.symbol);
+  return statusMark(theme, subagentStatusKind(status));
 }
 
-/** Render a subagent status label with the same semantic color as its symbol. */
+/** Render a subagent status word: `error` when failed, `warning` when it needs attention, else `muted`. */
 export function renderSubagentStatusLabel(
   theme: MinimalSubagentsStatusTheme,
   status: string,
 ): string {
-  const presentation = subagentStatusPresentation(status);
-  return theme.fg(presentation.color, status);
+  const kind = subagentStatusKind(status);
+  return theme.fg(kind === "failed" ? "error" : kind === "warning" ? "warning" : "muted", status);
 }
 
-function renderSubagentSeparator(theme: MinimalSubagentsRenderTheme): string {
-  return theme.fg("dim", "  ·  ");
+/**
+ * Tree prefixes for rows listed in pre-order with their depth: nothing for a root row, then
+ * `├─ `/`└─ ` with `│  ` guides for the ancestors that still have later siblings.
+ */
+export function treeRowPrefixes(depths: readonly number[]): string[] {
+  const isLastAt = (index: number): boolean => {
+    const depth = depths[index] ?? 0;
+    for (let next = index + 1; next < depths.length; next++) {
+      const nextDepth = depths[next] ?? 0;
+      if (nextDepth < depth) return true;
+      if (nextDepth === depth) return false;
+    }
+    return true;
+  };
+  return depths.map((depth, index) => {
+    if (depth === 0) return "";
+    const ancestorsLast: boolean[] = [];
+    let cursor = index - 1;
+    for (let level = depth - 1; level >= 1; level--) {
+      while (cursor >= 0 && depths[cursor] !== level) cursor--;
+      ancestorsLast.unshift(cursor < 0 || isLastAt(cursor));
+    }
+    return treePrefix(ancestorsLast, isLastAt(index));
+  });
 }
 
 function renderSubagentSummary(
   theme: MinimalSubagentsRenderTheme,
-  status: string,
+  status: string | undefined,
   agentId: string,
   metrics: readonly string[] = [],
 ): string {
-  const identity = `${renderSubagentStatusSymbol(theme, status)} ${theme.fg("accent", theme.bold(agentId))}`;
-  return [
-    identity,
-    renderSubagentStatusLabel(theme, status),
-    ...metrics.map((metric) => theme.fg("muted", metric)),
-  ].join(renderSubagentSeparator(theme));
+  return joinInline(theme, [
+    theme.fg("accent", agentId),
+    status === undefined ? undefined : renderSubagentStatusLabel(theme, status),
+    ...metrics.filter(Boolean).map((metric) => theme.fg("muted", metric)),
+  ]);
 }
 
 function renderLabelValue(theme: MinimalSubagentsRenderTheme, label: string, value: string): Text {
@@ -213,58 +219,50 @@ function renderFallbackToolResult(
   result: AgentToolResult<unknown>,
   theme: MinimalSubagentsRenderTheme,
   isError: boolean,
+  expanded: boolean,
 ): Component {
   const content = toolResultText(result) || "(no output)";
-  return new Text(isError ? theme.fg("error", content) : content, 0, 0);
+  return new Text(
+    previewBody(theme, content.split("\n"), {
+      limit: COLLAPSED_LINES.fallback,
+      expanded,
+      color: isError ? "error" : "toolOutput",
+    }).join("\n"),
+    0,
+    0,
+  );
 }
 
-function collapsedExpansionHint(theme: MinimalSubagentsRenderTheme): string {
-  return theme.fg("dim", `  ·  ${keyHint("app.tools.expand", "to expand")}`);
+/**
+ * A collapsed result: its one-line summary above a body preview, or, with no body, the summary
+ * alone ending in Pi's summary Expand Hint.
+ */
+function collapsedWithBody(
+  theme: MinimalSubagentsRenderTheme,
+  summary: string,
+  body: Component | undefined,
+): Component {
+  if (!body) return new Text(`${summary}${summaryExpandHint(theme)}`, 0, 0);
+  const container = new Container();
+  container.addChild(new Text(summary, 0, 0));
+  container.addChild(body);
+  return container;
 }
 
-/** Collapsed previews match Pi's built-in `read` output height. */
-const COLLAPSED_PREVIEW_LINES = 10;
-
-function isBlankRenderedLine(line: string): boolean {
-  return visibleWidth(line.trim()) === 0;
-}
-
-function withoutTrailingBlankLines(lines: string[]): string[] {
-  const end = lines.findLastIndex((line) => !isBlankRenderedLine(line));
-  return lines.slice(0, end + 1);
-}
-
-/** Shows the first rendered lines of `content`, noting how many lines expanding would reveal. */
-class CollapsedPreview implements Component {
-  constructor(
-    private readonly content: Component,
-    private readonly theme: MinimalSubagentsRenderTheme,
-  ) {}
-
-  render(width: number): string[] {
-    const lines = withoutTrailingBlankLines(this.content.render(width));
-    if (lines.length <= COLLAPSED_PREVIEW_LINES) return lines;
-    // A cut at a paragraph break would leave a blank line above the hint.
-    const shown = withoutTrailingBlankLines(lines.slice(0, COLLAPSED_PREVIEW_LINES));
-    const hidden = lines.length - shown.length;
-    return [
-      ...shown,
-      // The result's first line already carries the expansion hint.
-      this.theme.fg("muted", `... (${hidden} more lines)`),
-    ];
-  }
-
-  invalidate(): void {
-    this.content.invalidate();
-  }
+/** Pre-styled text in its Collapsed View: wrapped, clipped to `limit` lines, with Pi's Expand Hint. */
+function collapsedText(
+  theme: MinimalSubagentsRenderTheme,
+  content: string,
+  limit: number = COLLAPSED_LINES.fallback,
+): Component {
+  return new CollapsedPreview(theme, new Text(content, 0, 0), { limit, expanded: false });
 }
 
 function collapsedMarkdownPreview(content: string, theme: MinimalSubagentsRenderTheme): Component {
-  return new CollapsedPreview(new Markdown(content, 0, 0, getMarkdownTheme()), theme);
-}
-
-function collapsedTextPreview(content: string, theme: MinimalSubagentsRenderTheme): Component {
-  return new CollapsedPreview(new Text(content, 0, 0), theme);
+  return new CollapsedPreview(theme, new Markdown(content, 0, 0, getMarkdownTheme()), {
+    limit: COLLAPSED_LINES.fallback,
+    expanded: false,
+  });
 }
 
 const ToolArgumentsSchema = Type.Record(Type.String(), Type.Unknown());
@@ -307,13 +305,13 @@ function formatActivityLine(
     formatSubagentPreview(text, Math.max(1, width - visibleWidth(prefix)));
   if (activity.label.startsWith("tool call ")) {
     const name = activity.label.slice("tool call ".length);
-    const prefix = `\u2192 ${name} `;
-    return `${theme.fg("accent", "\u2192")} ${theme.fg("toolTitle", name)} ${theme.fg("dim", fit(prefix, toolArgumentSummary(activity.content)))}`;
+    const prefix = `${name} `;
+    return `${theme.fg("toolTitle", name)} ${theme.fg("dim", fit(prefix, toolArgumentSummary(activity.content)))}`;
   }
   if (activity.label.startsWith("tool result ")) {
     const failed = activity.label.endsWith(" (error)");
     const name = activity.label.slice("tool result ".length).replace(/ \(error\)$/, "");
-    const prefix = `${failed ? "\u2717" : "\u2190"} ${name}: `;
+    const prefix = `${name}: `;
     return theme.fg(failed ? "error" : "dim", `${prefix}${fit(prefix, activity.content)}`);
   }
   if (activity.label === "reasoning") {
@@ -338,9 +336,11 @@ export function drawActivityRail(
   return items.flatMap((lines, index) => {
     const last = index === items.length - 1;
     const [first = "", ...rest] = lines;
+    // The guide for one ancestor is the leading segment of a nested row's tree prefix.
+    const guide = treePrefix([last], true).slice(0, ACTIVITY_RAIL_WIDTH);
     return [
-      `${theme.fg("dim", last ? "└─ " : "├─ ")}${first}`,
-      ...rest.map((line) => `${theme.fg("dim", last ? "   " : "│  ")}${line}`),
+      `${theme.fg("dim", treePrefix([], last))}${first}`,
+      ...rest.map((line) => `${theme.fg("dim", guide)}${line}`),
     ];
   });
 }
@@ -411,8 +411,8 @@ export function formatSubagentPreview(content: string | undefined, maxWidth = 72
   const singleLine = (content ?? "").replace(/\s+/g, " ").trim();
   const boundedWidth = Math.max(1, maxWidth);
   if (visibleWidth(singleLine) <= boundedWidth) return singleLine;
-  if (boundedWidth === 1) return "…";
-  return `${sliceByColumn(singleLine, 0, boundedWidth - 1, true).trimEnd()}…`;
+  if (boundedWidth <= 3) return ".".repeat(boundedWidth);
+  return `${sliceByColumn(singleLine, 0, boundedWidth - 3, true).trimEnd()}...`;
 }
 
 /** Format complete Pi usage metrics for expanded subagent output. */
@@ -427,10 +427,6 @@ export function formatSubagentUsage(usage: Usage | undefined): string | undefine
   ];
   if (usage.cost.total > 0) values.push(`cost $${usage.cost.total.toFixed(4)}`);
   return values.join(" · ");
-}
-
-function coordinatorToolCallTitle(theme: MinimalSubagentsRenderTheme, label: string): string {
-  return theme.fg("toolTitle", theme.bold(label));
 }
 
 /** Launch settings the caller chose explicitly; defaults are omitted to keep the header short. */
@@ -464,19 +460,28 @@ function renderCallWithText(
   expanded: boolean,
 ): Component {
   if (!text) return new Text(header, 0, 0);
-  const container = new Container();
-  container.addChild(new Text(header, 0, 0));
-  container.addChild(expanded ? new Text(text, 0, 0) : collapsedTextPreview(text, theme));
-  return container;
+  return new Text(
+    [
+      header,
+      ...previewBody(theme, text.split("\n"), { limit: COLLAPSED_LINES.fallback, expanded }),
+    ].join("\n"),
+    0,
+    0,
+  );
 }
 
 function renderManagementToolCall(
-  label: string,
+  toolName: "subagent_cancel" | "subagent_delete",
   args: ManagementCallArguments,
   theme: MinimalSubagentsRenderTheme,
 ): Component {
   return new Text(
-    `${coordinatorToolCallTitle(theme, label)} ${theme.fg("accent", args.agent_id ?? "agent")} ${theme.fg("dim", args.recursive === false ? "· target only" : "· recursive")}`,
+    toolHeader(
+      theme,
+      toolName,
+      args.agent_id ?? "agent",
+      args.recursive === false ? "target only" : "recursive",
+    ),
     0,
     0,
   );
@@ -493,11 +498,7 @@ function renderSpawnResult(
   const agent = details.agent;
   const launchContract = agent?.launch_contract;
   if (!options.expanded) {
-    return new Text(
-      `${renderSubagentSummary(theme, status, agentId)}${collapsedExpansionHint(theme)}`,
-      0,
-      0,
-    );
+    return collapsedWithBody(theme, renderSubagentSummary(theme, status, agentId), undefined);
   }
   const container = new Container();
   container.addChild(new Text(renderSubagentSummary(theme, status, agentId), 0, 0));
@@ -541,7 +542,13 @@ function renderMessageResult(
   const metrics = historicalBehavior ? [historicalBehavior] : [];
   const disposition = messageDisposition(details);
   const summary = renderSubagentSummary(theme, disposition, agentId, metrics);
-  if (!options.expanded) return new Text(`${summary}${collapsedExpansionHint(theme)}`, 0, 0);
+  if (!options.expanded) {
+    return collapsedWithBody(
+      theme,
+      summary,
+      details.error ? collapsedText(theme, theme.fg("error", details.error)) : undefined,
+    );
+  }
   const container = new Container();
   container.addChild(new Text(summary, 0, 0));
   appendTextSection(container, theme, "Recipient", agentId);
@@ -576,7 +583,7 @@ function renderWaitProgress(
   if (!liveTurn) return new Text(summary, 0, 0);
   const container = new Container();
   container.addChild(
-    new Text(options.expanded ? summary : `${summary}${collapsedExpansionHint(theme)}`, 0, 0),
+    new Text(options.expanded ? summary : `${summary}${summaryExpandHint(theme)}`, 0, 0),
   );
   container.addChild(liveTurn);
   return container;
@@ -601,24 +608,21 @@ function collapsedWaitBody(
   status: string,
   theme: MinimalSubagentsRenderTheme,
 ): Component | undefined {
-  if (details.event === "message") return collapsedTextPreview(details.message, theme);
+  if (details.event === "message") return collapsedText(theme, details.message);
   if (details.event === "timeout") {
     const labels = timeoutActivityLabels(details);
     return labels.length > 0
-      ? collapsedTextPreview(theme.fg("dim", labels.join(" \u00b7 ")), theme)
+      ? collapsedText(theme, theme.fg("dim", labels.join(" \u00b7 ")))
       : undefined;
   }
   if (details.already_delivered) {
-    return collapsedTextPreview(theme.fg("muted", ALREADY_DELIVERED_TEXT), theme);
+    return collapsedText(theme, theme.fg("muted", ALREADY_DELIVERED_TEXT));
   }
   const output = details.output ?? "";
   if (status === "completed") {
     return output ? collapsedMarkdownPreview(output, theme) : undefined;
   }
-  return collapsedTextPreview(
-    theme.fg("error", details.error ?? (output || "(no error detail)")),
-    theme,
-  );
+  return collapsedText(theme, theme.fg("error", details.error ?? (output || "(no error detail)")));
 }
 
 function renderWaitResult(
@@ -655,13 +659,7 @@ function renderWaitResult(
   const summary = renderSubagentSummary(theme, status, agentId, metrics);
   if (options.isPartial) return new Text(summary, 0, 0);
   if (!options.expanded) {
-    const body = collapsedWaitBody(details, status, theme);
-    const heading = `${summary}${collapsedExpansionHint(theme)}`;
-    if (!body) return new Text(heading, 0, 0);
-    const container = new Container();
-    container.addChild(new Text(heading, 0, 0));
-    container.addChild(body);
-    return container;
+    return collapsedWithBody(theme, summary, collapsedWaitBody(details, status, theme));
   }
   const container = new Container();
   container.addChild(new Text(summary, 0, 0));
@@ -769,12 +767,11 @@ function renderDetailedStatusAgent(
   const summary = renderSubagentSummary(theme, status, id, metrics);
   if (!options.expanded) {
     const activity = latestProgressActivity(agent.recent_activity ?? []);
-    const heading = `${summary}${collapsedExpansionHint(theme)}`;
-    if (activity.length === 0) return new Text(heading, 0, 0);
-    const collapsed = new Container();
-    collapsed.addChild(new Text(heading, 0, 0));
-    collapsed.addChild(new ActivityLines(activity, theme));
-    return collapsed;
+    return collapsedWithBody(
+      theme,
+      summary,
+      activity.length === 0 ? undefined : new ActivityLines(activity, theme),
+    );
   }
   const container = new Container();
   container.addChild(new Text(summary, 0, 0));
@@ -874,17 +871,20 @@ function renderStatusResult(
 ): Component {
   if ("agents" in details) {
     const counts = countDirectStatusAgents(details.agents);
-    const summary = [
+    const summary = joinInline(theme, [
       theme.fg("muted", `${counts.children} children`),
       theme.fg(counts.running > 0 ? "accent" : "dim", `${counts.running} running`),
-    ].join(renderSubagentSeparator(theme));
-    const rows =
-      renderDirectStatusRows(details.agents, theme).join("\n") || theme.fg("dim", "(no agents)");
+    ]);
+    const rows = renderDirectStatusRows(details.agents, theme);
     const container = new Container();
+    container.addChild(new Text(summary, 0, 0));
     container.addChild(
-      new Text(options.expanded ? summary : `${summary}${collapsedExpansionHint(theme)}`, 0, 0),
+      new CollapsedPreview(
+        theme,
+        new Text(rows.length === 0 ? theme.fg("dim", "(no agents)") : rows.join("\n"), 0, 0),
+        { limit: COLLAPSED_LINES.list, expanded: options.expanded },
+      ),
     );
-    container.addChild(options.expanded ? new Text(rows, 0, 0) : collapsedTextPreview(rows, theme));
     return container;
   }
   return renderDetailedStatusAgent(details.agent, options, theme);
@@ -898,12 +898,12 @@ function renderCancelResult(
   const turns = details.cancelled_turn_ids;
   const summary =
     turns.length > 0
-      ? renderSubagentSummary(theme, "cancelled", details.agent_id, [
+      ? renderSubagentSummary(theme, undefined, details.agent_id, [
           `${turns.length} ${turns.length === 1 ? "turn" : "turns"} cancelled`,
           details.affected_agent_ids.join(", "),
         ])
-      : renderSubagentSummary(theme, "completed", details.agent_id, ["no active turns"]);
-  if (!options.expanded) return new Text(`${summary}${collapsedExpansionHint(theme)}`, 0, 0);
+      : renderSubagentSummary(theme, undefined, details.agent_id, ["no active turns"]);
+  if (!options.expanded) return collapsedWithBody(theme, summary, undefined);
   const container = new Container();
   container.addChild(new Text(summary, 0, 0));
   container.addChild(renderLabelValue(theme, "Requested target", details.agent_id));
@@ -925,7 +925,7 @@ function renderDeleteResult(
   options: ToolRenderResultOptions,
   theme: MinimalSubagentsRenderTheme,
 ): Component {
-  const status = details.failures.length > 0 ? "failed" : "completed";
+  const status = details.failures.length > 0 ? "failed" : undefined;
   const deletedCount = details.deleted_agent_ids.length;
   const metrics = [
     `${deletedCount} ${deletedCount === 1 ? "agent" : "agents"} deleted`,
@@ -933,7 +933,21 @@ function renderDeleteResult(
     details.failures.length > 0 ? `${details.failures.length} failed` : undefined,
   ].filter((metric): metric is string => metric !== undefined);
   const summary = renderSubagentSummary(theme, status, details.agent_id, metrics);
-  if (!options.expanded) return new Text(`${summary}${collapsedExpansionHint(theme)}`, 0, 0);
+  if (!options.expanded) {
+    return collapsedWithBody(
+      theme,
+      summary,
+      details.failures.length > 0
+        ? collapsedText(
+            theme,
+            theme.fg(
+              "error",
+              details.failures.map((failure) => `${failure.agent_id}: ${failure.error}`).join("\n"),
+            ),
+          )
+        : undefined,
+    );
+  }
   const container = new Container();
   container.addChild(new Text(summary, 0, 0));
   container.addChild(renderLabelValue(theme, "Requested target", details.agent_id));
@@ -971,38 +985,41 @@ export function renderCoordinatorToolCall(
   expanded = false,
 ): Component {
   const parsed = parseCoordinatorToolCall(toolName, args);
-  if (parsed === undefined) return new Text(coordinatorToolCallTitle(theme, toolName), 0, 0);
+  if (parsed === undefined) return new Text(toolHeader(theme, toolName), 0, 0);
   switch (parsed.toolName) {
     case "subagent": {
-      const header = [
-        `${coordinatorToolCallTitle(theme, "Subagent")} ${theme.fg("accent", parsed.args.agent_id ?? "generated")}`,
-        ...spawnCallLaunchSummary(parsed.args).map((part) => theme.fg("dim", part)),
-      ].join(theme.fg("dim", " · "));
+      const header = toolHeader(
+        theme,
+        "subagent",
+        parsed.args.agent_id ?? "generated",
+        spawnCallLaunchSummary(parsed.args).join(" · ") || undefined,
+      );
       return renderCallWithText(header, parsed.args.task, theme, expanded);
     }
     case "agent_message":
       return renderCallWithText(
-        `${coordinatorToolCallTitle(theme, "Message")} ${theme.fg("accent", parsed.args.agent_id ?? "parent")}`,
+        toolHeader(theme, "agent_message", parsed.args.agent_id ?? "parent"),
         parsed.args.message,
         theme,
         expanded,
       );
     case "subagent_wait":
-      return new Text(
-        `${coordinatorToolCallTitle(theme, "Wait")} ${theme.fg("accent", parsed.args.agent_id ?? "agent")}`,
-        0,
-        0,
-      );
+      return new Text(toolHeader(theme, "subagent_wait", parsed.args.agent_id ?? "agent"), 0, 0);
     case "subagent_status":
       return new Text(
-        `${coordinatorToolCallTitle(theme, "Status")} ${theme.fg("accent", parsed.args.agent_id ?? "children")}`,
+        toolHeader(
+          theme,
+          "subagent_status",
+          parsed.args.agent_id,
+          parsed.args.agent_id === undefined ? "children" : undefined,
+        ),
         0,
         0,
       );
     case "subagent_cancel":
-      return renderManagementToolCall("Cancel", parsed.args, theme);
+      return renderManagementToolCall("subagent_cancel", parsed.args, theme);
     case "subagent_delete":
-      return renderManagementToolCall("Delete", parsed.args, theme);
+      return renderManagementToolCall("subagent_delete", parsed.args, theme);
   }
 }
 
@@ -1021,7 +1038,9 @@ export function renderCoordinatorToolResult(
     if (progress) return renderWaitProgress(progress, options, theme, renderLiveTurn);
   }
   const parsedResult = parseCoordinatorToolResult(toolName, result.details);
-  if (parsedResult === undefined) return renderFallbackToolResult(result, theme, isError);
+  if (parsedResult === undefined) {
+    return renderFallbackToolResult(result, theme, isError, options.expanded);
+  }
   const parsedCall = parseCoordinatorToolCall(toolName, args);
   switch (parsedResult.toolName) {
     case "subagent":
@@ -1060,7 +1079,7 @@ export function renderMinimalSubagentsMessage(
   options: MessageRenderOptions,
   theme: MinimalSubagentsRenderTheme,
 ): Component {
-  return renderCoordinatorMessage("Agent message", "→", message, options, theme);
+  return renderCoordinatorMessage("message", message, options, theme);
 }
 
 /** Render automatic successful agent results with expandable Markdown output. */
@@ -1069,7 +1088,7 @@ export function renderMinimalSubagentsResult(
   options: MessageRenderOptions,
   theme: MinimalSubagentsRenderTheme,
 ): Component {
-  return renderCoordinatorMessage("Agent result", "✓", message, options, theme);
+  return renderCoordinatorMessage("result", message, options, theme);
 }
 
 function messageSource(details: CoordinatorMessageRenderDetails | undefined): string {
@@ -1082,9 +1101,9 @@ function messageSourceTurn(
   return details?.source_turn_id ?? details?.turn_id;
 }
 
+/** `[subagents] result · worker → root · completed · 3s` above the Markdown, like Pi's `[skill] name`. */
 function renderCoordinatorMessage(
-  label: string,
-  symbol: string,
+  kind: "message" | "result",
   message: RenderableCoordinatorMessage,
   options: MessageRenderOptions,
   theme: MinimalSubagentsRenderTheme,
@@ -1094,29 +1113,31 @@ function renderCoordinatorMessage(
   const source = messageSource(details);
   const destination = details?.destination_agent_id ?? "recipient";
   const sourceTurn = messageSourceTurn(details);
-  const route = `${theme.fg("accent", theme.bold(source))} ${theme.fg("dim", "→")} ${theme.fg("accent", theme.bold(destination))}`;
   const metrics = [formatSubagentDuration(details?.elapsed_ms), formatSubagentCost(details?.usage)];
-  const heading = [
-    `${theme.fg(symbol === "✓" ? "success" : "accent", symbol)} ${theme.bold(label)}`,
-    route,
+  const heading = joinInline(theme, [
+    theme.fg("customMessageText", kind),
+    theme.fg("customMessageText", `${source} \u2192 ${destination}`),
     details?.status ? renderSubagentStatusLabel(theme, details.status) : undefined,
     ...metrics.map((metric) => (metric ? theme.fg("muted", metric) : undefined)),
-  ]
-    .filter((part): part is string => part !== undefined)
-    .join(renderSubagentSeparator(theme));
-  const box = new Box(options.outputPad, 1, (text) => theme.bg("customMessageBg", text));
+  ]);
+  const markdown = new Markdown(content, 0, 0, getMarkdownTheme(), {
+    color: (text) => theme.fg("customMessageText", text),
+  });
+  const box = (body: Component[]) =>
+    customMessageBox(theme, { outputPad: options.outputPad, source: "subagents", heading }, body);
   if (!options.expanded) {
-    box.addChild(new Text(`${heading}${collapsedExpansionHint(theme)}`, 0, 0));
-    box.addChild(collapsedMarkdownPreview(content, theme));
-    return box;
+    return box([
+      new CollapsedPreview(theme, markdown, { limit: COLLAPSED_LINES.fallback, expanded: false }),
+    ]);
   }
-  const container = new Container();
-  container.addChild(new Text(heading, 0, 0));
-  if (sourceTurn) container.addChild(renderLabelValue(theme, "Source turn", sourceTurn));
-  container.addChild(new Spacer(1));
-  container.addChild(new Markdown(content, 0, 0, getMarkdownTheme()));
+  const body: Component[] = [];
+  if (sourceTurn) body.push(renderLabelValue(theme, "Source turn", sourceTurn), new Spacer(1));
+  body.push(markdown);
   const usageText = formatSubagentUsage(details?.usage);
-  if (usageText) appendTextSection(container, theme, "Usage", usageText);
-  box.addChild(container);
-  return box;
+  if (usageText) {
+    const usage = new Container();
+    appendTextSection(usage, theme, "Usage", usageText);
+    body.push(usage);
+  }
+  return box(body);
 }

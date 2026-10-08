@@ -6,6 +6,7 @@ import type {
   MessageUpdateEvent,
 } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { taggedTheme } from "@ian-pascoe/pi-utils/ui-testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createTiktokenTokenizedOutputCounterLoader,
@@ -44,16 +45,12 @@ class RecordingLifecycleHost implements TpsTrackerLifecycleHost {
 
 class RecordingTrackerContext implements TpsTrackerContext {
   modelId: string | undefined;
-  readonly useNerdFontIcons: boolean;
+  readonly theme = taggedTheme;
   readonly statuses: (string | undefined)[] = [];
   readonly notifications: string[] = [];
 
-  constructor(modelId = "test-model", useNerdFontIcons = false) {
+  constructor(modelId = "test-model") {
     this.modelId = modelId;
-    this.useNerdFontIcons = useNerdFontIcons;
-  }
-  render(_color: "accent" | "dim" | "success", text: string) {
-    return text;
   }
   notify(message: string) {
     this.notifications.push(message);
@@ -143,10 +140,12 @@ describe("TPS Tracker extension", () => {
       context,
     );
 
-    expect(context.statuses).toContain("TPS waiting");
-    expect(context.statuses).toContain("TPS 12 tok/s");
+    expect(context.statuses).toContain("<dim>tps</dim> <dim>waiting</dim>");
+    expect(context.statuses).toContain("<dim>tps</dim> <accent>12 tok/s</accent>");
     expect(context.statuses.at(-1)).toBeUndefined();
-    expect(context.notifications).toContain("✓ 12 tok/s  12 tokens in 1.0s streaming");
+    expect(context.notifications).toContain(
+      "<accent>12 tok/s</accent><dim> · </dim><dim>12 tokens in 1.0s streaming</dim>",
+    );
 
     await requireHandler(host.agentStart)(
       { type: "agent_start" } satisfies AgentStartEvent,
@@ -156,12 +155,14 @@ describe("TPS Tracker extension", () => {
       { type: "agent_end", messages: [] } satisfies AgentEndEvent,
       context,
     );
-    expect(context.notifications).toContain("• N/A  0 tokens in 0.0s streaming");
+    expect(context.notifications).toContain(
+      "<dim>N/A</dim><dim> · </dim><dim>0 tokens in 0.0s streaming</dim>",
+    );
   });
 
-  it("uses Nerd Font icons for deterministic waiting and live footer states", async () => {
+  it("reports status and the final notification as plain text without icon glyphs", async () => {
     const host = new RecordingLifecycleHost();
-    const context = new RecordingTrackerContext("test-model", true);
+    const context = new RecordingTrackerContext();
     registerTpsTracker(host, new RecordingTokenCounterLoader(null));
 
     await requireHandler(host.agentStart)(
@@ -172,9 +173,17 @@ describe("TPS Tracker extension", () => {
     await requireHandler(host.messageUpdate)(messageUpdateEvent("first", 12), context);
     vi.advanceTimersByTime(1_000);
     await requireHandler(host.messageUpdate)(messageUpdateEvent("second", 12), context);
+    await requireHandler(host.messageEnd)(messageEndEvent(12), context);
+    await requireHandler(host.agentEnd)(
+      { type: "agent_end", messages: [] } satisfies AgentEndEvent,
+      context,
+    );
 
-    expect(context.statuses).toContain(" waiting");
-    expect(context.statuses).toContain(" 12 tok/s");
+    const texts = [...context.statuses, ...context.notifications].filter(
+      (text): text is string => text !== undefined,
+    );
+    expect(texts.length).toBeGreaterThan(0);
+    for (const text of texts) expect(text).not.toMatch(/[\p{Co}✓•]|\s{2}/u);
   });
 
   it("uses a model-keyed Tokenized Output Count when provider usage is absent", async () => {
@@ -196,7 +205,9 @@ describe("TPS Tracker extension", () => {
     );
 
     expect(loader.requestedModelIds).toEqual(["model-a"]);
-    expect(context.notifications).toContain("• N/A  3 tokens in 0.0s streaming");
+    expect(context.notifications).toContain(
+      "<dim>N/A</dim><dim> · </dim><dim>3 tokens in 0.0s streaming</dim>",
+    );
   });
 
   it("uses Estimated Output Count when the tokenizer is unavailable", async () => {
@@ -216,7 +227,9 @@ describe("TPS Tracker extension", () => {
       context,
     );
 
-    expect(context.notifications).toContain("• N/A  2 tokens in 0.0s streaming");
+    expect(context.notifications).toContain(
+      "<dim>N/A</dim><dim> · </dim><dim>2 tokens in 0.0s streaming</dim>",
+    );
   });
 
   it("counts all output delta variants and ignores non-output update events", async () => {
@@ -400,7 +413,9 @@ describe("TPS Tracker extension", () => {
     expect(
       inputs.filter((text) => text.includes("second")).every((text) => !text.includes("first")),
     ).toBe(true);
-    expect(context.notifications).toContain("✓ 4 tok/s  13 tokens in 3.0s streaming");
+    expect(context.notifications).toContain(
+      "<accent>4 tok/s</accent><dim> · </dim><dim>13 tokens in 3.0s streaming</dim>",
+    );
   });
 
   it("uses o200k_base when a model has no recognized tiktoken encoding", async () => {

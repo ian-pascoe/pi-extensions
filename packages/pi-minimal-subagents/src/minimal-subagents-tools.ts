@@ -9,7 +9,8 @@ import {
   type ToolDefinition,
   type ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
-import type { TUI } from "@earendil-works/pi-tui";
+import { Container, type Component, type TUI } from "@earendil-works/pi-tui";
+import { appendDurationFooter, callDurationFooter } from "@ian-pascoe/pi-utils/ui";
 import type { MinimalSubagentsCoordinator } from "./minimal-subagents-coordinator.js";
 import { withTroubleshootingHint } from "./troubleshooting-skill.js";
 import type { MinimalSubagentsModelRole } from "./minimal-subagents-config.js";
@@ -134,6 +135,13 @@ interface CoordinatorToolRowState {
   liveTurnCache?: TranscriptRenderCache;
 }
 
+function withFooter(body: Component, footer: Component): Component {
+  const container = new Container();
+  container.addChild(body);
+  container.addChild(footer);
+  return container;
+}
+
 function createCoordinatorToolRendering(
   options: CoordinatorToolDefinitionOptions,
   toolName: CoordinatorToolName,
@@ -142,8 +150,13 @@ function createCoordinatorToolRendering(
     renderCall: (
       args: CoordinatorToolCallInput,
       theme: Theme,
-      context: { expanded: boolean } | undefined,
-    ) => renderCoordinatorToolCall(toolName, args, theme, context?.expanded ?? false),
+      context: CoordinatorToolRenderContext | undefined,
+    ) => {
+      const call = renderCoordinatorToolCall(toolName, args, theme, context?.expanded ?? false);
+      // A wait streams partial results, whose footer already shows its running time.
+      if (!context || toolName === "subagent_wait") return call;
+      return withFooter(call, callDurationFooter(theme, context));
+    },
     renderResult: (
       result: AgentToolResult<CoordinatorToolResultDetails>,
       renderOptions: ToolRenderResultOptions,
@@ -168,7 +181,7 @@ function createCoordinatorToolRendering(
           theme,
         );
       };
-      return renderCoordinatorToolResult(
+      const rendered = renderCoordinatorToolResult(
         toolName,
         result,
         renderOptions,
@@ -177,6 +190,10 @@ function createCoordinatorToolRendering(
         context.isError,
         toolName === "subagent_wait" ? renderLiveTurn : undefined,
       );
+      const container = new Container();
+      container.addChild(rendered);
+      appendDurationFooter(container, theme, context, { isPartial: renderOptions.isPartial });
+      return container;
     },
   };
 }
@@ -475,9 +492,7 @@ export function createCoordinatorToolDefinitions(
           parameters.recursive ?? true,
         );
         if (result.failures.length > 0) {
-          options.onAttention?.(
-            `Minimal subagents deletion partially failed for ${parameters.agent_id}`,
-          );
+          options.onAttention?.(`Deletion partially failed for ${parameters.agent_id}`);
           return failedStructuredToolResult("Minimal subagents deletion partially failed", result, {
             troubleshootingHint: true,
           });

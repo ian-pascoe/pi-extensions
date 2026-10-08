@@ -11,6 +11,7 @@ import {
   type ToolResultEvent,
   type ToolResultEventResult,
 } from "@earendil-works/pi-coding-agent";
+import { expandEntryOnClick, noticeText } from "@ian-pascoe/pi-utils/ui";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import {
@@ -287,10 +288,13 @@ export class PiLspLifecycleController {
         completeLspCommandArguments(prefix, this.session?.manager),
       handler: (args, context) => this.handleCommand(args, context),
     });
-    this.pi.registerEntryRenderer(POST_EDIT_DIAGNOSTICS_ENTRY_TYPE, (entry, { expanded }, theme) =>
-      Value.Check(PostEditDiagnosticsEntryDataSchema, entry.data)
-        ? renderPostEditDiagnosticsEntry(entry.data, expanded, theme)
-        : undefined,
+    this.pi.registerEntryRenderer(
+      POST_EDIT_DIAGNOSTICS_ENTRY_TYPE,
+      expandEntryOnClick((entry, options, theme) =>
+        Value.Check(PostEditDiagnosticsEntryDataSchema, entry.data)
+          ? renderPostEditDiagnosticsEntry(entry.data, options, theme)
+          : undefined,
+      ),
     );
     this.pi.on("session_start", (_event, context) => this.startSession(context));
     this.pi.on("session_tree", (_event, context) => {
@@ -310,7 +314,10 @@ export class PiLspLifecycleController {
     });
     const settings = resolveLspSettings(settingsManager);
     if (settings.warnings.length > 0) {
-      context.ui.notify(`Pi LSP settings:\n- ${settings.warnings.join("\n- ")}`, "warning");
+      context.ui.notify(
+        noticeText("LSP", `settings:\n- ${settings.warnings.join("\n- ")}`),
+        "warning",
+      );
     }
 
     const sessionFiles = await createLspSessionFiles(context.sessionManager.getSessionDir());
@@ -320,7 +327,10 @@ export class PiLspLifecycleController {
     );
     if (replay > 0) {
       context.ui.notify(
-        `Pi LSP ignored ${replay} invalid Workspace Edit Preview record${replay === 1 ? "" : "s"} on the active session branch.`,
+        noticeText(
+          "LSP",
+          `ignored ${replay} invalid Workspace Edit Preview record${replay === 1 ? "" : "s"} on the active session branch.`,
+        ),
         "warning",
       );
     }
@@ -418,7 +428,7 @@ export class PiLspLifecycleController {
         if (isCurrent())
           notifyLspCommand(
             context,
-            `Pi LSP: stopped ${command.serverId} at ${rootPath}; ${session.manager.getEnablement(command.serverId).enabled ? "lazy startup remains permitted" : "the Server Definition remains disabled"}.`,
+            `Stopped ${command.serverId} at ${rootPath}; ${session.manager.getEnablement(command.serverId).enabled ? "lazy startup remains permitted" : "the Server Definition remains disabled"}.`,
             "info",
           );
         return;
@@ -448,7 +458,7 @@ export class PiLspLifecycleController {
       const masked = effective.scope !== command.scope;
       notifyLspCommand(
         context,
-        `Pi LSP: ${command.serverId} ${enabled ? "enabled" : "disabled"} at ${command.scope} scope.${masked ? ` Change masked by ${effective.scope} override; effectively ${effective.enabled ? "enabled" : "disabled"}.` : ""}`,
+        `${command.serverId} ${enabled ? "enabled" : "disabled"} at ${command.scope} scope.${masked ? ` Change masked by ${effective.scope} override; effectively ${effective.enabled ? "enabled" : "disabled"}.` : ""}`,
         masked ? "warning" : "info",
       );
     } catch (error) {

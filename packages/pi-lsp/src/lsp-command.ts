@@ -1,6 +1,7 @@
 import { parseArgs } from "node:util";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import { noticeText } from "@ian-pascoe/pi-utils/ui";
 import type { LspServerManager, LspServerStatusEntry } from "./lsp-server-manager.js";
 
 /** One user-selected lifecycle action; startup remains lazy. */
@@ -22,14 +23,19 @@ export function knownLspServerRoots(manager: CommandStatusManager, serverId: str
     .flatMap((server) => (server.rootPath === undefined ? [] : [server.rootPath]));
 }
 
-/** Keep headless command feedback off stdout's JSON event stream and out of model context. */
+/**
+ * Keep headless command feedback off stdout's JSON event stream and out of model context. Info
+ * messages carry no prefix; warnings and errors read `LSP: message`.
+ */
 export function notifyLspCommand(
   context: ExtensionContext,
   message: string,
   level: "info" | "warning" | "error",
 ): void {
-  if (context.hasUI) context.ui.notify(message, level);
-  else process.stderr.write(`${message}\n`);
+  const body = message.replace(/^Pi LSP:\s*/u, "");
+  const text = level === "info" ? body : noticeText("LSP", body);
+  if (context.hasUI) context.ui.notify(text, level);
+  else process.stderr.write(`${text}\n`);
 }
 
 function statusLabel(server: LspServerStatusEntry, manager: CommandStatusManager): string {
@@ -41,7 +47,7 @@ function statusLabel(server: LspServerStatusEntry, manager: CommandStatusManager
 export function formatLspCommandStatus(manager: CommandStatusManager): string {
   const status = manager.getStatus();
   return [
-    status.servers.length === 0 ? "Pi LSP: no configured Server Definitions." : "Pi LSP:",
+    status.servers.length === 0 ? "No configured Server Definitions." : "LSP servers:",
     ...status.servers.map((server) => statusLabel(server, manager)),
     ...status.warnings,
   ].join("\n");
@@ -57,7 +63,7 @@ export async function selectLspCommand(
     manager.getStatus().servers.map((server) => [statusLabel(server, manager), server]),
   );
   if (rows.size === 0) {
-    notifyLspCommand(context, "Pi LSP: no configured Server Definitions.", "info");
+    notifyLspCommand(context, "No configured Server Definitions.", "info");
     return undefined;
   }
   const selected = await context.ui.select("Pi LSP: select a server", [...rows.keys()]);

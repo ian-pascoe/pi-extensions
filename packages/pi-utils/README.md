@@ -2,9 +2,11 @@
 
 Shared runtime utilities for packages in [`ian-pascoe/pi-extensions`](https://github.com/ian-pascoe/pi-extensions).
 
-## Nerd Font icons
+## Shared extension UI
 
-`shouldUseNerdFontIcons()` enables Nerd Font icons for Kitty, Ghostty, WezTerm, and Herdr panes. Unknown terminals and ambiguous tmux or screen paths use portable text instead.
+`@ian-pascoe/pi-utils/ui` holds the shared rendering primitives that tool rows, messages, widgets, and footer status use to read as part of the default Pi interface: `toolHeader`, `previewBody`, `CollapsedPreview`, `expandHint`, `summaryExpandHint`, `durationFooter`, `callDurationFooter`, `appendDurationFooter`, `statusMark`, `treePrefix`, `widgetLines`, `footerStatus`, `hintLine`, `joinInline`, `clipPlain`, `customMessageBox`, `noticeText`, and `expandMessageOnClick`/`expandEntryOnClick`, which wrap a custom message or entry renderer so a click toggles that item between its Collapsed and Expanded View, as Pi's tool rows and built-in messages do (Pi's custom-message and custom-entry hosts have no click handling of their own). A few packages still keep small local copies, listed as follow-ups in the PR. Every helper styles through the theme passed to it, never Pi's global theme, so colours always follow the user's theme. `@ian-pascoe/pi-utils/ui-testing` exports `taggedTheme`, which wraps each styled piece in its token name; `escapeTaggedTheme`, which encodes tokens as zero-width escapes (decode with `readableTags`) so line breaks fall where they would under a real theme, although pi-tui does not re-open its styles after a wrap; `expectLinesFitWidth`, which rejects hard-coded colour escapes and over-wide lines; and `expectClickToggles`, which proves a registered message or entry renderer swaps views on a click. The vocabulary is in [`CONTEXT.md`](CONTEXT.md) and the decision is [ADR 0006](../../docs/adr/0006-extension-ui-mirrors-pi-built-in-rendering.md).
+
+Nerd Font icon support (`shouldUseNerdFontIcons`) was removed; every surface uses the shared Unicode Status Marks.
 
 ## Native Pi session discovery
 
@@ -21,6 +23,8 @@ The Pi packages and `typebox` are optional peers; Pi's extension loader supplies
 | `./layered-settings`           | `typebox`                                                                        |
 | `./settings-menu`              | `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui`                   |
 | `./settings-command`           | Nothing; its declarations reference `@earendil-works/pi-tui` types               |
+| `./ui`                         | `@earendil-works/pi-coding-agent` (`keyText`) and `@earendil-works/pi-tui`       |
+| `./ui-testing`                 | `@earendil-works/pi-tui` (`visibleWidth`)                                        |
 
 Type-only imports from `@earendil-works/pi-ai` and `@earendil-works/pi-coding-agent` are erased from the compiled JavaScript, but the published declarations reference them, so TypeScript consumers outside Pi need those packages installed to type-check.
 
@@ -40,7 +44,7 @@ Lower-level pieces are exported for consumers with their own validation or write
 
 ## Settings menu widgets
 
-`@ian-pascoe/pi-utils/settings-menu` holds the widgets behind an extension's `ctx.ui.custom` settings menu, built on Pi's native components. `ValueInput(title, hint, theme, submit, cancel)` is a single-line field whose `submit` may throw a user-facing message to show inline. `ModelPicker(models, choose, cancel)` is a fuzzy-searchable list of model names with `inherit` first. `nextCycleValue(values, current)` returns the next value of a cycled option, wrapping around. `errorText(cause)` is a thrown value's message. `theme` is a `SettingsMenuTheme`, the `fg` and `bold` methods of Pi's `Theme`. The rows, labels, and descriptions stay with the extension.
+`@ian-pascoe/pi-utils/settings-menu` holds the widgets behind an extension's `ctx.ui.custom` settings menu, built on Pi's native components. `ValueInput(title, hint, theme, submit, cancel)` is a single-line field whose `submit` may throw a user-facing message to show inline. `ModelPicker(models, choose, cancel)` is a fuzzy-searchable list of model names with `inherit` first. `nextCycleValue(values, current)` returns the next value of a cycled option, wrapping around. `errorText(cause)` is a thrown value's message. `SettingsMenu` is the abstract frame behind `/advisor` and `/guardian`: a border, an accent title, themed status lines, Pi's native settings list (`setList(rows, onChange)`), an inline `✗` error, and a serialized edit queue (`run`, `settled`); a subclass supplies `headline()` and `refresh()`. `EditorChooser(ui, editorTitle, text, submit, inherit, cancel)` offers Pi's editor or `inherit` for a long text, `scopeRow(scope, scopes)` is the `Scope` row, and `cycleDisplay({ own, inEffect, source, scope })` with `effectiveWithSource(effective, source)` words a cycled option's value. `theme` is a `SettingsMenuTheme`, the `fg` and `bold` methods of Pi's `Theme`. The rows, labels, and descriptions stay with the extension.
 
 ## Settings command parsing
 

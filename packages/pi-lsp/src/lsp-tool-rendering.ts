@@ -1,24 +1,30 @@
-import {
-  keyText,
-  type AgentToolResult,
-  type Theme,
-  type ThemeColor,
-  type ToolRenderResultOptions,
+import type {
+  AgentToolResult,
+  Theme,
+  ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Spacer, Text, type Component } from "@earendil-works/pi-tui";
+import {
+  callDurationFooter,
+  COLLAPSED_LINES,
+  appendDurationFooter,
+  previewBody,
+  toolHeader,
+  type DurationContext,
+} from "@ian-pascoe/pi-utils/ui";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import {
-  LspToolResultDetailsSchema,
-  type LspOperationName,
-  type LspToolResultDetails,
-  type ServerOperationOutcome,
-} from "./lsp-tool-contract.js";
+import { lspToolName, type LspOperationName } from "./lsp-tool-contract.js";
 import { lspDisplayPath } from "./lsp-location-text.js";
-import { pluralizedCount } from "./lsp-post-edit-diagnostics-rendering.js";
 
 /** Theme operations used by Pi LSP tool transcript rendering. */
 export type LspRenderTheme = Pick<Theme, "bold" | "fg">;
+
+/** What the call row reads from Pi's render context. */
+export type LspCallRenderContext = DurationContext & { expanded: boolean; cwd: string };
+
+/** What the result row reads from Pi's render context. */
+export type LspResultRenderContext = DurationContext & { isError: boolean };
 
 const LspRenderRecordSchema = Type.Record(Type.String(), Type.Unknown());
 /** The call fields shown in a compact row; Pi renders raw arguments before validation. */
@@ -27,9 +33,23 @@ const LspCallTargetSchema = Type.Object({
   line: Type.Optional(Type.Number()),
   character: Type.Optional(Type.Number()),
   preview_id: Type.Optional(Type.String()),
+  query: Type.Optional(Type.String()),
+  new_name: Type.Optional(Type.String()),
 });
 
-/** Title-case one operation name for transcript rows and tool labels. */
+/** Operations whose output is a list of locations, which Pi's grep previews 15 lines of. */
+const LOCATION_LIST_OPERATIONS: ReadonlySet<LspOperationName> = new Set([
+  "declaration",
+  "goto_definition",
+  "goto_type_definition",
+  "goto_implementation",
+  "find_references",
+  "document_highlights",
+  "document_symbols",
+  "workspace_symbols",
+]);
+
+/** Title-case one operation name for tool labels. */
 export function humanizeLspOperation(operation: LspOperationName): string {
   const words = operation.replaceAll("_", " ");
   return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
@@ -48,8 +68,10 @@ function lspCallTarget(parameters: unknown, cwd: string): string | undefined {
   return parameters.preview_id;
 }
 
-function expansionHint(theme: LspRenderTheme): string {
-  return `${theme.fg("dim", `  ·  ${keyText("app.tools.expand")}`)}${theme.fg("muted", " to expand")}`;
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Raw call arguments are rendered before validation; only checked display fields are read.
+function lspCallExtraArgs(parameters: unknown): string | undefined {
+  if (!Value.Check(LspCallTargetSchema, parameters)) return undefined;
+  return parameters.new_name ?? parameters.query;
 }
 
 function toolResultText(result: AgentToolResult<unknown>): string {
@@ -57,19 +79,6 @@ function toolResultText(result: AgentToolResult<unknown>): string {
     .filter((item) => item.type === "text")
     .map((item) => item.text)
     .join("");
-}
-
-function fileCountLabel(count: number): string {
-  return `${count} file${count === 1 ? "" : "s"}`;
-}
-
-// oxlint-disable-next-line anti-slop/no-unknown-returns -- Historical output JSON has no method-specific schema; consumers check only the fields they count.
-function parsedLspOutput(output: string): unknown {
-  try {
-    return JSON.parse(output);
-  } catch {
-    return undefined;
-  }
 }
 
 // oxlint-disable-next-line anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type -- Historical output records expose only unknown fields, refined at each metric consumption point.
@@ -101,249 +110,74 @@ export function semanticLspValueCount(value: unknown): number {
   return 1;
 }
 
-function semanticLspOperationNoun(operation: LspOperationName): string {
-  switch (operation) {
-    case "status":
-      return "server";
-    case "diagnostics":
-    case "workspace_diagnostics":
-      return "diagnostic";
-    case "completion":
-      return "completion";
-    case "declaration":
-    case "goto_definition":
-    case "goto_type_definition":
-    case "goto_implementation":
-      return "location";
-    case "find_references":
-      return "reference";
-    case "document_highlights":
-      return "highlight";
-    case "document_symbols":
-    case "workspace_symbols":
-      return "symbol";
-    case "document_links":
-      return "link";
-    case "code_actions":
-      return "action";
-    default:
-      return "result";
-  }
-}
-
-/** Count the items of JSON model-visible output, which every result rendered before readable text. */
-function jsonOutputCount(operation: LspOperationName, output: string): number | undefined {
-  const parsed = parsedLspOutput(output);
-  const record = renderRecord(parsed);
-  if (operation === "status" && Array.isArray(record?.servers)) return record.servers.length;
-  if (operation === "code_actions") {
-    if (Array.isArray(record?.actions)) return record.actions.length;
-    // Results from before code actions listed several servers were a bare action array.
-    if (Array.isArray(parsed)) return parsed.length;
-  }
-  if (!Array.isArray(record?.results)) return undefined;
-  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Each historical server result is checked as a record before counting its opaque value.
-  return record.results.reduce((total: number, result: unknown) => {
-    const resultRecord = renderRecord(result);
-    return total + semanticLspValueCount(resultRecord?.value);
-  }, 0);
-}
-
-function semanticLspOperationMetric(
-  details: Extract<LspToolResultDetails, { kind: "operation" }>,
-  output: string,
-): string | undefined {
-  // Readable text is not JSON, so its result carries the count.
-  const count = details.result_count ?? jsonOutputCount(details.operation, output);
-  if (count === undefined) return undefined;
-  return pluralizedCount(count, semanticLspOperationNoun(details.operation));
-}
-
-function outcomeColor(outcome: ServerOperationOutcome["outcome"]): ThemeColor {
-  switch (outcome) {
-    case "success":
-      return "success";
-    case "timeout":
-    case "unavailable":
-    case "unsupported":
-      return "warning";
-    case "error":
-      return "error";
-  }
-}
-
-function renderOperationSummary(
-  details: Extract<LspToolResultDetails, { kind: "operation" }>,
-  theme: LspRenderTheme,
-  output: string,
-): string {
-  const failures = details.server_outcomes.filter(({ outcome }) => outcome !== "success");
-  const servers = details.server_outcomes.map(({ server_id }) => server_id).join(", ");
-  // Servers that answered that they do not offer the operation did not fail; no count is shown,
-  // because nothing was retrieved and zero would read as an empty result.
-  if (
-    details.server_outcomes.length > 0 &&
-    details.server_outcomes.every(({ outcome }) => outcome === "unsupported")
-  ) {
-    return [theme.fg("warning", "Unsupported"), theme.fg("muted", servers)].join(
-      theme.fg("dim", "  ·  "),
-    );
-  }
-  const metric = semanticLspOperationMetric(details, output);
-  if (failures.length === 0) {
-    return [
-      theme.fg("success", "Completed"),
-      metric === undefined ? undefined : theme.fg("toolOutput", metric),
-      servers && theme.fg("muted", servers),
-    ]
-      .filter(Boolean)
-      .join(theme.fg("dim", "  ·  "));
-  }
-  const succeeded = details.server_outcomes.length - failures.length;
-  const summary = succeeded === 0 ? "Failed" : "Completed with issues";
-  return [
-    theme.fg(succeeded === 0 ? "error" : "warning", summary),
-    metric === undefined ? undefined : theme.fg("toolOutput", metric),
-    theme.fg("warning", pluralizedCount(failures.length, "server issue")),
-  ]
-    .filter(Boolean)
-    .join(theme.fg("dim", "  ·  "));
-}
-
-function renderCollapsedLspResult(
-  details: LspToolResultDetails,
-  theme: LspRenderTheme,
-  output: string,
-): string {
-  switch (details.kind) {
-    case "operation":
-      return renderOperationSummary(details, theme, output);
-    case "workspace_edit_preview":
-      return `${theme.fg("accent", "Preview ready")}${theme.fg("dim", `  ·  ${fileCountLabel(details.mutation_manifest.length)}`)}`;
-    case "workspace_edit_apply": {
-      const label = details.state === "applied" ? "Applied" : "Partial failure";
-      const color = details.state === "applied" ? "success" : "error";
-      return `${theme.fg(color, label)}${theme.fg("dim", `  ·  ${fileCountLabel(details.changed_paths.length)}`)}`;
-    }
-  }
-}
-
-function appendExpandedOperationDetails(
-  container: Container,
-  details: Extract<LspToolResultDetails, { kind: "operation" }>,
-  theme: LspRenderTheme,
-): void {
-  container.addChild(new Text(theme.fg("muted", theme.bold("Server outcomes")), 0, 0));
-  for (const outcome of details.server_outcomes) {
-    const message = outcome.message === undefined ? "" : theme.fg("muted", ` — ${outcome.message}`);
-    container.addChild(
-      new Text(
-        `${theme.fg(outcomeColor(outcome.outcome), outcome.outcome)}  ${outcome.server_id}${message}`,
-        0,
-        0,
-      ),
-    );
-  }
-  if (details.spill_path !== undefined) {
-    container.addChild(
-      new Text(`${theme.fg("muted", "Result Spill:")} ${details.spill_path}`, 0, 0),
-    );
-  }
-}
-
-function appendExpandedMutationDetails(
-  container: Container,
-  details: Exclude<LspToolResultDetails, { kind: "operation" }>,
-  theme: LspRenderTheme,
-): void {
-  if (details.kind === "workspace_edit_preview") {
-    container.addChild(new Text(details.summary, 0, 0));
-  }
-  container.addChild(new Text(`${theme.fg("muted", "Preview:")} ${details.preview_id}`, 0, 0));
-  const paths =
-    details.kind === "workspace_edit_preview"
-      ? details.mutation_manifest.flatMap((entry) =>
-          entry.operation === "rename" ? [entry.path, entry.destination_path] : [entry.path],
-        )
-      : details.changed_paths;
-  for (const path of paths) container.addChild(new Text(theme.fg("muted", path), 0, 0));
-}
-
 /**
- * Render one Pi LSP tool call using Pi's supplied theme and native expansion state.
+ * Render one `lsp_<operation>` tool call in Pi's header shape: the tool name, the file position or
+ * preview as the target, and a rename or search argument.
  *
  * Pi renders the call with the arguments the model sent, before validation, so the renderer reads
- * only the fields it displays and tolerates any combination the model may produce.
+ * only the fields it displays and tolerates any combination the model may produce. While the call
+ * runs, the row carries Pi's `Elapsed` footer because LSP tools send no partial results.
  */
 export function renderLspToolCall(
   operation: LspOperationName,
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Raw model arguments are displayed before validation.
   parameters: unknown,
   theme: LspRenderTheme,
-  expanded: boolean,
-  cwd: string,
+  context: LspCallRenderContext,
 ): Component {
   const container = new Container();
-  const target = lspCallTarget(parameters, cwd);
   container.addChild(
     new Text(
-      [
-        theme.fg("toolTitle", theme.bold("LSP")),
-        theme.fg("accent", humanizeLspOperation(operation)),
-        target === undefined ? undefined : theme.fg("muted", target),
-      ]
-        .filter((part) => part !== undefined)
-        .join("  "),
+      toolHeader(
+        theme,
+        lspToolName(operation),
+        lspCallTarget(parameters, context.cwd),
+        lspCallExtraArgs(parameters),
+      ),
       0,
       0,
     ),
   );
-  if (expanded) {
-    container.addChild(new Spacer(1));
-    container.addChild(new Text(theme.fg("dim", JSON.stringify(parameters, undefined, 2)), 0, 0));
+  const record = renderRecord(parameters);
+  if (context.expanded && record !== undefined) {
+    const lines = Object.entries(record).map(([key, value]) =>
+      theme.fg(
+        "muted",
+        `${key}: ${Value.Check(Type.String(), value) ? value : JSON.stringify(value)}`,
+      ),
+    );
+    if (lines.length > 0) container.addChild(new Text(lines.join("\n"), 0, 0));
   }
+  container.addChild(callDurationFooter(theme, context));
   return container;
 }
 
-/** Render one Pi LSP tool result as a compact summary with exact output on expansion. */
+/**
+ * Render one `lsp_<operation>` result as a preview of its output with Pi's Expand Hint and
+ * duration footer. Location lists keep grep's 15 lines; everything else keeps the 10-line
+ * fallback. Failures show their text in the `error` role.
+ */
 export function renderLspToolResult(
-  result: AgentToolResult<LspToolResultDetails | undefined>,
+  operation: LspOperationName,
+  result: AgentToolResult<unknown>,
   options: ToolRenderResultOptions,
   theme: LspRenderTheme,
-  isError: boolean,
+  context: LspResultRenderContext,
 ): Component {
-  const output = toolResultText(result);
-  if (options.isPartial) return new Text(theme.fg("accent", "Running…"), 0, 0);
-  // An apply partial failure is an error result whose details still summarize the changed files.
-  const details = Value.Check(LspToolResultDetailsSchema, result.details)
-    ? result.details
-    : undefined;
-  if (details === undefined || (isError && details.kind !== "workspace_edit_apply")) {
-    const visibleOutput = options.expanded
-      ? output
-      : (output.split("\n").find(Boolean) ?? "LSP failed");
-    const hint = !options.expanded && output.includes("\n") ? expansionHint(theme) : "";
-    return new Text(theme.fg(isError ? "error" : "toolOutput", `${visibleOutput}${hint}`), 0, 0);
-  }
-
-  if (!options.expanded) {
-    return new Text(
-      `${renderCollapsedLspResult(details, theme, output)}${expansionHint(theme)}`,
-      0,
-      0,
-    );
-  }
-
   const container = new Container();
-  container.addChild(new Text(renderCollapsedLspResult(details, theme, output), 0, 0));
-  container.addChild(new Spacer(1));
-  if (details.kind === "operation") {
-    appendExpandedOperationDetails(container, details, theme);
-  } else {
-    appendExpandedMutationDetails(container, details, theme);
+  const output = toolResultText(result).trim();
+  if (output !== "") {
+    const limit = LOCATION_LIST_OPERATIONS.has(operation)
+      ? COLLAPSED_LINES.search
+      : COLLAPSED_LINES.fallback;
+    const body = previewBody(theme, output.split("\n"), {
+      limit,
+      expanded: options.expanded,
+      color: context.isError ? "error" : "toolOutput",
+    });
+    container.addChild(new Spacer(1));
+    container.addChild(new Text(body.join("\n"), 0, 0));
   }
-  container.addChild(new Spacer(1));
-  container.addChild(new Text(theme.fg("muted", theme.bold("Output")), 0, 0));
-  container.addChild(new Text(theme.fg("toolOutput", output || "(no output)"), 0, 0));
+  appendDurationFooter(container, theme, context, { isPartial: options.isPartial });
   return container;
 }

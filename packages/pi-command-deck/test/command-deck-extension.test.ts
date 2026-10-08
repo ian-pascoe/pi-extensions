@@ -12,7 +12,8 @@ import {
   SessionManager,
   type ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
-import { stripTerminalSequences, type EditorComponent } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, visibleWidth, type EditorComponent } from "@earendil-works/pi-tui";
+import { footerStatus } from "@ian-pascoe/pi-utils/ui";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createKeybindings, createTui, editorTheme } from "./vim-pi-fixture.js";
 
@@ -117,7 +118,7 @@ async function createHarness(extensionPaths: string[], mode: ExtensionMode = "tu
     editor = next?.(tui, editorTheme, keybindings);
     tui.setFocus(editor ?? null);
   };
-  const footer = vi.fn();
+  const footer = vi.fn<ExtensionUIContext["setFooter"]>();
   runner.setUIContext(
     {
       ...runner.getUIContext(),
@@ -140,6 +141,16 @@ async function createHarness(extensionPaths: string[], mode: ExtensionMode = "tu
     extensionErrors,
     custom,
     footer,
+    renderFooter(statuses: ReadonlyMap<string, string>) {
+      const factory = footer.mock.calls[0]?.[0];
+      if (!factory) throw new Error("Expected an installed footer");
+      return factory(tui, runner.getUIContext().theme, {
+        getGitBranch: () => null,
+        getExtensionStatuses: () => statuses,
+        getAvailableProviderCount: () => 1,
+        onBranchChange: () => () => {},
+      });
+    },
     getFactory: () => factory,
     setEditorComponent,
     editor() {
@@ -176,15 +187,53 @@ describe("Command Deck extension", { timeout: 30_000 }, () => {
 
     const lines = editor.render(60).map((line) => stripTerminalSequences(line));
     expect(lines[0]).toMatch(/^─ command-deck-cwd-\w+ .*no model · medium ─$/);
-    expect(lines[1]).toContain("Type your prompt…");
+    expect(lines[1]).toContain("Type your prompt...");
     expect(lines.at(-1)).toMatch(/^─ INSERT ─+ cache \? · ctx \? ─$/);
 
     editor.handleInput("x");
     editor.handleInput("\x1b");
     const normal = editor.render(60).map((line) => stripTerminalSequences(line));
-    expect(normal[1]).not.toContain("Type your prompt…");
+    expect(normal[1]).not.toContain("Type your prompt...");
     expect(normal.at(-1)).toMatch(/^─ NORMAL ─/);
     expect(harness.extensionErrors).toEqual([]);
+    await harness.shutdown();
+  });
+
+  it("shows extension statuses in Pi's footer shape, whichever package owns them", async () => {
+    const harness = await createHarness([COMMAND_DECK]);
+    await harness.start();
+    const theme = harness.runner.getUIContext().theme;
+    const statuses = new Map([
+      ["tps", footerStatus(theme, { name: "tps", value: "42.0 tok/s" })],
+      ["termctrl", footerStatus(theme, { mark: "active", name: "termctrl", value: "2 running" })],
+      ["guardian", footerStatus(theme, { mark: "done", name: "guardian", value: "allowed" })],
+      ["advisor", footerStatus(theme, { mark: "idle", name: "advisor", value: "watching" })],
+    ]);
+    const component = harness.renderFooter(statuses);
+
+    const wide = component.render(120);
+    expect(wide.map((line) => stripTerminalSequences(line))).toEqual([
+      "\u25cb advisor watching \u2713 guardian allowed \u25cf termctrl 2 running tps 42.0 tok/s",
+    ]);
+    const narrow = component.render(40);
+    expect(narrow).toHaveLength(1);
+    expect(visibleWidth(narrow[0] ?? "")).toBeLessThanOrEqual(40);
+    expect(narrow[0]).toContain(theme.fg("dim", "..."));
+    expect(harness.renderFooter(new Map()).render(40)).toEqual([]);
+    await harness.shutdown();
+  });
+
+  it("prefixes editor warnings with the display name and leaves info unprefixed", async () => {
+    const harness = await createHarness([COMMAND_DECK]);
+    await harness.start();
+    const editor = harness.editor();
+    editor.handleInput("\x1b");
+    editor.handleInput("n");
+    for (const key of ":nope\r") editor.handleInput(key);
+    expect(harness.notifications).toEqual([
+      { level: "info", message: "No previous search pattern" },
+      { level: "warning", message: "Command Deck: Unsupported ex command: nope" },
+    ]);
     await harness.shutdown();
   });
 
@@ -193,7 +242,10 @@ describe("Command Deck extension", { timeout: 30_000 }, () => {
     harness.setEditorComponent((...args) => new ForeignEditor(...args));
     await harness.start();
     expect(harness.notifications).toEqual([
-      expect.objectContaining({ level: "warning", message: expect.stringContaining("replaced") }),
+      expect.objectContaining({
+        level: "warning",
+        message: expect.stringMatching(/^Command Deck: replaced an editor/),
+      }),
     ]);
 
     await harness.shutdown();

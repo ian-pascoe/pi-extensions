@@ -6,6 +6,7 @@ import type {
   ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
 import { discoverPiAgentSession } from "@ian-pascoe/pi-utils/pi-agent-session-discovery";
+import { expandEntryOnClick, footerStatus } from "@ian-pascoe/pi-utils/ui";
 import { reviewEntryType, reviewTotals } from "./guardian-audit.js";
 import {
   parseGuardianCommand,
@@ -82,17 +83,23 @@ export default function guardian(pi: ExtensionAPI): void {
   let lastDelegations: ApprovedDelegation[] = [];
 
   // Allowed reviews stay out of the transcript unless `verbose` is on; their entries still count.
-  pi.registerEntryRenderer(reviewEntryType, (entry, { expanded }, theme) => {
-    const current = effective();
-    return renderReviewEntry(
-      entry.data,
-      expanded,
-      theme,
-      current.ok && current.resolved.settings.verbose,
-    );
-  });
-  pi.registerEntryRenderer(statusEntryType, (entry, { expanded }, theme) =>
-    renderStatusEntry(entry.data, expanded, theme),
+  pi.registerEntryRenderer(
+    reviewEntryType,
+    expandEntryOnClick((entry, { expanded }, theme) => {
+      const current = effective();
+      return renderReviewEntry(
+        entry.data,
+        expanded,
+        theme,
+        current.ok && current.resolved.settings.verbose,
+      );
+    }),
+  );
+  pi.registerEntryRenderer(
+    statusEntryType,
+    expandEntryOnClick((entry, { expanded }, theme) =>
+      renderStatusEntry(entry.data, expanded, theme),
+    ),
   );
 
   /** Refresh what this delegated session follows from its root, if the root is published. */
@@ -154,7 +161,11 @@ export default function guardian(pi: ExtensionAPI): void {
         "guardian",
         current.ok
           ? guardianFooterText(current.resolved.settings.enabled, gate.reviewing(), footer.theme)
-          : footer.theme.fg("error", "guardian: settings error"),
+          : footerStatus(footer.theme, {
+              mark: "failed",
+              name: "guardian",
+              value: footer.theme.fg("error", "settings error"),
+            }),
       );
     } catch {
       // A replaced session's UI is stale; status entries remain authoritative.
@@ -221,8 +232,7 @@ export default function guardian(pi: ExtensionAPI): void {
       for (const release of unpublishers) release();
     };
     const current = effective();
-    if (!current.ok)
-      notify(ctx, `Guardian: ${current.error}. Run /skill:pi-guardian to diagnose.`, "error");
+    if (!current.ok) notify(ctx, `${current.error}. Run /skill:pi-guardian to diagnose.`, "error");
     else if (
       !modelNoticeShown &&
       role.kind === "main" &&
@@ -279,7 +289,7 @@ export default function guardian(pi: ExtensionAPI): void {
     if (changes.length) entry.changes = [...changes];
     if (error) entry.error = error;
     pi.appendEntry(statusEntryType, entry);
-    if (entry.error) notify(ctx, `Guardian: ${entry.error}`, "error");
+    if (entry.error) notify(ctx, entry.error, "error");
   }
 
   /** The authored `tools` or `commands` option at one scope. */

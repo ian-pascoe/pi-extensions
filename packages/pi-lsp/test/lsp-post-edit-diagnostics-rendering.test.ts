@@ -1,22 +1,38 @@
-import { describe, expect, test } from "vitest";
+import { KeybindingsManager, setKeybindings } from "@earendil-works/pi-tui";
+import {
+  escapeTaggedTheme,
+  expectLinesFitWidth,
+  readableTags,
+} from "@ian-pascoe/pi-utils/ui-testing";
+import { beforeAll, describe, expect, test } from "vitest";
 import {
   createPostEditDiagnosticsEntryData,
   renderPostEditDiagnosticsEntry,
-  type PostEditDiagnosticsEntryTheme,
 } from "../src/lsp-post-edit-diagnostics-rendering.js";
 import type { PostEditDiagnosticOutcome } from "../src/lsp-post-edit-diagnostics.js";
 
-const plainTheme = {
-  bg: (_color, text) => text,
-  bold: (text) => text,
-  fg: (_color, text) => text,
-} satisfies PostEditDiagnosticsEntryTheme;
+beforeAll(() => {
+  setKeybindings(new KeybindingsManager({ "app.tools.expand": { defaultKeys: "ctrl+o" } }));
+});
 
-function renderLines(component: { render(width: number): string[] }): string {
-  return component
-    .render(120)
-    .map((line) => line.trimEnd())
-    .join("\n");
+function renderLines(component: { render(width: number): string[] }, width = 120): string[] {
+  const rendered = component.render(width);
+  expectLinesFitWidth(rendered, width);
+  return rendered.map((line) => readableTags(line).trimEnd());
+}
+
+function diagnosticOutcome(index: number): PostEditDiagnosticOutcome {
+  return {
+    kind: "diagnostic",
+    diagnostic: {
+      serverId: "typescript",
+      path: "/workspace/src/a.ts",
+      line: index,
+      character: 1,
+      severity: 1,
+      message: `Problem ${index}`,
+    },
+  };
 }
 
 const reportableOutcomes = [
@@ -49,43 +65,75 @@ const reportableOutcomes = [
   { kind: "no_configured_server", path: "/workspace/README.txt" },
 ] satisfies readonly PostEditDiagnosticOutcome[];
 
-describe("Post-edit Diagnostics Entry rendering", () => {
-  test("collapses to at most eight visual lines with a prefix of the expanded details", () => {
-    const data = createPostEditDiagnosticsEntryData("/workspace", reportableOutcomes);
-    expect(data).toBeDefined();
-    if (data === undefined) throw new Error("Expected reportable diagnostics entry");
+function entryData(outcomes: readonly PostEditDiagnosticOutcome[]) {
+  const data = createPostEditDiagnosticsEntryData("/workspace", outcomes);
+  if (data === undefined) throw new Error("Expected reportable diagnostics entry");
+  return data;
+}
 
-    const component = renderPostEditDiagnosticsEntry(data, false, plainTheme);
-    const collapsedLines = component.render(120).map((line) => line.trimEnd());
-    const collapsed = collapsedLines.join("\n");
-    expect(collapsedLines).toHaveLength(8);
-    expect(collapsed).toContain("Post-edit diagnostics");
-    expect(collapsed).toContain("1 error");
-    expect(collapsed).toContain("2 warnings");
-    expect(collapsed).toContain("1 timeout");
-    expect(collapsed).toContain("1 server issue");
-    expect(collapsed).toContain("3 files");
-    expect(collapsed).toContain("4:2  Type mismatch  typescript");
-    expect(collapsed).toContain("8:1  Unused value  oxlint");
-    expect(collapsed).toContain("src/b.ts");
-    expect(collapsed).not.toContain("src/c.ts");
-    expect(component.render(40)).toHaveLength(8);
+describe("Post-edit Diagnostics Entry rendering", () => {
+  test("is a custom message box with a `[lsp] edit diagnostics \u00b7 counts` label line, and diagnostics", () => {
+    const component = renderPostEditDiagnosticsEntry(
+      entryData(reportableOutcomes),
+      { expanded: false, outputPad: 1 },
+      escapeTaggedTheme,
+    );
+    const lines = renderLines(component);
+    const rendered = lines.join("\n");
+    expect(rendered).toContain("<bg:customMessageBg>");
+    expect(lines[1]).toContain(
+      "<customMessageLabel><b>[lsp]</b></customMessageLabel> <customMessageText>edit diagnostics</customMessageText><dim> \u00b7 </dim><error>1 error</error><dim> \u00b7 </dim><warning>2 warnings</warning><dim> \u00b7 </dim><warning>1 timeout</warning><dim> \u00b7 </dim><warning>1 server issue</warning><dim> \u00b7 </dim><muted>3 files</muted>",
+    );
+    expect(rendered).toContain(
+      "<error>4:2</error>  <customMessageText>Type mismatch</customMessageText>",
+    );
+    expect(rendered).toContain("<accent>src/c.ts</accent>");
+    expect(rendered).not.toContain("to expand");
+    expect(rendered).not.toContain("clean.ts");
+    expect(rendered).not.toContain("README.txt");
+    renderLines(component, 120);
+    renderLines(component, 40);
+  });
+
+  test("collapses to 10 body lines with Pi's expand hint, and expands to every line", () => {
+    const outcomes = Array.from({ length: 14 }, (_, index) => diagnosticOutcome(index + 1));
+    const narrow = renderPostEditDiagnosticsEntry(
+      entryData(outcomes),
+      { expanded: false },
+      escapeTaggedTheme,
+    );
+    expect(renderLines(narrow, 40).join("\n")).toContain("to expand");
+    const collapsed = renderLines(
+      renderPostEditDiagnosticsEntry(entryData(outcomes), { expanded: false }, escapeTaggedTheme),
+    ).join("\n");
+    expect(collapsed).toContain("Problem 9");
+    expect(collapsed).not.toContain("Problem 10");
+    expect(collapsed).toContain(
+      "<muted>... (5 more lines,</muted> <dim>ctrl+o</dim><muted> to expand</muted><muted>)</muted>",
+    );
+
+    const expanded = renderLines(
+      renderPostEditDiagnosticsEntry(entryData(outcomes), { expanded: true }, escapeTaggedTheme),
+    ).join("\n");
+    expect(expanded).toContain("Problem 14");
+    expect(expanded).not.toContain("to expand");
   });
 
   test("expands diagnostics by workspace-relative file with source locations and servers", () => {
-    const data = createPostEditDiagnosticsEntryData("/workspace", reportableOutcomes);
-    if (data === undefined) throw new Error("Expected reportable diagnostics entry");
-
-    const expanded = renderLines(renderPostEditDiagnosticsEntry(data, true, plainTheme));
+    const expanded = renderLines(
+      renderPostEditDiagnosticsEntry(
+        entryData(reportableOutcomes),
+        { expanded: true, outputPad: 1 },
+        escapeTaggedTheme,
+      ),
+    ).join("\n");
     expect(expanded).toContain("src/a.ts");
-    expect(expanded).toContain("4:2  Type mismatch  typescript");
-    expect(expanded).toContain("8:1  Unused value  oxlint");
-    expect(expanded).toContain("src/b.ts");
-    expect(expanded).toContain("Diagnostics timed out  typescript");
-    expect(expanded).toContain("src/c.ts");
-    expect(expanded).toContain("Server unavailable  oxlint");
+    expect(expanded).toContain("<muted>typescript</muted>");
+    expect(expanded).toContain("<muted>oxlint</muted>");
+    expect(expanded).toContain(
+      "<warning>Diagnostics timed out</warning>  <muted>typescript</muted>",
+    );
+    expect(expanded).toContain("<warning>Server unavailable</warning>  <muted>oxlint</muted>");
     expect(expanded).toContain("Pi LSP: adapter warning");
-    expect(expanded).not.toContain("clean.ts");
-    expect(expanded).not.toContain("README.txt");
   });
 });

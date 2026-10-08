@@ -228,13 +228,17 @@ recoverable.
 
 ### Observer UI
 
-In TUI mode, calls and results use compact semantic transcript rows. Expanding a
-row shows only explicitly supplied arguments and bounded Breakpoint, Stack Frame,
-variable, or evaluation details. Long execution waits update once per second.
-Malformed or historical rows fall back to their original tool text.
+In TUI mode, calls and results follow Pi's built-in tool rendering. The header is
+the tool name (`dap_stack`), its target, and muted arguments; expanding a call
+lists only explicitly supplied arguments. A result previews the tool text, 20
+lines for `dap_stack` and `dap_variables` and 10 for everything else, followed by
+Pi's `... (N more lines, ctrl+o to expand)` hint. A running call, including a
+long execution wait, shows Pi's `Elapsed` footer and a finished one `Took`.
 
-One widget above the editor follows launching, running, stopped, and terminated
-activity. It is derived only from lifecycle transitions and successful results
+One `pi-dap` widget above the editor follows launching, running, stopped, and
+terminated activity: a `DAP` title with the adapter, profile, and elapsed time,
+then a row led by a Status Mark with the state, stop reason or exit code, and
+source location. It is derived only from lifecycle transitions and successful results
 Pi DAP has already received; it sends no additional DAP request and provides no
 human debugger controls. Stopped source locations clear on resume. The terminal
 snapshot remains for ten seconds, while idle sessions have no widget. RPC, JSON,

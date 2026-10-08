@@ -66,10 +66,13 @@ export function withEmptyPromptPlaceholder(
   );
 }
 
-/** Join extension statuses into one Status Footer row, sorted by status key. */
+/**
+ * Join extension statuses into one Status Footer row the way Pi's footer does: sorted by status
+ * key, joined by a single space, and truncated with `ellipsis`. Each status is already formatted
+ * by its owner.
+ */
 export function formatStatusFooter(
   statuses: ReadonlyMap<string, string>,
-  separator: string,
   ellipsis: string,
   width: number,
 ): string[] {
@@ -82,5 +85,5 @@ export function formatStatusFooter(
         .trim(),
     )
     .filter(Boolean);
-  return texts.length === 0 ? [] : [truncateToWidth(texts.join(separator), width, ellipsis)];
+  return texts.length === 0 ? [] : [truncateToWidth(texts.join(" "), width, ellipsis)];
 }

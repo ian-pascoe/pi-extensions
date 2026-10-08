@@ -1,12 +1,27 @@
-import type { ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
+import {
+  DynamicBorder,
+  keyText,
+  type ExtensionContext,
+  type KeybindingsManager,
+  type Theme,
+} from "@earendil-works/pi-coding-agent";
 import {
   matchesKey,
-  truncateToWidth,
   visibleWidth,
+  wrapTextWithAnsi,
   type Component,
   type OverlayHandle,
   type TUI,
 } from "@earendil-works/pi-tui";
+import {
+  clipPlain,
+  footerStatus,
+  hintLine,
+  joinInline,
+  noticeText,
+  statusMark,
+  type StatusKind,
+} from "@ian-pascoe/pi-utils/ui";
 import { formatDuration } from "./exit-notification.js";
 import type { TermctrlEntry, TermctrlRegistry } from "./termctrl-registry.js";
 
@@ -38,6 +53,13 @@ function ageOf(entry: TermctrlEntry, now: number): string {
 
 function singleLine(text: string): string {
   return text.replaceAll(/\s+/gu, " ").trim();
+}
+
+/** The Status Mark of an entry: running, ended cleanly, ended by a signal, or failed. */
+function markKind(entry: TermctrlEntry): StatusKind {
+  if (entry.state === "running") return "active";
+  if (entry.exit?.signal !== null && entry.exit?.signal !== undefined) return "stopped";
+  return entry.exit?.code === 0 ? "done" : "failed";
 }
 
 /** The live `/ps` overlay: every entry in the process, a preview of the selected one, and stop keys. */
@@ -85,40 +107,54 @@ export class TermctrlPsPanel implements Component {
       1,
       Math.min(Math.floor(this.tui.terminal.rows * 0.9), this.tui.terminal.rows - 2 * MARGIN),
     );
-    if (width < 8 || height < 6) {
-      return [truncateToWidth("Esc close · Enlarge terminal", width, "…")];
+    const inner = width - 2;
+    const help = wrapTextWithAnsi(this.hints(), inner);
+    if (width < 8 || height < 8 + help.length) {
+      return wrapTextWithAnsi(this.theme.fg("muted", "Enlarge terminal"), width);
     }
-    const inner = width - 4;
     const now = Date.now();
     const running = this.entries.filter((entry) => entry.state === "running").length;
+    const title = joinInline(this.theme, [
+      this.theme.fg("accent", this.theme.bold("Terminals and Background jobs")),
+      this.theme.fg("muted", `${running} running`),
+    ]);
     const header = [
-      this.theme.bold(`Terminals and Background jobs · ${running} running`),
-      this.theme.fg("warning", this.notice),
+      ...wrapTextWithAnsi(title, inner),
+      ...(this.notice === "" ? [] : wrapTextWithAnsi(this.theme.fg("warning", this.notice), inner)),
     ];
-    const help = [this.theme.fg("dim", "↑↓ select · k stop · x remove exited · esc close")];
-    const listHeight = Math.max(
-      1,
-      Math.min(this.entries.length || 1, Math.floor((height - 6) / 2)),
-    );
+    // Two borders and the blank lines around the title, the list, and the hints.
+    const room = height - 6 - header.length - help.length;
+    const listHeight = Math.max(1, Math.min(this.entries.length || 1, Math.floor(room / 2)));
     const rows =
       this.entries.length === 0
         ? [this.theme.fg("muted", "Nothing is running.")]
         : this.visibleRows(listHeight).map((entry) => this.row(entry, inner, now));
-    const previewHeight = Math.max(0, height - 2 - header.length - rows.length - help.length - 1);
-    const previewLines = this.previewLines(previewHeight);
+    const previewLines = this.previewLines(room - rows.length - 1, inner);
+    const border = new DynamicBorder((text) => this.theme.fg("border", text)).render(width);
     const body = [
+      "",
       ...header,
+      "",
       ...rows,
-      this.theme.fg("border", "─".repeat(inner)),
-      ...previewLines,
+      ...(previewLines.length === 0 ? [] : ["", ...previewLines]),
+      "",
       ...help,
+      "",
     ];
-    const border = (text: string) => this.theme.fg("border", text);
-    const framed = body.map((line) => {
-      const content = truncateToWidth(line, inner, "…");
-      return `${border("│")} ${content}${" ".repeat(Math.max(0, inner - visibleWidth(content)))} ${border("│")}`;
-    });
-    return [border(`╭${"─".repeat(width - 2)}╮`), ...framed, border(`╰${"─".repeat(width - 2)}╯`)];
+    const framed = body.map(
+      (line) => ` ${line}${" ".repeat(Math.max(0, inner - visibleWidth(line)))} `,
+    );
+    return [...border, ...framed, ...border];
+  }
+
+  /** The footer hints, drawn from the injected theme as Pi's selector does. */
+  private hints(): string {
+    return hintLine(this.theme, [
+      { key: "\u2191\u2193", description: "navigate" },
+      { key: "k", description: "stop" },
+      { key: "x", description: "remove exited" },
+      { key: keyText("tui.select.cancel"), description: "close" },
+    ]);
   }
 
   invalidate(): void {}
@@ -163,17 +199,15 @@ export class TermctrlPsPanel implements Component {
             ageOf(entry, now).padStart(6),
           ]
         : [entry.id.padEnd(4), stateLabel(entry).padEnd(9)];
-    const line = `${selected ? ">" : " "} ${columns.join("  ")}  ${singleLine(entry.command)}`;
-    const styled = selected
-      ? this.theme.fg("accent", line)
-      : entry.state === "exited"
-        ? this.theme.fg("muted", line)
-        : line;
-    return truncateToWidth(styled, width, "…");
+    // Pi's selector marks the selected row with `→ `; the Status Mark follows it.
+    const text = clipPlain(`${columns.join("  ")}  ${singleLine(entry.command)}`, width - 4);
+    const color = selected ? "accent" : entry.state === "exited" ? "muted" : "text";
+    const marker = selected ? this.theme.fg("accent", "→ ") : "  ";
+    return `${marker}${statusMark(this.theme, markKind(entry))} ${this.theme.fg(color, text)}`;
   }
 
-  private previewLines(height: number): string[] {
-    if (height <= 0) return [];
+  private previewLines(height: number, width: number): string[] {
+    if (height < 2) return [];
     const selected = this.entries.find((entry) => entry.id === this.selectedId);
     if (selected === undefined) return [];
     const title = this.theme.fg(
@@ -181,7 +215,10 @@ export class TermctrlPsPanel implements Component {
       selected.kind === "terminal" ? `${selected.id} screen` : `${selected.id} log tail`,
     );
     const text = this.preview.replace(/\n+$/u, "");
-    const lines = text === "" ? [this.theme.fg("muted", "(no output yet)")] : text.split("\n");
+    const lines =
+      text === ""
+        ? [this.theme.fg("muted", "(no output yet)")]
+        : text.split("\n").map((line) => this.theme.fg("text", clipPlain(line, width)));
     return [title, ...lines.slice(-(height - 1))];
   }
 
@@ -235,7 +272,7 @@ export class TermctrlPsPanel implements Component {
   private stopSelected(): void {
     const entry = this.entries.find((candidate) => candidate.id === this.selectedId);
     if (entry === undefined || entry.state !== "running") return;
-    this.notice = `Stopping ${entry.id}…`;
+    this.notice = `Stopping ${entry.id}...`;
     void this.registry.stopByUser(entry.id).then(() => {
       if (this.disposed) return;
       this.notice = `Stopped ${entry.id}.`;
@@ -274,7 +311,16 @@ export class TermctrlPsController {
   ) {
     const update = () => {
       const running = registry.runningCount();
-      context.ui.setStatus(STATUS_KEY, running > 0 ? `${running} running` : undefined);
+      context.ui.setStatus(
+        STATUS_KEY,
+        running > 0
+          ? footerStatus(context.ui.theme, {
+              mark: "active",
+              name: "termctrl",
+              value: `${running} running`,
+            })
+          : undefined,
+      );
     };
     this.stopFooter = context.hasUI ? registry.onChange(update) : () => {};
     if (context.hasUI) update();
@@ -322,7 +368,7 @@ export class TermctrlPsController {
         },
       )
       .catch(() => {
-        this.context.ui.notify("The /ps view failed.", "error");
+        this.context.ui.notify(noticeText("Termctrl", "The /ps view failed."), "error");
       })
       .finally(() => {
         this.panel?.dispose();

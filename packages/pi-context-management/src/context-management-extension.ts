@@ -8,6 +8,8 @@ import type {
 import { captureCheckpointAdapter, type CheckpointAdapter } from "./checkpoint-adapter.js";
 import { registerContextTools } from "./context-tools.js";
 import {
+  CONTEXT_MESSAGE_QUALIFIERS,
+  renderContextMessage,
   renderContextToolCall,
   renderContextToolResult,
   type ContextToolDetails,
@@ -29,6 +31,11 @@ import {
 } from "./context-window.js";
 
 import { hasLegacyContextSettings } from "./context-settings.js";
+import { expandMessageOnClick, noticeText } from "@ian-pascoe/pi-utils/ui";
+
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
 
 const RolloverParameters = Type.Object(
   { handoff: Type.String({ minLength: 1, maxLength: 64_000 }) },
@@ -55,9 +62,12 @@ export default function contextManagement(pi: ExtensionAPI): void {
     adapter?.session.abortCompaction();
     ctx.abort();
     ctx.ui.notify(
-      "Context Management stopped: " +
-        error.message +
-        ". Fix the cause and reopen the persisted session before continuing (not just /reload).",
+      noticeText(
+        "Context",
+        "stopped: " +
+          error.message +
+          ". Fix the cause and reopen the persisted session before continuing (not just /reload).",
+      ),
       "error",
     );
   };
@@ -84,9 +94,12 @@ export default function contextManagement(pi: ExtensionAPI): void {
           claims: (event) => event.reason !== "overflow",
           onSuperseded: (path) =>
             ctx.ui.notify(
-              "Ignored compaction content from " +
-                path +
-                "; Context Management owns Context Checkpoints.",
+              noticeText(
+                "Context",
+                "Ignored compaction content from " +
+                  path +
+                  "; Context Management owns Context Checkpoints.",
+              ),
               "warning",
             ),
           onConflict: (error) => fail(error, ctx),
@@ -94,7 +107,10 @@ export default function contextManagement(pi: ExtensionAPI): void {
       });
       if (hasLegacyContextSettings(adapter.session.settingsManager))
         ctx.ui.notify(
-          "contextManagement settings are obsolete and ignored. Use Pi compaction.enabled, reserveTokens, and keepRecentTokens instead.",
+          noticeText(
+            "Context",
+            "contextManagement settings are obsolete and ignored. Use Pi compaction.enabled, reserveTokens, and keepRecentTokens instead.",
+          ),
           "warning",
         );
       requireAdapter();
@@ -117,11 +133,18 @@ export default function contextManagement(pi: ExtensionAPI): void {
       requireAdapter();
     } catch (cause) {
       // Do not append new prompts beneath speculative journal entries after a write failure.
-      ctx.ui.notify(cause instanceof Error ? cause.message : String(cause), "error");
+      ctx.ui.notify(noticeText("Context", errorMessage(cause)), "error");
       return { action: "handled" };
     }
   });
   registerContextTools(pi, fail);
+  for (const [customType, qualifier] of Object.entries(CONTEXT_MESSAGE_QUALIFIERS))
+    pi.registerMessageRenderer(
+      customType,
+      expandMessageOnClick((message, options, theme) =>
+        renderContextMessage(qualifier, message, options, theme),
+      ),
+    );
   pi.registerCommand("context", {
     description: "Inspect native Context usage, Notes, and recent Context Windows",
     async handler(args, ctx) {
@@ -156,7 +179,7 @@ export default function contextManagement(pi: ExtensionAPI): void {
           "info",
         );
       } catch (cause) {
-        ctx.ui.notify(cause instanceof Error ? cause.message : String(cause), "error");
+        ctx.ui.notify(noticeText("Context", errorMessage(cause)), "error");
       }
     },
   });
@@ -193,11 +216,11 @@ export default function contextManagement(pi: ExtensionAPI): void {
           (cause) => {
             if (adapter !== owner) return;
             finishPreparation(ctx);
-            ctx.ui.notify(cause instanceof Error ? cause.message : String(cause), "error");
+            ctx.ui.notify(noticeText("Context", errorMessage(cause)), "error");
           },
         );
     } catch (cause) {
-      ctx.ui.notify(cause instanceof Error ? cause.message : String(cause), "error");
+      ctx.ui.notify(noticeText("Context", errorMessage(cause)), "error");
     }
   }
   function preparationPrompt(args = "", continueAfterCheckpoint = true): string {
@@ -218,7 +241,10 @@ export default function contextManagement(pi: ExtensionAPI): void {
     pauseAfterRollover = false;
     pendingManualInstructions = undefined;
     ctx.ui.notify(
-      "Rollover was not completed; the current Context Window was retained. Request /rollover to try again.",
+      noticeText(
+        "Context",
+        "Rollover was not completed; the current Context Window was retained. Request /rollover to try again.",
+      ),
       "warning",
     );
   }
@@ -277,7 +303,10 @@ export default function contextManagement(pi: ExtensionAPI): void {
     description: "Ask the agent to update Notes, write its Handoff, and request Rollover",
     async handler(args, ctx) {
       if (args.length > 2000) {
-        ctx.ui.notify("Keep Rollover instructions below 2000 characters", "error");
+        ctx.ui.notify(
+          noticeText("Context", "Keep Rollover instructions below 2000 characters"),
+          "error",
+        );
         return;
       }
       requestRollover(args, ctx);
@@ -311,16 +340,9 @@ export default function contextManagement(pi: ExtensionAPI): void {
     },
     executionMode: "sequential",
     renderCall: (args, theme, context) =>
-      renderContextToolCall(
-        "Rollover",
-        args,
-        theme,
-        context.isPartial,
-        context.executionStarted,
-        context.expanded,
-      ),
+      renderContextToolCall("context_rollover", args, theme, context),
     renderResult: (result, options, theme, context) =>
-      renderContextToolResult(result, options, theme, "Rollover", context.args, context.isError),
+      renderContextToolResult(result, options, theme, "context_rollover", context),
     async execute(id, params, signal, _update, ctx) {
       signal?.throwIfAborted();
       try {
@@ -479,9 +501,12 @@ export default function contextManagement(pi: ExtensionAPI): void {
       return;
     }
     ctx.ui.notify(
-      "Context Window rolled over (" +
-        event.reason +
-        "); saved Handoff may be stale. History preserved.",
+      noticeText(
+        "Context",
+        "Context Window rolled over (" +
+          event.reason +
+          "); saved Handoff may be stale. History preserved.",
+      ),
       "warning",
     );
   });

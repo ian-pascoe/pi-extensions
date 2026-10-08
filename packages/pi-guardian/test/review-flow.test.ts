@@ -2,6 +2,7 @@ import { stripVTControlCharacters } from "node:util";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { initTheme } from "@earendil-works/pi-coding-agent";
+import { expectClickToggles } from "@ian-pascoe/pi-utils/ui-testing";
 import { argumentsHash } from "../src/guardian-evidence.js";
 import { correctiveMessage } from "../src/guardian-review.js";
 import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
@@ -394,6 +395,26 @@ describe("Guardian Review lifecycle", () => {
         .map((entry) => renderer(entry, { expanded: false }, theme) !== undefined);
       // The allowed review shows only when verbose; the Rejection always shows.
       expect(rendered).toEqual([verbose, true]);
+      const rejection = harness.session.sessionManager
+        .getBranch()
+        .findLast((entry) => entry.type === "custom" && entry.customType === "pi-guardian-review");
+      if (rejection?.type !== "custom") throw new Error("Missing the Rejection entry");
+      expectClickToggles(renderer, rejection, { expanded: false }, theme);
+      const status = runner?.getEntryRenderer("pi-guardian-status");
+      if (!status) throw new Error("Missing status renderer");
+      expectClickToggles(
+        status,
+        {
+          type: "custom",
+          customType: "pi-guardian-status",
+          data: { state: "error", error: "Cannot read settings" },
+          id: "status",
+          parentId: null,
+          timestamp: "",
+        },
+        { expanded: false },
+        theme,
+      );
     },
   );
 
@@ -468,7 +489,7 @@ describe("Guardian Review lifecycle", () => {
     await harness.session.prompt("Deploy.");
     expect(harness.executed).toEqual([]);
     expect(notices).toContain(
-      "Guardian rejected deploy (critical (data_egress) risk): The Guardian gave no specific rationale.",
+      "Guardian: rejected deploy (critical (data_egress) risk): The Guardian gave no specific rationale.",
     );
     expect(titles[0]).toMatch(
       /^Guardian rejected deploy \u2014 risk critical \(data_egress\), authorization unknown\nThe Guardian gave no specific rationale\./,
@@ -505,8 +526,8 @@ describe("Guardian Review lifecycle", () => {
     harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
     harness.guardianReplies.push(assessment("low", "high", "Requested."));
     await harness.session.prompt("Deploy a.");
-    expect(statuses).toContain("guardian");
-    expect(statuses).toContain("guardian: reviewing deploy");
-    expect(statuses.at(-1)).toBe("guardian");
+    expect(statuses).toContain("\u25cf guardian on");
+    expect(statuses).toContain("\u25cf guardian reviewing deploy");
+    expect(statuses.at(-1)).toBe("\u25cf guardian on");
   });
 });

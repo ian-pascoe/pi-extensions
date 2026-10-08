@@ -1,4 +1,3 @@
-import { stripVTControlCharacters } from "node:util";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
   initTheme,
@@ -6,12 +5,9 @@ import {
   type KeybindingsManager,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
-import type { Component, TUI } from "@earendil-works/pi-tui";
-import {
-  renderReviewEntry,
-  renderStatusEntry,
-  type GuardianRenderTheme,
-} from "../src/guardian-rendering.js";
+import { stripTerminalSequences, type Component, type TUI } from "@earendil-works/pi-tui";
+import { expectLinesFitWidth } from "@ian-pascoe/pi-utils/ui-testing";
+import { renderStatusEntry, type GuardianRenderTheme } from "../src/guardian-rendering.js";
 import {
   assessment,
   confirmedRejection,
@@ -90,10 +86,8 @@ describe("/guardian command", () => {
       },
       error: null,
     });
-    const rendered = stripVTControlCharacters(
-      renderStatusEntry(status, false, plainTheme).render(120).join("\n"),
-    );
-    expect(rendered).toContain("Guardian ● enabled");
+    const rendered = renderStatusEntry(status, false, plainTheme).render(120).join("\n");
+    expect(rendered).toContain("[guardian] ● on");
     expect(rendered).toContain(
       "2 reviews · 1 allowed · 1 rejected · 0 failed · 0 overrides · 1 escalated (1 rejected) · cost $0.0033",
     );
@@ -113,9 +107,7 @@ describe("/guardian command", () => {
     expect(status).toMatchObject({
       totals: { reviews: 1, allowed: 1, escalated: 1, escalatedBy: { failed: 1 } },
     });
-    const rendered = stripVTControlCharacters(
-      renderStatusEntry(status, false, plainTheme).render(200).join("\n"),
-    );
+    const rendered = renderStatusEntry(status, false, plainTheme).render(200).join("\n");
     expect(rendered).toContain(
       "classifier guardian-test/judge (escalates at Rejection Probability 0.2)",
     );
@@ -185,6 +177,24 @@ describe("/guardian settings menu", () => {
     ]);
   });
 
+  it("frames an accent title between borders and fits narrow and wide terminals", async () => {
+    const host = menuUi();
+    const harness = await createGuardianHarness({ ui: host.ui, mode: "tui" });
+    host.shown.theme = harness.session.extensionRunner?.getUIContext().theme;
+    const command = harness.session.prompt("/guardian");
+    await vi.waitFor(() => expect(host.shown.component).toBeDefined());
+    for (const width of [40, 120]) {
+      expectLinesFitWidth(host.shown.component?.render(width) ?? [], width, {
+        piThemedBody: true,
+      });
+    }
+    expect(stripTerminalSequences(host.shown.component?.render(120)[1] ?? "")).toBe(
+      " Guardian settings",
+    );
+    host.press(keys.escape);
+    await command;
+  });
+
   it("picks a classifier model, or off, for the First Pass", async () => {
     const host = menuUi();
     const harness = await createGuardianHarness({ ui: host.ui, mode: "tui" });
@@ -216,79 +226,6 @@ describe("/guardian settings menu", () => {
     );
     host.press(keys.escape);
     await command;
-  });
-});
-
-describe("Guardian renderers", () => {
-  it("renders a review entry compactly and expanded", () => {
-    const entry = {
-      version: 1,
-      toolName: "bash",
-      toolCallId: "c",
-      parentToolCallId: null,
-      arguments: '{"command":"rm -rf dist"}',
-      argumentsSha256: "0".repeat(64),
-      risk: "high",
-      authorization: "low",
-      result: "rejected",
-      rationale: "Deletes build output the user did not mention.",
-      failure: null,
-      userOverride: false,
-      blocked: true,
-      model: "p/m",
-      durationMs: 1_500,
-      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 },
-      cost: null,
-    };
-    const theme = plainTheme;
-    const render = (data: Parameters<typeof renderReviewEntry>[0], expanded: boolean) =>
-      renderReviewEntry(data, expanded, theme)
-        ?.render(200)
-        .map((line) => stripVTControlCharacters(line))
-        .join("\n");
-    expect(render(entry, false)).toContain(
-      "✖ Guardian rejected  bash  risk high · authorization low",
-    );
-    const expanded = render(entry, true);
-    expect(expanded).toContain('arguments {"command":"rm -rf dist"}');
-    expect(expanded).toContain("p/m · 1.5s · 2 tokens · cost unknown");
-    expect(render({ bogus: true }, false)).toContain("Guardian Review");
-  });
-
-  it("hides allowed reviews unless verbose, but always shows overrides and drift", () => {
-    const allowed = {
-      version: 1,
-      toolName: "deploy",
-      toolCallId: "c",
-      parentToolCallId: null,
-      arguments: "{}",
-      argumentsSha256: "0".repeat(64),
-      risk: "low",
-      authorization: "high",
-      result: "allowed",
-      rationale: null,
-      failure: null,
-      userOverride: false,
-      blocked: false,
-      model: "p/m",
-      durationMs: 100,
-      usage: null,
-      cost: null,
-    };
-    expect(renderReviewEntry(allowed, true, plainTheme)).toBeUndefined();
-    expect(renderReviewEntry({ ...allowed, result: "unused" }, true, plainTheme)).toBeUndefined();
-    expect(renderReviewEntry(allowed, false, plainTheme, true)).toBeDefined();
-    expect(renderReviewEntry({ ...allowed, userOverride: true }, false, plainTheme)).toBeDefined();
-    expect(renderReviewEntry({ ...allowed, argumentDrift: true }, false, plainTheme)).toBeDefined();
-    // An uncategorized high or critical risk decided as medium always shows.
-    const downgraded = renderReviewEntry(
-      { ...allowed, risk: "critical", downgraded: true },
-      false,
-      plainTheme,
-    );
-    expect(stripVTControlCharacters(downgraded?.render(200).join("\n") ?? "")).toContain(
-      "decided as medium: no Risk Category",
-    );
   });
 });
 

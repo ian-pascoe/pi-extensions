@@ -11,6 +11,7 @@ import {
   ExtensionRunner,
   ModelRegistry,
   ModelRuntime,
+  initTheme,
   SessionManager,
   SettingsManager,
   type AgentSettledEvent,
@@ -35,6 +36,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { expectClickToggles } from "@ian-pascoe/pi-utils/ui-testing";
 import { COORDINATOR_TOOL_NAMES } from "../src/minimal-subagents-capabilities.js";
 import {
   availableToolNames,
@@ -613,8 +615,24 @@ describe("minimal subagents extension lifecycle", () => {
     if (!selectedEntryId) throw new Error("Expected a selected fork entry");
     const harness = await createExtensionHarness(sessionManager);
 
-    expect(harness.runner.getMessageRenderer("minimal-subagents.message")).toBeDefined();
-    expect(harness.runner.getMessageRenderer("minimal-subagents.result")).toBeDefined();
+    initTheme("dark");
+    for (const customType of ["minimal-subagents.message", "minimal-subagents.result"]) {
+      const renderer = harness.runner.getMessageRenderer(customType);
+      if (!renderer) throw new Error(`Missing ${customType} renderer`);
+      const details = {
+        source_agent_id: "worker",
+        destination_agent_id: "root",
+        source_turn_id: "worker:turn-1",
+        status: "completed",
+        elapsed_ms: 3_000,
+      };
+      expectClickToggles(
+        renderer,
+        { role: "custom", customType, content: "ping", display: true, details, timestamp: 0 },
+        { expanded: false, outputPad: 1 },
+        harness.runner.getUIContext().theme,
+      );
+    }
     expect(harness.runner.hasHandlers("session_start")).toBe(true);
     expect(harness.runner.hasHandlers("session_before_fork")).toBe(true);
     expect(harness.runner.hasHandlers("session_tree")).toBe(true);
@@ -1535,7 +1553,7 @@ describe("minimal subagents extension lifecycle", () => {
     expect(harness.sessionFactory.adoptedAgentIds).toEqual([]);
     expect(harness.notifications).toContainEqual({
       message:
-        "Minimal subagents fork recovery skipped because the destination selected branch could not be proven from parentSession provenance.",
+        "Subagents: Fork recovery skipped because the destination selected branch could not be proven from parentSession provenance.",
       level: "warning",
     });
     expect(

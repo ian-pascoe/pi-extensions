@@ -265,9 +265,8 @@ async function assertTarballLoads(packageName, tarballPath, dependencyTarballs =
         pathToFileURL(resolve(installedPackageDirectory, "dist/index.js")).href
       );
       assertPackCondition(
-        piUtils.shouldUseNerdFontIcons({ TERM_PROGRAM: "Ghostty" }) === true &&
-          piUtils.shouldUseNerdFontIcons({ TERM: "xterm-256color" }) === false,
-        `${packageName} installed entrypoint returned an invalid Nerd Font decision`,
+        piUtils.stripControlCharacters("a\u0007b\r\nc") === "ab\nc",
+        `${packageName} installed entrypoint returned an invalid control-character result`,
       );
       return;
     }

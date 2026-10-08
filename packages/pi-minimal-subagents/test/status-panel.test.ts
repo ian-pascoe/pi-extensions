@@ -3,9 +3,13 @@ import {
   initTheme,
   type ExtensionContext,
   type KeybindingsManager,
-  type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { Text, visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import { Text, visibleWidth, type KeyId, type TUI } from "@earendil-works/pi-tui";
+import {
+  escapeTaggedTheme as taggedTheme,
+  expectLinesFitWidth,
+  readableTags,
+} from "@ian-pascoe/pi-utils/ui-testing";
 import { Type } from "typebox";
 import type { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -68,12 +72,16 @@ function assistantMessage(content: AssistantMessage["content"]): AssistantMessag
   };
 }
 
+type PanelTheme = ConstructorParameters<typeof MinimalSubagentsStatusPanelComponent>[3];
+
+const plainTheme: PanelTheme = { fg: (_color, text) => text, bold: (text) => text };
+
 function panelFixture(
   options: {
     agents?: AgentSummary[];
     transcript?: ChildAgentTranscriptSnapshot;
     startRefresh?: (refresh: () => void) => () => void;
-    background?: (text: string) => string;
+    theme?: PanelTheme;
   } = {},
 ) {
   const nested = summary("parent.child", { parent_id: "parent", state: "running" });
@@ -97,12 +105,6 @@ function panelFixture(
     terminal: { rows: 20, columns: 100 } satisfies Pick<TUI["terminal"], "rows" | "columns">,
     requestRender: vi.fn<TUI["requestRender"]>(),
   };
-  const theme = {
-    fg: (_color, text) => text,
-    bold: (text) => text,
-    bg: (_color, text) => options.background?.(text) ?? text,
-    getBgAnsi: (_color) => (options.background ? BG_OPEN : ""),
-  } satisfies Pick<Theme, "fg" | "bold" | "bg" | "getBgAnsi">;
   const bindings = new Map([
     ["up", "tui.select.up"],
     ["down", "tui.select.down"],
@@ -112,9 +114,23 @@ function panelFixture(
     ["pageDown", "tui.select.pageDown"],
     ["expand", "app.tools.expand"],
   ]);
+  const keyFor = (binding: Parameters<KeybindingsManager["getKeys"]>[0]): KeyId => {
+    switch (binding) {
+      case "tui.select.confirm":
+        return "enter";
+      case "tui.select.cancel":
+        return "escape";
+      case "tui.select.pageUp":
+        return "pageUp";
+      case "tui.select.pageDown":
+        return "pageDown";
+      default:
+        return "ctrl+o";
+    }
+  };
   const keybindings = {
     matches: (data, binding) => bindings.get(data) === binding,
-    getKeys: () => ["ctrl+o"],
+    getKeys: (binding) => [keyFor(binding)],
   } satisfies Pick<KeybindingsManager, "matches" | "getKeys">;
   const onClose = vi.fn();
   const panel = new MinimalSubagentsStatusPanelComponent(
@@ -123,10 +139,8 @@ function panelFixture(
     () => access,
     // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: The panel uses only checked terminal dimensions and the typed requestRender mock, not a full terminal runtime.
     tui as unknown as TUI,
-    // SAFETY: These panel render paths use only the checked fg, bold, bg, and getBgAnsi theme methods.
-    theme as Theme,
-    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: The panel reads only the checked input matcher and configured key hints.
-    keybindings as unknown as KeybindingsManager,
+    options.theme ?? plainTheme,
+    keybindings,
     "/project",
     onClose,
     options.startRefresh,
@@ -134,11 +148,20 @@ function panelFixture(
   return { coordinator, onClose, panel, tui };
 }
 
-const BG_OPEN = "\u001b[48;5;236m";
-const BG_CLOSE = "\u001b[49m";
-
 afterEach(() => vi.useRealTimers());
 beforeAll(() => initTheme("dark"));
+
+/** Rendered lines with Pi's own escape codes removed, right-trimmed. */
+function plainRows(panel: { render(width: number): string[] }, width: number): string[] {
+  return panel.render(width).map((line) => readableTags(line).trimEnd());
+}
+
+/** Lines fit both widths; the transcript body is drawn by Pi's own components. */
+function expectPanelFits(panel: { render(width: number): string[] }): void {
+  for (const width of [40, 120]) {
+    expectLinesFitWidth(panel.render(width), width, { piThemedBody: true });
+  }
+}
 
 describe("minimal subagents status panel", () => {
   it("renders access and the complete hierarchy while loading Recent Activity lazily", () => {
@@ -155,30 +178,59 @@ describe("minimal subagents status panel", () => {
     panel.dispose();
   });
 
-  it("keeps the panel background behind truncation ellipses and padding", () => {
+  it("truncates long rows with three dots and pads every row to the pane width", () => {
     const { panel } = panelFixture({
       agents: [summary("long", { task: "A task long enough to be truncated ".repeat(6) })],
-      background: (text) => `${BG_OPEN}${text}${BG_CLOSE}`,
     });
     const rows = panel.render(60).slice(1, -1);
-    const truncated = rows.filter((row) => row.includes("\u2026"));
-    expect(truncated.length).toBeGreaterThan(0);
-    for (const row of rows) {
-      const inner = row.slice(BG_OPEN.length, -BG_CLOSE.length);
-      expect(
-        inner
-          .split("\u001b[0m")
-          .slice(1)
-          .every((rest) => rest.startsWith(BG_OPEN)),
-      ).toBe(true);
-    }
+    expect(rows.filter((row) => row.includes("..."))).not.toHaveLength(0);
+    expect(rows.some((row) => row.includes("…"))).toBe(false);
+    expect(rows.every((row) => visibleWidth(row) === 60)).toBe(true);
+    panel.dispose();
+  });
+
+  it("draws Pi's selector frame with a themed title, Status Marks, selection marker, and hints", () => {
+    const { panel } = panelFixture({ theme: taggedTheme });
+    const lines = plainRows(panel, 120);
+    const border = `<border>${"─".repeat(120)}</border>`;
+    expect(lines[0]).toBe(border);
+    expect(lines.at(-1)).toBe(border);
+    expect(lines[1]).toBe(" <accent><b>Subagents status</b></accent>");
+    const text = lines.join("\n");
+    expect(text).toContain("<accent>→ </accent><dim>○</dim> <accent>parent</accent>");
+    expect(text).toContain("<dim>└─ </dim><accent>●</accent> parent.child");
+    expect(text).toContain("<dim>○</dim> idle");
+    expect(text.replace(/<[^>]*>/g, "")).not.toMatch(/[╭╮╰╯│▸>]/);
+    expect(lines.at(-2)).toBe(
+      " <dim>↑↓</dim><muted> select</muted>  <dim>enter</dim><muted> transcript</muted>  <dim>pageUp/pageDown</dim><muted> page</muted>  <dim>escape</dim><muted> close</muted>",
+    );
+    expectPanelFits(panel);
+    panel.dispose();
+  });
+
+  it("draws the transcript view with its own title, selected row, and hints", () => {
+    const { panel } = panelFixture({ theme: taggedTheme });
+    panel.handleInput("enter");
+    const lines = plainRows(panel, 120);
+    expect(lines[1]).toBe(" <accent><b>Transcript · parent</b></accent>");
+    expect(lines[2]).toBe(
+      "   <dim>○</dim> parent<dim> · </dim><muted>idle</muted><dim> · </dim><muted>provider/model:medium</muted><dim> · </dim><muted>Task for parent</muted>",
+    );
+    expect(lines.at(-2)).toContain("<dim>escape</dim><muted> tree</muted>");
+    expect(lines.at(-2)).toContain("<dim>ctrl+o</dim><muted> tools</muted>");
+    expect(lines.at(-2)).toContain("<muted>following</muted>");
+    expectPanelFits(panel);
     panel.dispose();
   });
 
   it("orders active subtrees first and retains the selected Child Agent across reordering", async () => {
     vi.useFakeTimers();
     const parent = summary("parent", {
-      children: [summary("parent.idle"), summary("parent.active", { state: "running" })],
+      children: [
+        summary("parent.idle"),
+        summary("parent.active", { state: "running" }),
+        summary("parent.last"),
+      ],
     });
     const { panel } = panelFixture({
       agents: [summary("idle"), parent, summary("running", { state: "running" })],
@@ -186,13 +238,13 @@ describe("minimal subagents status panel", () => {
     expect(
       panel
         .render(100)
-        .map((line) => line.match(/▸ ([\w.]+)/)?.[1])
+        .map((line) => line.match(/[●○] ([\w.]+)/)?.[1])
         .filter(Boolean),
-    ).toEqual(["parent", "parent.active", "parent.idle", "running", "idle"]);
+    ).toEqual(["parent", "parent.active", "parent.idle", "parent.last", "running", "idle"]);
     panel.handleInput("down");
     parent.children![0]!.state = "running";
     await vi.advanceTimersByTimeAsync(1_000);
-    expect(panel.render(100).join("\n")).toContain(">   ▸ parent.active");
+    expect(panel.render(100).join("\n")).toContain("→ ├─ ● parent.active");
     panel.dispose();
   });
 
@@ -205,7 +257,7 @@ describe("minimal subagents status panel", () => {
     expect(transcript).not.toContain("Task for idle");
     panel.handleInput("escape");
     expect(onClose).not.toHaveBeenCalled();
-    expect(panel.render(80).join("\n")).toContain(">   ▸ parent.child");
+    expect(panel.render(80).join("\n")).toContain("→ └─ ● parent.child");
     panel.handleInput("escape");
     expect(onClose).toHaveBeenCalledOnce();
   });
@@ -242,8 +294,8 @@ describe("minimal subagents status panel", () => {
   it("frames and fills the pane within resized terminal bounds", () => {
     const { panel, tui } = panelFixture();
     const rows = panel.render(80);
-    expect(rows[0]).toMatch(/^╭─+╮$/);
-    expect(rows.at(-1)).toMatch(/^╰─+╯$/);
+    expect(rows[0]).toMatch(/^─+$/);
+    expect(rows.at(-1)).toMatch(/^─+$/);
     expect(rows).toHaveLength(18);
     expect(rows.every((line) => visibleWidth(line) === 80)).toBe(true);
     for (const [width, height] of [
@@ -614,6 +666,24 @@ describe("minimal subagents status panel", () => {
     pending.resolve();
     await opened;
     controller.dispose();
+  });
+
+  it("reports a failed status view as a prefixed error notification", async () => {
+    const { coordinator, panel } = panelFixture();
+    panel.dispose();
+    const notify = vi.fn<ExtensionContext["ui"]["notify"]>();
+    const custom = vi
+      .fn<ExtensionContext["ui"]["custom"]>()
+      .mockRejectedValue(new Error("overlay failed"));
+    const context = { mode: "tui", cwd: "/project", ui: { custom, notify } };
+    await new MinimalSubagentsStatusPanelController(
+      // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: These typed coordinator methods cover the panel's read-only boundary.
+      coordinator as unknown as MinimalSubagentsCoordinator,
+      // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: Opening the panel uses only mode, cwd, custom, and notify.
+      context as unknown as ExtensionContext,
+      () => access,
+    ).open();
+    expect(notify).toHaveBeenCalledWith("Subagents: Status view failed.", "error");
   });
 
   it("uses one RPC notification and stays silent in JSON mode", async () => {

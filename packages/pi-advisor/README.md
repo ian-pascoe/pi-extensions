@@ -2,7 +2,7 @@
 
 `@ian-pascoe/pi-advisor` reviews a Pi agent's completed work and surfaces concise, attributed findings for material problems and worthwhile low-risk cleanup.
 
-Requires Node `>=22.19.0` and Pi `>=0.99.0`.
+Requires Node `>=22.19.0` and Pi `>=1.1.0`.
 
 ## Install
 
@@ -36,7 +36,7 @@ Argument autocomplete suggests command names, settings keys, and valid trailing 
 
 In the interactive TUI, `/advisor` alone opens a settings menu built from Pi's native settings list, like `/settings`. A Scope row chooses where edits are written (session, trusted project, or global), and each setting shows its effective value with any non-default source. `enabled`, `includeSubagents`, and `thinkingLevel` cycle the selected scope's own value in place (`inherit → on → off`, or through each thinking level); while that scope has none, the row shows what it inherits, such as `inherit (on · project)`, and a value overridden by a higher-precedence scope is marked. Model, tools, numbers, and the prompt open submenus, and the prompt uses Pi's own editor component. Every edit is validated and applied immediately; a paused Advisor shows its reason and a Resume row. Closing the menu records one status entry listing the changes it applied, or nothing if none were. Without the TUI, `/advisor` records the status entry instead.
 
-`/advisor status` and the other subcommands each record a status entry in the transcript. Collapsed, it shows state, model, backlog, usage and cost, the number of Reviews with their running cost and the last Review's cost, unavailable tools, and the last error; expanded, it lists every setting with its source and each watched Child Agent. A mutating command's entry starts with the changes it applied. While enabled, the footer shows `advisor` when idle, `advisor: reviewing`/`consulting` with any `backlog N`, or `advisor: paused`, plus Child Agents that are reviewing or paused. `advisor_ask` renders its question and a Markdown answer preview, and Child Agent findings carry a `↳ <agentId>` label.
+`/advisor status` and the other subcommands each record a status entry in the transcript. Collapsed, it shows state, model, backlog, usage and cost, the number of Reviews with their running cost and the last Review's cost, unavailable tools, and the last error; expanded, it lists every setting with its source and each watched Child Agent. A mutating command's entry starts with the changes it applied. While enabled, the footer shows `● advisor on` when idle, `● advisor reviewing`/`consulting` with any `backlog N`, or `! advisor paused`, plus Child Agents that are reviewing or paused. Interventions and status entries use Pi's custom-message box with a bold `Advisor` label; an Intervention's severity is a coloured word (`nit`, `concern`, `blocker`), and Child Agent findings add the agent ID. `advisor_ask` renders as Pi's built-in tools do: a lowercase `advisor_ask` header with the question, a Markdown answer collapsed to ten lines with Pi's expand hint, and Pi's `Elapsed`/`Took` footer. Warnings and errors read `Advisor: ...`.
 
 Interventions render with their severity and Advisor attribution. Long Nits collapse until expanded; Concerns and Blockers always show in full.
 

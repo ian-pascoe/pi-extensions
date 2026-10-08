@@ -1,7 +1,12 @@
-import { stripVTControlCharacters } from "node:util";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { initTheme } from "@earendil-works/pi-coding-agent";
-import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import { KeybindingsManager, setKeybindings, type TUI } from "@earendil-works/pi-tui";
+import {
+  escapeTaggedTheme as taggedTheme,
+  expectLinesFitWidth,
+  readableTags,
+  type LineFitOptions,
+} from "@ian-pascoe/pi-utils/ui-testing";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   type MinimalSubagentsRenderTheme,
@@ -30,46 +35,122 @@ const usage = {
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.0123 },
 };
 
-function renderLines(component: { render(width: number): string[] }): string {
+type Renderable = { render(width: number): string[] };
+
+function renderLines(component: Renderable): string {
   return component.render(120).join("\n");
 }
 
-beforeAll(() => initTheme("dark"));
+beforeAll(() => {
+  initTheme("dark");
+  setKeybindings(new KeybindingsManager({ "app.tools.expand": { defaultKeys: "ctrl+o" } }));
+});
+
+/** Pi's Expand Hint as the tagged theme renders it, for any hidden-line count. */
+const EXPAND_HINT =
+  /<muted>\.\.\. \(\d+ (?:more|earlier) lines,<\/muted> <dim>ctrl\+o<\/dim><muted> to expand<\/muted><muted>\)<\/muted>/;
+const SUMMARY_HINT = "<dim> (ctrl+o to expand)</dim>";
+
+/** Rendered lines with the injected theme's tokens decoded to readable tags, right-trimmed. */
+function plainLines(component: Renderable, width = 120): string[] {
+  return component.render(width).map((line) => readableTags(line).trimEnd());
+}
+
+/** Every line fits 40 and 120 columns and carries no hard-coded colour of its own. */
+function expectFits(component: Renderable, options?: LineFitOptions): void {
+  for (const width of [40, 120]) expectLinesFitWidth(component.render(width), width, options);
+}
+
+const text = (component: Renderable, width = 120): string =>
+  plainLines(component, width).join("\n");
+
+/** Bodies drawn by Pi's own Markdown or native components follow Pi's global theme. */
+const PI_BODY = { piThemedBody: true } as const;
 
 const numberedLines = (count: number) =>
   Array.from({ length: count }, (_, index) => `line ${index + 1}`).join("\n\n");
 
-describe("minimal subagents collapsed previews", () => {
-  it("shows the spawn's launch settings and task, previewing long tasks until expanded", () => {
-    const args = {
-      agent_id: "worker",
-      task: numberedLines(12),
-      model: "provider/model",
-      thinking_level: "medium",
-      tools: "read",
-      session_context: "inherit",
-    };
-    const collapsed = renderLines(renderCoordinatorToolCall("subagent", args, plainTheme));
-    expect(collapsed).toContain(
-      "Subagent worker · provider/model:medium · tools read · context inherit",
+const collapsed = { expanded: false, isPartial: false };
+const expanded = { expanded: true, isPartial: false };
+
+function wait(
+  details: Parameters<typeof renderCoordinatorToolResult>[1]["details"],
+  options = collapsed,
+  args = { agent_id: "worker" },
+) {
+  return renderCoordinatorToolResult(
+    "subagent_wait",
+    { content: [], details },
+    options,
+    taggedTheme,
+    args,
+  );
+}
+
+describe("minimal subagents call rows", () => {
+  it("leads every header with the registered tool name, then the target, then muted arguments", () => {
+    const header = (
+      toolName: Parameters<typeof renderCoordinatorToolCall>[0],
+      args: Parameters<typeof renderCoordinatorToolCall>[1],
+    ) => plainLines(renderCoordinatorToolCall(toolName, args, taggedTheme))[0];
+    expect(
+      header("subagent", {
+        agent_id: "worker",
+        task: "Look",
+        model: "provider/model",
+        thinking_level: "medium",
+        tools: "read",
+        session_context: "inherit",
+      }),
+    ).toBe(
+      "<toolTitle><b>subagent</b></toolTitle> <accent>worker</accent> <muted>provider/model:medium · tools read · context inherit</muted>",
     );
-    expect(collapsed).toContain("line 5");
-    expect(collapsed).not.toContain("line 6");
-    expect(collapsed).toMatch(/\.\.\. \(\d+ more lines\)$/m);
-    expect(renderLines(renderCoordinatorToolCall("subagent", args, plainTheme, true))).toContain(
-      "line 12",
+    expect(header("subagent", { task: "Look" })).toBe(
+      "<toolTitle><b>subagent</b></toolTitle> <accent>generated</accent>",
+    );
+    expect(header("agent_message", { agent_id: "worker", message: "hi" })).toBe(
+      "<toolTitle><b>agent_message</b></toolTitle> <accent>worker</accent>",
+    );
+    expect(header("subagent_wait", { agent_id: "worker" })).toBe(
+      "<toolTitle><b>subagent_wait</b></toolTitle> <accent>worker</accent>",
+    );
+    expect(header("subagent_status", {})).toBe(
+      "<toolTitle><b>subagent_status</b></toolTitle> <muted>children</muted>",
+    );
+    expect(header("subagent_cancel", { agent_id: "worker" })).toBe(
+      "<toolTitle><b>subagent_cancel</b></toolTitle> <accent>worker</accent> <muted>recursive</muted>",
+    );
+    expect(header("subagent_delete", { agent_id: "worker", recursive: false })).toBe(
+      "<toolTitle><b>subagent_delete</b></toolTitle> <accent>worker</accent> <muted>target only</muted>",
     );
   });
 
+  it("previews a long task for 10 lines with Pi's Expand Hint and shows all of it expanded", () => {
+    const args = { agent_id: "worker", task: numberedLines(12) };
+    const collapsedCall = renderCoordinatorToolCall("subagent", args, taggedTheme);
+    const lines = plainLines(collapsedCall);
+    expect(lines).toHaveLength(12);
+    expect(lines[1]).toBe("<toolOutput>line 1</toolOutput>");
+    expect(lines[10]).toBe("<toolOutput></toolOutput>");
+    expect(lines[11]).toMatch(EXPAND_HINT);
+    expect(lines[11]).toContain("(13 more lines,");
+    expectFits(collapsedCall);
+
+    const expandedCall = renderCoordinatorToolCall("subagent", args, taggedTheme, true);
+    expect(text(expandedCall)).toContain("line 12");
+    expect(text(expandedCall)).not.toContain("to expand");
+    expectFits(expandedCall);
+  });
+
   it("shows the role a spawn named in its call header, launch section, and status", () => {
-    const call = renderLines(
+    const call = text(
       renderCoordinatorToolCall(
         "subagent",
         { agent_id: "worker", task: "Look", role: "explore", thinking_level: "high" },
         plainTheme,
       ),
     );
-    expect(call).toContain("Subagent worker · role explore · thinking high");
+    expect(call).toContain("subagent worker role explore · thinking high");
 
     const agent = {
       agent_id: "worker",
@@ -84,7 +165,6 @@ describe("minimal subagents collapsed previews", () => {
         ordinary_tools: ["read"],
       },
     };
-    const expanded = { expanded: true, isPartial: false };
     const spawned = renderLines(
       renderCoordinatorToolResult(
         "subagent",
@@ -109,53 +189,58 @@ describe("minimal subagents collapsed previews", () => {
     );
     expect(status).toContain("role explore · model provider/fast · thinking low");
   });
+});
 
-  it("shows a settled wait's output or error without expanding", () => {
-    const completed = renderLines(
-      renderCoordinatorToolResult(
-        "subagent_wait",
-        {
-          content: [],
-          details: {
-            event: "turn",
-            agent_id: "worker",
-            turn_id: "worker:turn-1",
-            status: "completed",
-            output: `**Findings**\n\n${numberedLines(12)}`,
-            usage,
-          },
-        },
-        { expanded: false, isPartial: false },
-        plainTheme,
-        { agent_id: "worker" },
-      ),
+describe("minimal subagents result rows", () => {
+  it("shows a settled wait's answer for 10 lines without marks, and its error in the error role", () => {
+    const completed = wait({
+      event: "turn",
+      agent_id: "worker",
+      turn_id: "worker:turn-1",
+      status: "completed",
+      output: `**Findings**\n\n${numberedLines(12)}`,
+      usage,
+    });
+    const lines = plainLines(completed);
+    expect(lines[0]).toBe(
+      "<accent>worker</accent><dim> · </dim><muted>completed</muted><dim> · </dim><muted>120 tokens</muted><dim> · </dim><muted>$0.01</muted>",
     );
-    expect(completed).toContain("120 tokens  ·  $0.01");
-    expect(completed).toContain("Findings");
-    expect(completed).not.toContain("**");
-    expect(completed).toContain("line 4");
-    expect(completed).not.toContain("line 12");
-    expect(completed).toMatch(/\.\.\. \(\d+ more lines\)$/m);
+    expect(lines.join("\n")).toContain("Findings");
+    expect(lines.join("\n")).not.toContain("**");
+    expect(lines.join("\n")).toContain("line 4");
+    expect(lines.join("\n")).not.toContain("line 12");
+    expect(lines.at(-1)).toMatch(EXPAND_HINT);
+    expect(lines.join("\n")).not.toMatch(/[●○✓✗■◉×]/);
+    expectFits(completed);
 
-    const failed = renderLines(
-      renderCoordinatorToolResult(
-        "subagent_wait",
-        {
-          content: [],
-          details: {
-            event: "turn",
-            agent_id: "worker",
-            turn_id: "worker:turn-1",
-            status: "failed",
-            error: "Provider overloaded",
-          },
-        },
-        { expanded: false, isPartial: false },
-        plainTheme,
-        { agent_id: "worker" },
-      ),
+    const failed = wait({
+      event: "turn",
+      agent_id: "worker",
+      turn_id: "worker:turn-1",
+      status: "failed",
+      error: "Provider overloaded",
+    });
+    expect(text(failed)).toContain("<error>Provider overloaded</error>");
+    expect(text(failed)).toContain("<error>failed</error>");
+    expectFits(failed);
+  });
+
+  it("shows the whole answer and no hint when expanded", () => {
+    const rendered = wait(
+      {
+        event: "turn",
+        agent_id: "worker",
+        turn_id: "worker:turn-1",
+        status: "completed",
+        output: `**Findings**\n\n${numberedLines(12)}`,
+        usage,
+      },
+      expanded,
     );
-    expect(failed).toContain("Provider overloaded");
+    expect(text(rendered)).toContain("line 12");
+    expect(text(rendered)).toContain("Turn:");
+    expect(text(rendered)).not.toContain("to expand");
+    expectFits(rendered);
   });
 
   it("shows that a wait's result was already delivered instead of an empty output", () => {
@@ -168,21 +253,14 @@ describe("minimal subagents collapsed previews", () => {
       source_agent_id: "worker",
       source_turn_id: "worker:turn-1",
     };
-    for (const expanded of [false, true]) {
-      const rendered = renderLines(
-        renderCoordinatorToolResult(
-          "subagent_wait",
-          { content: [], details },
-          { expanded, isPartial: false },
-          plainTheme,
-          { agent_id: "worker" },
-        ),
-      );
-      expect(rendered).toContain("worker  ·  completed");
-      expect(rendered).toContain(
+    for (const options of [collapsed, expanded]) {
+      const rendered = wait(details, options);
+      expect(text(rendered)).toContain("<muted>completed</muted>");
+      expect(text(rendered)).toContain(
         "Already delivered automatically; wait with turn_id to reread it.",
       );
-      expect(rendered).not.toContain("(no output)");
+      expect(text(rendered)).not.toContain("(no output)");
+      expectFits(rendered);
     }
   });
 
@@ -213,7 +291,7 @@ describe("minimal subagents collapsed previews", () => {
     const stubTui: Pick<TUI, "requestRender"> = { requestRender: () => undefined };
     // SAFETY: Native transcript components only call requestRender on their TUI.
     const tui = stubTui as TUI;
-    const progress = (turns: number, expanded: boolean) =>
+    const progress = (turns: number, isExpanded: boolean) =>
       renderCoordinatorToolResult(
         "subagent_wait",
         {
@@ -226,8 +304,8 @@ describe("minimal subagents collapsed previews", () => {
             tool_calls: turns,
           },
         },
-        { expanded, isPartial: true },
-        plainTheme,
+        { expanded: isExpanded, isPartial: true },
+        taggedTheme,
         { agent_id: "worker" },
         false,
         (agentId, turnId, liveExpanded) =>
@@ -241,51 +319,40 @@ describe("minimal subagents collapsed previews", () => {
                 "/project",
                 liveExpanded,
                 createTranscriptRenderCache(),
-                plainTheme,
+                taggedTheme,
               )
             : undefined,
-      ).render(60);
+      );
 
-    const lines = progress(1, false);
-    const text = lines.map((line) => stripVTControlCharacters(line));
-    expect(text[0]).toContain("worker  ·  waiting  ·  9s  ·  1 tool call");
-    expect(text[0]).toContain("to expand");
-    expect(text[1]).toMatch(/^├─ .*Inspecting part 1/);
-    expect(text.find((line) => line.startsWith("└─ "))).toContain("mystery_tool");
-    expect(text.join("\n")).toContain("result 1");
-    expect(lines.every((line) => visibleWidth(line) <= 60)).toBe(true);
+    const one = progress(1, false);
+    const lines = plainLines(one);
+    expect(lines[0]).toBe(
+      `<accent>worker</accent><dim> · </dim><muted>waiting</muted><dim> · </dim><muted>9s</muted><dim> · </dim><muted>1 tool call</muted>${SUMMARY_HINT}`,
+    );
+    expect(lines[1]).toMatch(/^<dim>├─ <\/dim>.*Inspecting part 1/);
+    expect(lines.find((line) => line.startsWith("<dim>└─ </dim>"))).toContain("mystery_tool");
+    expect(lines.join("\n")).toContain("result 1");
+    expectFits(one, PI_BODY);
 
-    const collapsed = progress(12, false).map((line) => stripVTControlCharacters(line));
-    expect(collapsed[1]).toMatch(/^├─ … \d+ earlier steps$/);
-    expect(collapsed.join("\n")).toContain("result 12");
-    expect(collapsed.join("\n")).not.toContain("result 1\n");
-    const expanded = progress(12, true).map((line) => stripVTControlCharacters(line));
-    expect(expanded.join("\n")).not.toContain("earlier steps");
-    expect(expanded.join("\n")).toContain("Inspecting part 1");
+    const many = plainLines(progress(12, false));
+    expect(many[1]).toMatch(/^<dim>├─ <\/dim><muted>\.\.\. \(\d+ earlier lines,<\/muted>/);
+    expect(many.join("\n")).toContain("result 12");
+    expect(many.join("\n")).not.toContain("result 1\n");
+    const all = plainLines(progress(12, true));
+    expect(all.join("\n")).not.toContain("earlier lines");
+    expect(all.join("\n")).toContain("Inspecting part 1");
+    expect(all[0]).not.toContain("to expand");
+    expectFits(progress(12, false), PI_BODY);
+    expectFits(progress(12, true), PI_BODY);
   });
 
-  it("ends every collapsed result's first line with the expansion hint, except live progress", () => {
+  it("ends a summary-only collapsed row with the summary hint and shows a body instead of it", () => {
     const turn = { event: "turn", agent_id: "worker", turn_id: "worker:turn-1" };
     const activity = [{ label: "tool call read", content: '{"path":"a.ts"}', truncated: false }];
-    const collapsedResults = [
+    const summaryOnly = [
       ["subagent", { agent_id: "worker", turn_id: "worker:turn-1", status: "running" }],
       ["agent_message", { agent_id: "worker", message_id: "m", disposition: "queued" }],
-      ["subagent_wait", { ...turn, status: "completed", output: "short output" }],
       ["subagent_wait", { ...turn, status: "completed", output: "" }],
-      ["subagent_wait", { ...turn, status: "failed", error: "boom" }],
-      ["subagent_wait", { ...turn, event: "message", message_id: "m", message: "update" }],
-      [
-        "subagent_wait",
-        {
-          ...turn,
-          event: "timeout",
-          timeout_ms: 10,
-          state: "running",
-          recent_activity_labels: ["tool call read"],
-        },
-      ],
-      ["subagent_status", { parent_id: "root", agents: [{ agent_id: "worker", state: "idle" }] }],
-      ["subagent_status", { agent: { agent_id: "worker", recent_activity: activity } }],
       [
         "subagent_cancel",
         { agent_id: "worker", recursive: true, affected_agent_ids: [], cancelled_turn_ids: [] },
@@ -300,52 +367,213 @@ describe("minimal subagents collapsed previews", () => {
           failures: [],
         },
       ],
+      ["subagent_status", { agent: { agent_id: "worker", state: "idle" } }],
     ] as const;
-    const firstLine = (component: { render(width: number): string[] }) =>
-      component.render(120).find((line) => line.trim().length > 0) ?? "";
-
-    for (const [toolName, details] of collapsedResults) {
+    for (const [toolName, details] of summaryOnly) {
       const component = renderCoordinatorToolResult(
         toolName,
         { content: [], details },
-        { expanded: false, isPartial: false },
-        plainTheme,
+        collapsed,
+        taggedTheme,
         { agent_id: "worker" },
       );
-      expect(firstLine(component), `${toolName} ${JSON.stringify(details)}`).toContain("to expand");
+      expect(plainLines(component)[0], toolName).toContain(SUMMARY_HINT);
+      expectFits(component);
     }
-    const agentResult = renderMinimalSubagentsResult(
-      { content: "done", details: { source_agent_id: "worker", destination_agent_id: "root" } },
-      { expanded: false, outputPad: 1 },
-      plainTheme,
-    );
-    expect(firstLine(agentResult)).toContain("to expand");
-    const progress = renderCoordinatorToolResult(
-      "subagent_wait",
-      {
-        content: [],
-        details: { agent_id: "worker", status: "waiting", elapsed_ms: 1_000, activity },
-      },
-      { expanded: false, isPartial: true },
-      plainTheme,
-      { agent_id: "worker" },
-    );
-    expect(renderLines(progress)).not.toContain("to expand");
+
+    const withBody = [
+      ["subagent_wait", { ...turn, status: "completed", output: "short output" }],
+      ["subagent_wait", { ...turn, status: "failed", error: "boom" }],
+      ["subagent_wait", { ...turn, event: "message", message_id: "m", message: "update" }],
+      [
+        "subagent_wait",
+        {
+          ...turn,
+          event: "timeout",
+          timeout_ms: 10,
+          state: "running",
+          recent_activity_labels: ["tool call read"],
+        },
+      ],
+      ["subagent_status", { agent: { agent_id: "worker", recent_activity: activity } }],
+    ] as const;
+    for (const [toolName, details] of withBody) {
+      const component = renderCoordinatorToolResult(
+        toolName,
+        { content: [], details },
+        collapsed,
+        taggedTheme,
+        { agent_id: "worker" },
+      );
+      const lines = plainLines(component);
+      expect(lines.length, JSON.stringify(details)).toBeGreaterThan(1);
+      expect(lines[0], JSON.stringify(details)).not.toContain(SUMMARY_HINT);
+      expectFits(component);
+    }
   });
 
-  it("previews automatic agent results as Markdown", () => {
-    const component = renderMinimalSubagentsResult(
+  it("shows an agent_message failure in the error role", () => {
+    const result = renderCoordinatorToolResult(
+      "agent_message",
       {
-        content: "**Done**: updated `a.ts`",
-        details: { source_agent_id: "worker", destination_agent_id: "root", status: "completed" },
+        content: [],
+        details: {
+          agent_id: "worker",
+          message_id: "m",
+          disposition: "failed",
+          error: "no such agent",
+        },
       },
-      { expanded: false, outputPad: 1 },
-      plainTheme,
+      collapsed,
+      taggedTheme,
+      { agent_id: "worker", message: "hi" },
+      true,
     );
-    const lines = renderLines(component);
-    expect(lines).toContain("Done");
-    expect(lines).toContain("updated");
-    expect(lines).not.toContain("**");
+    expect(text(result)).toContain("<error>failed</error>");
+    expect(text(result)).toContain("<error>no such agent</error>");
+    expectFits(result);
+  });
+
+  it("lists children for 20 rows with Pi's Expand Hint, all rows when expanded", () => {
+    const agents = Array.from({ length: 25 }, (_, index) => ({
+      agent_id: `worker-${index}`,
+      state: index === 0 ? "running" : "idle",
+      child_count: 0,
+    }));
+    const render = (options: { expanded: boolean; isPartial: boolean }) =>
+      renderCoordinatorToolResult(
+        "subagent_status",
+        { content: [], details: { parent_id: "root", agents } },
+        options,
+        taggedTheme,
+        {},
+      );
+    const lines = plainLines(render(collapsed));
+    expect(lines).toHaveLength(22);
+    expect(lines[0]).not.toBe("");
+    expect(lines[0]).toBe("<muted>25 children</muted><dim> · </dim><accent>1 running</accent>");
+    expect(lines[1]).toContain("worker-0");
+    expect(lines[20]).toContain("worker-19");
+    expect(lines[21]).toMatch(EXPAND_HINT);
+    expect(lines[21]).toContain("(5 more lines,");
+    expectFits(render(collapsed));
+
+    const all = plainLines(render(expanded));
+    expect(all).toHaveLength(26);
+    expect(all.join("\n")).toContain("worker-24");
+    expect(all.join("\n")).not.toContain("to expand");
+    expectFits(render(expanded));
+  });
+
+  it("lists a partial deletion's failures in the error role when collapsed", () => {
+    const rendered = renderCoordinatorToolResult(
+      "subagent_delete",
+      {
+        content: [],
+        details: {
+          agent_id: "child",
+          recursive: true,
+          deleted_agent_ids: ["child.leaf"],
+          trashed_session_files: [],
+          failures: [{ agent_id: "child", error: "disk full" }],
+        },
+      },
+      collapsed,
+      taggedTheme,
+      { agent_id: "child" },
+      true,
+    );
+    expect(text(rendered)).toContain("<error>failed</error>");
+    expect(text(rendered)).toContain("<error>child: disk full</error>");
+    expectFits(rendered);
+  });
+
+  it("shows an unrecognised result's text, error-coloured and capped at 10 lines", () => {
+    const longText = Array.from({ length: 14 }, (_, index) => `text ${index + 1}`).join("\n");
+    const render = (isError: boolean, options = collapsed) =>
+      renderCoordinatorToolResult(
+        "subagent_status",
+        { content: [{ type: "text", text: longText }], details: { malformed: true } },
+        options,
+        taggedTheme,
+        {},
+        isError,
+      );
+    const lines = plainLines(render(true));
+    expect(lines[0]).toBe("<error>text 1</error>");
+    expect(lines).toHaveLength(11);
+    expect(lines[10]).toMatch(EXPAND_HINT);
+    expect(plainLines(render(false))[0]).toBe("<toolOutput>text 1</toolOutput>");
+    expect(plainLines(render(true, expanded))).toHaveLength(14);
+    expectFits(render(true));
+  });
+});
+
+describe("minimal subagents custom messages", () => {
+  const details = {
+    source_agent_id: "worker",
+    destination_agent_id: "root",
+    source_turn_id: "worker:turn-1",
+    status: "completed",
+    elapsed_ms: 3_000,
+    usage,
+  };
+
+  it("uses the custom-message box with a `[subagents] result · route · status` label line", () => {
+    const rendered = renderMinimalSubagentsResult(
+      { content: "**Done**: updated `a.ts`", details },
+      { expanded: false, outputPad: 1 },
+      taggedTheme,
+    );
+    const lines = plainLines(rendered);
+    expect(lines.every((line) => line.startsWith("<bg:customMessageBg>"))).toBe(true);
+    const label = lines[1] ?? "";
+    expect(label).toContain(
+      "<customMessageLabel><b>[subagents]</b></customMessageLabel> <customMessageText>result</customMessageText><dim> · </dim><customMessageText>worker → root</customMessageText><dim> · </dim>",
+    );
+    expect(label).toContain("<muted>completed</muted>");
+    expect(label).toContain("<muted>3s</muted>");
+    const body = lines.join("\n");
+    expect(body).toContain("Done");
+    expect(body).toContain("updated");
+    expect(body).not.toContain("**");
+    expect(body).not.toContain("to expand");
+    expectFits(rendered, PI_BODY);
+
+    const message = renderMinimalSubagentsMessage(
+      { content: "ping", details: { ...details, status: undefined } },
+      { expanded: false, outputPad: 0 },
+      taggedTheme,
+    );
+    expect(text(message)).toContain(
+      "<customMessageLabel><b>[subagents]</b></customMessageLabel> <customMessageText>message</customMessageText><dim> · </dim><customMessageText>worker → root</customMessageText>",
+    );
+    expectFits(message, PI_BODY);
+  });
+
+  it("previews 10 lines with Pi's Expand Hint and shows everything expanded without one", () => {
+    const content = numberedLines(14);
+    const preview = renderMinimalSubagentsResult(
+      { content, details },
+      { expanded: false, outputPad: 1 },
+      taggedTheme,
+    );
+    const previewText = text(preview);
+    expect(previewText).toMatch(EXPAND_HINT);
+    expect(previewText).toContain("line 4");
+    expect(previewText).not.toContain("line 14");
+    expectFits(preview, PI_BODY);
+
+    const full = renderMinimalSubagentsResult(
+      { content, details },
+      { expanded: true, outputPad: 1 },
+      taggedTheme,
+    );
+    expect(text(full)).toContain("line 14");
+    expect(text(full)).toContain("Source turn:");
+    expect(text(full)).toContain("total 120");
+    expect(text(full)).not.toContain("to expand");
+    expectFits(full, PI_BODY);
   });
 });
 
@@ -442,7 +670,7 @@ describe("minimal subagents rendering", () => {
             },
           ],
         },
-        expected: "○",
+        expected: "future-state",
       },
       {
         toolName: "subagent_status",
@@ -495,17 +723,15 @@ describe("minimal subagents rendering", () => {
       expect(
         renderLines(renderCoordinatorToolCall(result.toolName, result.args, plainTheme)),
       ).not.toBe("");
-      expect(
-        renderLines(
-          renderCoordinatorToolResult(
-            result.toolName,
-            { content: [{ type: "text", text: "fallback" }], details: result.details },
-            { expanded: true, isPartial: false },
-            plainTheme,
-            result.args,
-          ),
-        ),
-      ).toContain(result.expected);
+      const rendered = renderCoordinatorToolResult(
+        result.toolName,
+        { content: [{ type: "text", text: "fallback" }], details: result.details },
+        expanded,
+        plainTheme,
+        result.args,
+      );
+      expect(renderLines(rendered)).toContain(result.expected);
+      expect(renderLines(rendered)).not.toMatch(/[●○✓✗■◉×]/);
     }
   });
 
@@ -523,7 +749,7 @@ describe("minimal subagents rendering", () => {
             failures: [{ agent_id: "child", error: "disk full" }],
           },
         },
-        { expanded: true, isPartial: false },
+        expanded,
         plainTheme,
         { agent_id: "child" },
         true,
@@ -539,13 +765,13 @@ describe("minimal subagents rendering", () => {
     const base = { event: "timeout", agent_id: "child", turn_id: "child:turn-1", timeout_ms: 10 };
     const render = (
       details: Parameters<typeof renderCoordinatorToolResult>[1]["details"],
-      expanded: boolean,
+      isExpanded: boolean,
     ) =>
       renderLines(
         renderCoordinatorToolResult(
           "subagent_wait",
           { content: [{ type: "text", text: "timeout" }], details },
-          { expanded, isPartial: false },
+          { expanded: isExpanded, isPartial: false },
           plainTheme,
           { agent_id: "child" },
         ),
@@ -558,10 +784,10 @@ describe("minimal subagents rendering", () => {
       recent_activity_labels: ["tool call read", "tool result read"],
     };
     expect(render(compact, false)).toContain("tool call read \u00b7 tool result read");
-    const expanded = render(compact, true);
-    expect(expanded).toContain("State: running");
-    expect(expanded).toContain("Latest activity: 2026-01-01T00:00:00.000Z");
-    expect(expanded).toContain("tool result read");
+    const expandedCompact = render(compact, true);
+    expect(expandedCompact).toContain("State: running");
+    expect(expandedCompact).toContain("Latest activity: 2026-01-01T00:00:00.000Z");
+    expect(expandedCompact).toContain("tool result read");
 
     const legacy = {
       ...base,
@@ -582,7 +808,7 @@ describe("minimal subagents rendering", () => {
         content: [{ type: "text", text: "legacy fallback" }],
         details: { agent_id: "child", message_id: "message-1", delivered: true },
       },
-      { expanded: true, isPartial: false },
+      expanded,
       plainTheme,
       { agent_id: "child", message: "legacy message" },
     );
@@ -635,7 +861,7 @@ describe("minimal subagents rendering", () => {
           error: "typed rendered error",
         },
       },
-      { expanded: true, isPartial: false },
+      expanded,
       plainTheme,
       { agent_id: "child" },
       true,

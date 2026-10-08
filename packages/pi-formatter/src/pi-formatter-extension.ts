@@ -9,6 +9,7 @@ import {
   type ToolResultEventResult,
   withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
+import { noticeText } from "@ian-pascoe/pi-utils/ui";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import {
@@ -562,7 +563,10 @@ export function createPiFormatterExtension(
       settings = resolveFormatterSettings(reader);
       if (settings.warnings.length > 0) {
         context.ui.notify(
-          `Pi Formatter settings:\n- ${settings.warnings.join("\n- ")}\nRun /skill:pi-formatter to diagnose.`,
+          noticeText(
+            "Formatter",
+            `settings:\n- ${settings.warnings.join("\n- ")}\nRun /skill:pi-formatter to diagnose.`,
+          ),
           "warning",
         );
       }

@@ -9,6 +9,7 @@ import {
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import type { Context } from "@earendil-works/pi-ai";
 import { createSdkHarness, reply, toolCall } from "../../pi-context-management/test/sdk-harness.js";
+import { expectClickToggles } from "@ian-pascoe/pi-utils/ui-testing";
 import advisor from "../src/index.js";
 import { fixture, response } from "./fixtures/advisor-runtime.js";
 import { createMenuTui, menuDriver } from "./fixtures/menu-ui.js";
@@ -59,8 +60,25 @@ describe("Advisor status entries", () => {
     const rendered = renderer?.(entry, { expanded: false }, themeFromRunner(session));
     const text = stripVTControlCharacters(rendered?.render(120).join("\n") ?? "");
     expect(text).toContain("✓ enabled → true [session]");
-    expect(text).toContain("Advisor ● armed");
+    expect(text).toContain("[advisor] ● on");
     expect(text).not.toContain('"settings"');
+    if (!renderer) throw new Error("Expected the Advisor status renderer");
+    expectClickToggles(renderer, entry, { expanded: false }, themeFromRunner(session));
+  });
+
+  it("toggle a Child Agent entry on click", async () => {
+    const { session } = await createSdkHarness([advisor]);
+    const renderer = session.extensionRunner?.getEntryRenderer("pi-advisor-child");
+    if (!renderer) throw new Error("Expected the Advisor child renderer");
+    const entry = {
+      type: "custom" as const,
+      customType: "pi-advisor-child",
+      data: { agentId: "worker", severity: "blocker", message: "Stop editing tests" },
+      id: "child",
+      parentId: null,
+      timestamp: "",
+    };
+    expectClickToggles(renderer, entry, { expanded: false }, themeFromRunner(session));
   });
 });
 
@@ -99,12 +117,12 @@ describe("Advisor footer", () => {
         return response(model, reply("Done"), options);
       },
     };
-    expect(statuses.at(-1)).toBe("advisor");
+    expect(statuses.at(-1)).toBe("● advisor on");
     await session.prompt("Complete a task");
     await reviewStarted.promise;
-    expect(statuses).toContain("advisor: reviewing · backlog 1");
+    expect(statuses).toContain("● advisor reviewing · backlog 1");
     releaseReview.resolve();
-    await expect.poll(() => statuses.at(-1)).toBe("advisor");
+    await expect.poll(() => statuses.at(-1)).toBe("● advisor on");
     await session.prompt("/advisor off");
     expect(statuses.at(-1)).toBeUndefined();
   });
@@ -192,8 +210,23 @@ describe("Interventions", () => {
       themeFromRunner(session),
     );
     const text = stripVTControlCharacters(rendered?.render(120).join("\n") ?? "");
-    expect(text).toContain("▲ Advisor concern");
+    expect(text).toContain("[advisor] concern");
+    expect(text).not.toContain("▲");
     expect(text).toContain("Re-run the failing test");
+    if (!renderer) throw new Error("Expected the Advisor Intervention renderer");
+    expectClickToggles(
+      renderer,
+      {
+        role: "custom",
+        customType: entry.customType,
+        content: entry.content,
+        display: true,
+        details: entry.details,
+        timestamp: 0,
+      },
+      { expanded: false, outputPad: 0 },
+      themeFromRunner(session),
+    );
   });
 });
 
@@ -344,12 +377,12 @@ describe("/advisor settings menu", () => {
     };
     const command = session.prompt("/advisor");
     await vi.waitFor(() => expect(host.shown.component).toBeDefined());
-    expect(host.screen()).toContain("Advisor ● armed");
+    expect(host.screen()).toContain("Advisor ● on");
     // The menu has focus in a real TUI; drive a turn directly to start a Review.
     await session.agent.prompt({ role: "user", content: "Task", timestamp: Date.now() });
     await vi.waitFor(() => expect(host.screen()).toContain("Advisor ● reviewing"));
     releaseReview.resolve();
-    await vi.waitFor(() => expect(host.screen()).toContain("Advisor ● armed"));
+    await vi.waitFor(() => expect(host.screen()).toContain("Advisor ● on"));
     host.press("\x1b");
     await command;
   });

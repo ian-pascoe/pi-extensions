@@ -1,6 +1,12 @@
 import { relative } from "node:path";
-import { keyText, type Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
-import { Box, Container, Spacer, Text, type Component } from "@earendil-works/pi-tui";
+import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import { Text, type Component } from "@earendil-works/pi-tui";
+import {
+  COLLAPSED_LINES,
+  CollapsedPreview,
+  customMessageBox,
+  joinInline,
+} from "@ian-pascoe/pi-utils/ui";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import {
@@ -11,8 +17,6 @@ import {
 
 /** Custom session entry type used for model-invisible Post-edit Diagnostics presentation. */
 export const POST_EDIT_DIAGNOSTICS_ENTRY_TYPE = "pi-lsp-post-edit-diagnostics";
-
-const COLLAPSED_ENTRY_MAX_LINES = 8;
 
 /** Persisted data for one model-invisible Post-edit Diagnostics Entry. */
 export const PostEditDiagnosticsEntryDataSchema = Type.Object(
@@ -117,15 +121,14 @@ function entrySummary(data: PostEditDiagnosticsEntryData, theme: PostEditDiagnos
     [timeouts, "timeout", "timeouts", "warning"],
     [serverIssues, "server issue", "server issues", "warning"],
   ] as const;
-  return [
-    theme.fg("toolTitle", theme.bold("Post-edit diagnostics")),
+  return joinInline(theme, [
     ...metrics
       .filter(([count]) => count > 0)
       .map(([count, singular, plural, color]) =>
         theme.fg(color, pluralizedCount(count, singular, plural)),
       ),
     theme.fg("muted", pluralizedCount(files.size, "file")),
-  ].join(theme.fg("dim", "  ·  "));
+  ]);
 }
 
 function displayPath(cwd: string, path: string): string {
@@ -167,7 +170,7 @@ function diagnosticLine(
 ): string {
   const diagnostic = outcome.diagnostic;
   const severity = diagnosticSeverity(diagnostic.severity);
-  return `${theme.fg(severityColor(severity), `${diagnostic.line}:${diagnostic.character}`)}  ${diagnostic.message}  ${theme.fg("muted", diagnostic.serverId)}`;
+  return `${theme.fg(severityColor(severity), `${diagnostic.line}:${diagnostic.character}`)}  ${theme.fg("customMessageText", diagnostic.message)}  ${theme.fg("muted", diagnostic.serverId)}`;
 }
 
 function unavailableLine(
@@ -178,11 +181,11 @@ function unavailableLine(
   return `${theme.fg("warning", label)}${outcome.serverId === undefined ? "" : `  ${theme.fg("muted", outcome.serverId)}`}`;
 }
 
-function appendExpandedOutcomes(
-  container: Container,
+function outcomeLines(
   data: PostEditDiagnosticsEntryData,
   theme: PostEditDiagnosticsEntryTheme,
-): void {
+): string[] {
+  const lines: string[] = [];
   const reportable = data.outcomes
     .filter(isReportablePostEditDiagnosticOutcome)
     .sort(compareReportableOutcomes);
@@ -201,26 +204,21 @@ function appendExpandedOutcomes(
   }
 
   for (const [path, outcomes] of outcomesByPath) {
-    container.addChild(new Spacer(1));
-    container.addChild(new Text(theme.fg("accent", theme.bold(displayPath(data.cwd, path))), 0, 0));
+    lines.push(theme.fg("accent", displayPath(data.cwd, path)));
     for (const outcome of outcomes) {
       if (outcome.kind === "warning") continue;
-      container.addChild(
-        new Text(
-          outcome.kind === "diagnostic"
-            ? diagnosticLine(outcome, theme)
-            : unavailableLine(outcome, theme),
-          0,
-          0,
-        ),
+      lines.push(
+        outcome.kind === "diagnostic"
+          ? diagnosticLine(outcome, theme)
+          : unavailableLine(outcome, theme),
       );
     }
   }
   if (warnings.length > 0) {
-    container.addChild(new Spacer(1));
-    container.addChild(new Text(theme.fg("warning", theme.bold("Warnings")), 0, 0));
-    for (const warning of warnings) container.addChild(new Text(warning.message, 0, 0));
+    lines.push(theme.fg("warning", "Warnings"));
+    for (const warning of warnings) lines.push(theme.fg("customMessageText", warning.message));
   }
+  return lines;
 }
 
 /** Create a Post-edit Diagnostics Entry only when outcomes deserve transcript attention. */
@@ -234,26 +232,33 @@ export function createPostEditDiagnosticsEntryData(
     : Value.Parse(PostEditDiagnosticsEntryDataSchema, { cwd, outcomes: reportable });
 }
 
-/** Render one model-invisible Post-edit Diagnostics Entry with native Pi expansion and theming. */
+/**
+ * The render options Pi passes an entry renderer. Pi 1.1.0 passes `outputPad` to message renderers
+ * but not entry renderers, so it falls back to Pi's default padding of one column.
+ */
+export interface PostEditDiagnosticsEntryRenderOptions {
+  expanded: boolean;
+  outputPad?: number;
+}
+
+/**
+ * Render one model-invisible Post-edit Diagnostics Entry as Pi's default custom message: a bold
+ * `[lsp] edit diagnostics` label with the counts, and the outcomes in a 10-line Collapsed View.
+ */
 export function renderPostEditDiagnosticsEntry(
   data: PostEditDiagnosticsEntryData,
-  expanded: boolean,
+  options: PostEditDiagnosticsEntryRenderOptions,
   theme: PostEditDiagnosticsEntryTheme,
 ): Component {
-  const container = new Container();
-  const hint = expanded
-    ? ""
-    : `${theme.fg("dim", `  ·  ${keyText("app.tools.expand")}`)}${theme.fg("muted", " to expand")}`;
-  container.addChild(new Text(`${entrySummary(data, theme)}${hint}`, 0, 0));
-  appendExpandedOutcomes(container, data, theme);
-
-  const content: Component = expanded
-    ? container
-    : {
-        invalidate: () => container.invalidate(),
-        render: (width) => container.render(width).slice(0, COLLAPSED_ENTRY_MAX_LINES),
-      };
-  const box = new Box(1, 0, (text) => theme.bg("customMessageBg", text));
-  box.addChild(content);
-  return box;
+  const outcomes = new Text(outcomeLines(data, theme).join("\n"), 0, 0);
+  const heading = joinInline(theme, [
+    theme.fg("customMessageText", "edit diagnostics"),
+    entrySummary(data, theme),
+  ]);
+  return customMessageBox(theme, { outputPad: options.outputPad ?? 1, source: "lsp", heading }, [
+    new CollapsedPreview(theme, outcomes, {
+      limit: COLLAPSED_LINES.fallback,
+      expanded: options.expanded,
+    }),
+  ]);
 }

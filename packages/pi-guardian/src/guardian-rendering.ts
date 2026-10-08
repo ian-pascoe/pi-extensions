@@ -1,5 +1,14 @@
-import { keyHint, type Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Text, type Component } from "@earendil-works/pi-tui";
+import {
+  COLLAPSED_LINES,
+  CollapsedPreview,
+  customMessageBox,
+  footerStatus,
+  joinInline,
+  statusMark,
+  type StatusKind,
+} from "@ian-pascoe/pi-utils/ui";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import { riskLabel } from "./guardian-assessment.js";
@@ -47,27 +56,56 @@ export const statusEntrySchema = Type.Object({
 /** Data recorded in a `pi-guardian-status` entry. */
 export type GuardianStatusEntry = Static<typeof statusEntrySchema>;
 
-const stateBadge = {
-  enabled: { symbol: "●", color: "success" },
-  disabled: { symbol: "○", color: "dim" },
-  error: { symbol: "●", color: "error" },
-} as const satisfies Record<GuardianState, { symbol: string; color: ThemeColor }>;
-const resultStyle = {
-  allowed: { symbol: "✓", color: "success" },
-  rejected: { symbol: "✖", color: "error" },
-  failed: { symbol: "⚠", color: "warning" },
-  aborted: { symbol: "○", color: "dim" },
-  unused: { symbol: "○", color: "dim" },
-} as const satisfies Record<AuditResult, { symbol: string; color: ThemeColor }>;
+const stateMark = {
+  enabled: { kind: "active", word: "on" },
+  disabled: { kind: "idle", word: "off" },
+  error: { kind: "failed", word: "error" },
+} as const satisfies Record<GuardianState, { kind: StatusKind; word: string }>;
+const resultMark = {
+  allowed: "done",
+  rejected: "failed",
+  failed: "warning",
+  aborted: "stopped",
+  unused: "idle",
+} as const satisfies Record<AuditResult, StatusKind>;
 const previewWidth = 40;
 
-function expandHint(theme: Pick<Theme, "fg">): string {
-  return theme.fg("dim", `… ${keyHint("app.tools.expand", "to expand")}`);
+/** Styles a plain piece of text; entries use `customMessageText`, menus leave it as is. */
+type Paint = (text: string) => string;
+const unpainted: Paint = (text) => text;
+const messagePaint =
+  (theme: Pick<Theme, "fg">): Paint =>
+  (text) =>
+    theme.fg("customMessageText", text);
+
+/** Pi's entry renderers get no `outputPad`, so entries use Pi's default of one column. */
+const entryOutputPad = 1;
+
+/**
+ * A review or status entry in Pi's custom-message look. The lines lead with their own label, so
+ * the box has none; the Collapsed View keeps ten visual lines and hints at the rest.
+ */
+/** A `[guardian] heading` entry with its lines in a 10-line Collapsed View. */
+function entryBox(
+  theme: GuardianRenderTheme,
+  outputPad: number,
+  heading: string,
+  lines: readonly string[],
+  expanded: boolean,
+): Component {
+  const body = new Text(lines.join("\n"), 0, 0);
+  return customMessageBox(
+    theme,
+    { outputPad, source: "guardian", heading },
+    lines.length > 0
+      ? [new CollapsedPreview(theme, body, { limit: COLLAPSED_LINES.fallback, expanded })]
+      : [],
+  );
 }
 
 function preview(text: string): string {
   const first = text.split("\n", 1)[0] ?? "";
-  return first.length > previewWidth ? `${first.slice(0, previewWidth - 1)}…` : first;
+  return first.length > previewWidth ? `${first.slice(0, previewWidth - 3)}...` : first;
 }
 
 function formatMoney(cost: number): string {
@@ -136,10 +174,10 @@ function notableEscalation(escalation: EscalationRecord | undefined): boolean {
 }
 
 /**
- * One Guardian Review in the transcript: result, tool, scores, and rationale. Unless `verbose`
- * is on, a review that let its call run unremarkably renders nothing: an allowed or unused review
- * without a User Override or argument drift. Rejections, Review Failures, aborts, and User
- * Overrides always show.
+ * One Guardian Review in the transcript, in Pi's custom-message look: result, tool, scores, and
+ * rationale. Unless `verbose` is on, a review that let its call run unremarkably renders nothing:
+ * an allowed or unused review without a User Override or argument drift. Rejections, Review
+ * Failures, aborts, and User Overrides always show.
  */
 export function renderReviewEntry(
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Journaled entry data is validated by the review schema below; anything else renders raw.
@@ -147,6 +185,7 @@ export function renderReviewEntry(
   expanded: boolean,
   theme: GuardianRenderTheme,
   verbose = false,
+  outputPad = entryOutputPad,
 ): Component | undefined {
   if (!Value.Check(reviewEntrySchema, data))
     return new Text(`Guardian Review\n${JSON.stringify(data, null, 2)}`, 0, 0);
@@ -159,55 +198,50 @@ export function renderReviewEntry(
     !data.downgraded &&
     !notableEscalation(data.escalation);
   if (quiet && !verbose) return undefined;
-  const style = resultStyle[data.result];
+  const paint = messagePaint(theme);
   const scores =
     data.risk && data.authorization
       ? `risk ${riskLabel({ risk: data.risk, category: data.riskCategory })} · authorization ${data.authorization}`
       : undefined;
-  const heading = [
-    theme.fg(style.color, theme.bold(`${style.symbol} Guardian ${data.result}`)),
-    theme.bold(data.toolName),
+  const heading = `${statusMark(theme, resultMark[data.result])} ${paint(data.result)}`;
+  const subject = joinInline(theme, [
+    theme.bold(paint(data.toolName)),
     scores ? theme.fg("muted", scores) : undefined,
     data.userOverride ? theme.fg("warning", "user override") : undefined,
     data.argumentDrift ? theme.fg("warning", "arguments changed after review") : undefined,
     data.downgraded ? theme.fg("muted", "decided as medium: no Risk Category") : undefined,
     data.escalation ? theme.fg("accent", escalationLabel(data.escalation)) : undefined,
-  ]
-    .filter((part) => part !== undefined)
-    .join("  ");
+  ]);
   const reason = data.rationale ?? data.failure;
-  const lines = [heading];
-  if (reason) lines.push(expanded ? reason : preview(reason));
-  if (expanded) {
-    lines.push(theme.fg("dim", `arguments ${data.arguments}`));
-    if (data.escalation) {
-      const { escalation } = data;
-      if (escalation.firstPass?.rationale)
-        lines.push(theme.fg("dim", `first pass: ${escalation.firstPass.rationale}`));
-      if (data.classification?.failure)
-        lines.push(theme.fg("dim", `classifier: ${data.classification.failure}`));
-      if (escalation.failure) lines.push(theme.fg("dim", `escalation: ${escalation.failure}`));
-      lines.push(
-        theme.fg(
-          "dim",
-          `escalation ${[
-            escalation.model ?? "no model",
-            `${(escalation.durationMs / 1_000).toFixed(1)}s`,
-            escalation.cost === null ? "cost unknown" : formatMoney(escalation.cost),
-          ].join(" \u00b7 ")}`,
-        ),
-      );
-    }
-    const meta = [
-      data.model ?? undefined,
-      `${(data.durationMs / 1_000).toFixed(1)}s`,
-      data.usage ? `${data.usage.total} tokens` : undefined,
-      data.cost === null ? "cost unknown" : formatMoney(data.cost),
-      data.parentToolCallId ? `issued by ${data.parentToolCallId}` : undefined,
-    ].filter((part) => part !== undefined);
-    lines.push(theme.fg("dim", meta.join(" · ")));
-  } else if (reason && reason !== preview(reason)) lines.push(expandHint(theme));
-  return new Text(lines.join("\n"), 0, 0);
+  const summary = [subject, ...(reason ? reason.split("\n").map(paint) : [])];
+  const details = [theme.fg("dim", `arguments ${data.arguments}`)];
+  if (data.escalation) {
+    const { escalation } = data;
+    if (escalation.firstPass?.rationale)
+      details.push(theme.fg("dim", `first pass: ${escalation.firstPass.rationale}`));
+    if (data.classification?.failure)
+      details.push(theme.fg("dim", `classifier: ${data.classification.failure}`));
+    if (escalation.failure) details.push(theme.fg("dim", `escalation: ${escalation.failure}`));
+    details.push(
+      theme.fg(
+        "dim",
+        `escalation ${[
+          escalation.model ?? "no model",
+          `${(escalation.durationMs / 1_000).toFixed(1)}s`,
+          escalation.cost === null ? "cost unknown" : formatMoney(escalation.cost),
+        ].join(" · ")}`,
+      ),
+    );
+  }
+  const meta = [
+    data.model ?? undefined,
+    `${(data.durationMs / 1_000).toFixed(1)}s`,
+    data.usage ? `${data.usage.total} tokens` : undefined,
+    data.cost === null ? "cost unknown" : formatMoney(data.cost),
+    data.parentToolCallId ? `issued by ${data.parentToolCallId}` : undefined,
+  ].filter((part) => part !== undefined);
+  details.push(theme.fg("dim", meta.join(" · ")));
+  return entryBox(theme, outputPad, heading, [...summary, ...details], expanded);
 }
 
 /** Escalations by trigger, such as ` (2 rejected, 1 uncertain)`; empty without a breakdown. */
@@ -216,24 +250,26 @@ function escalationBreakdown(by: Record<string, number> | undefined): string {
   return parts.length ? ` (${parts.join(", ")})` : "";
 }
 
-function badge(state: GuardianState, theme: GuardianRenderTheme): string {
-  const style = stateBadge[state];
-  return theme.fg(style.color, `${style.symbol} ${state}`);
+function badge(state: GuardianState, theme: GuardianRenderTheme, paint: Paint): string {
+  const { kind, word } = stateMark[state];
+  return `${statusMark(theme, kind)} ${paint(word)}`;
 }
 
 /** State line, totals, and any error, as shown atop the settings menu and in status entries. */
-export function guardianStatusHeadline(
+function statusHeadline(
   entry: GuardianStatusEntry,
   theme: GuardianRenderTheme,
+  label: string | undefined,
+  paint: Paint,
 ): string[] {
-  const parts = [`${theme.bold("Guardian")} ${badge(entry.state, theme)}`];
+  const state = badge(entry.state, theme, paint);
+  const parts = [label ? `${label} ${state}` : state];
   const classifier = entry.settings ? configuredClassifier(entry.settings) : undefined;
   if (entry.settings && entry.state === "enabled")
     parts.push(
       classifier !== undefined
-        ? `classifier ${classifier}${theme.fg("dim", ` (escalates at Rejection Probability ${entry.settings.escalationThreshold ?? guardianDefaults.escalationThreshold})`)}`
-        : (entry.settings.model ??
-            `session model${theme.fg("dim", " (inherited from the session; choose a small, fast model in /guardian)")}`),
+        ? `${paint(`classifier ${classifier}`)}${theme.fg("dim", ` (escalates at Rejection Probability ${entry.settings.escalationThreshold ?? guardianDefaults.escalationThreshold})`)}`
+        : `${paint(entry.settings.model ?? "session model")}${entry.settings.model === undefined ? theme.fg("dim", " (inherited from the session; choose a small, fast model in /guardian)") : ""}`,
     );
   if (entry.settings && entry.state === "enabled")
     parts.push(
@@ -243,7 +279,7 @@ export function guardianStatusHeadline(
       ),
     );
   if (entry.followsRoot) parts.push(theme.fg("dim", `follows root ${entry.followsRoot}`));
-  const lines = [parts.join(theme.fg("dim", " · "))];
+  const lines = [joinInline(theme, parts)];
   const totals = entry.totals;
   if (totals?.reviews) {
     lines.push(
@@ -268,51 +304,70 @@ export function guardianStatusHeadline(
     );
     if (totals.lastError) lines.push(theme.fg("warning", `last failure: ${totals.lastError}`));
   }
-  if (entry.error) lines.push(theme.fg("error", `✖ ${entry.error}`));
+  if (entry.error) lines.push(`${statusMark(theme, "failed")} ${theme.fg("error", entry.error)}`);
   return lines;
 }
 
-/** Status snapshot: changes and headline, with every setting and its source when expanded. */
+/** State line, totals, and any error, as shown atop the settings menu. */
+export function guardianStatusHeadline(
+  entry: GuardianStatusEntry,
+  theme: GuardianRenderTheme,
+): string[] {
+  return statusHeadline(entry, theme, theme.bold("Guardian"), unpainted);
+}
+
+/**
+ * Status snapshot in Pi's custom-message look: headline and changes, with every setting and its
+ * source when expanded.
+ */
 export function renderStatusEntry(
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Journaled entry data is validated by the status schema below; anything else renders raw.
   data: unknown,
   expanded: boolean,
   theme: GuardianRenderTheme,
+  outputPad = entryOutputPad,
 ): Component {
   if (!Value.Check(statusEntrySchema, data))
-    return new Text(`Guardian\n${JSON.stringify(data, null, 2)}`, 0, 0);
-  const lines: string[] = [];
+    return customMessageBox(theme, { outputPad, source: "guardian" }, [
+      new Text(JSON.stringify(data, null, 2), 0, 0),
+    ]);
+  const paint = messagePaint(theme);
+  const [heading = "", ...rest] = statusHeadline(data, theme, undefined, paint);
+  const summary: string[] = [];
   for (const { scope, key, options } of data.changes ?? [])
-    lines.push(
-      `${theme.fg("success", "✓")} ${key} → ${formatGuardianOption(options, key)} ${theme.fg("dim", `[${scope}]`)}`,
+    summary.push(
+      `${statusMark(theme, "done")} ${paint(`${key} → ${formatGuardianOption(options, key)}`)} ${theme.fg("dim", `[${scope}]`)}`,
     );
-  lines.push(...guardianStatusHeadline(data, theme));
+  summary.push(...rest);
   const settings = data.settings;
-  if (settings && expanded) {
+  const details: string[] = [];
+  if (settings) {
     const width = Math.max(...guardianOptionKeys.map((key) => key.length));
-    lines.push("");
+    details.push("");
     for (const key of guardianOptionKeys) {
       const source = data.sources?.[key] ?? "default";
-      lines.push(
-        `  ${key.padEnd(width)}  ${formatGuardianOption(settings, key)}  ${theme.fg(source === "default" ? "dim" : "accent", `[${source}]`)}`,
+      details.push(
+        `  ${paint(key.padEnd(width))}  ${paint(formatGuardianOption(settings, key))}  ${theme.fg(source === "default" ? "dim" : "accent", `[${source}]`)}`,
       );
     }
-  } else if (settings) lines.push(expandHint(theme));
-  return new Text(lines.join("\n"), 0, 0);
+  }
+  return entryBox(theme, outputPad, heading, [...summary, ...details], expanded);
 }
 
-/** Compact footer status: idle, or the tools under review; `undefined` clears it. */
+/** Footer status entry: on, or the tools under review; `undefined` clears it. */
 export function guardianFooterText(
   enabled: boolean,
   reviewing: readonly string[],
   theme: Pick<Theme, "fg">,
 ): string | undefined {
   if (!enabled) return undefined;
-  if (!reviewing.length) return theme.fg("dim", "guardian");
+  if (!reviewing.length)
+    return footerStatus(theme, { mark: "active", name: "guardian", value: "on" });
   const tools = [...new Set(reviewing)];
   const extra = reviewing.length - 1;
-  return theme.fg(
-    "accent",
-    `guardian: reviewing ${tools.length === 1 ? (tools[0] ?? "") : tools.join(", ")}${tools.length === 1 && extra ? ` ×${reviewing.length}` : ""}`,
-  );
+  return footerStatus(theme, {
+    mark: "active",
+    name: "guardian",
+    value: `reviewing ${tools.length === 1 ? (tools[0] ?? "") : tools.join(", ")}${tools.length === 1 && extra ? ` ×${reviewing.length}` : ""}`,
+  });
 }

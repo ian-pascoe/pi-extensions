@@ -1,24 +1,16 @@
+import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
+import { SettingsList, type Component, type SettingItem } from "@earendil-works/pi-tui";
 import {
-  DynamicBorder,
-  ExtensionEditorComponent,
-  getSelectListTheme,
-  getSettingsListTheme,
-  type KeybindingsManager,
-} from "@earendil-works/pi-coding-agent";
-import {
-  SelectList,
-  SettingsList,
-  type Component,
-  type SettingItem,
-  type TUI,
-  type TuiMouseEvent,
-  type TuiMouseEventResult,
-} from "@earendil-works/pi-tui";
-import {
+  cycleDisplay,
+  EditorChooser,
+  effectiveWithSource,
   errorText,
   ModelPicker,
   nextCycleValue,
+  scopeRow,
+  SettingsMenu,
   ValueInput,
+  type SettingsMenuUi,
 } from "@ian-pascoe/pi-utils/settings-menu";
 import { Value } from "typebox/value";
 import { updatedToolEntries, type ToolEntryValue } from "./guardian-command.js";
@@ -64,11 +56,8 @@ export interface GuardianMenuHost {
 }
 
 /** Native UI collaborators supplied by `ctx.ui.custom`. */
-export interface GuardianMenuUi {
-  tui: TUI;
-  keybindings: KeybindingsManager;
+export interface GuardianMenuUi extends SettingsMenuUi {
   theme: GuardianRenderTheme;
-  externalEditorCommand?: string;
 }
 
 const thinkingCycle = [
@@ -189,94 +178,30 @@ function parseCommandRules(value: string, scope: GuardianSettingScope) {
   return parseGuardianOptions({ commands: Object.fromEntries(rules) }, scope);
 }
 
-/** Choose between editing the Security Policy in Pi's editor and inheriting it. */
-class PolicyChooser implements Component {
-  private readonly list: SelectList;
-  private editor: ExtensionEditorComponent | undefined;
-
-  constructor(
-    ui: GuardianMenuUi,
-    policy: string,
-    submit: (text: string) => void,
-    inherit: () => void,
-    cancel: () => void,
-  ) {
-    this.list = new SelectList(
-      [
-        { value: "edit", label: "Edit…" },
-        { value: "inherit", label: "inherit" },
-      ],
-      2,
-      getSelectListTheme(),
-    );
-    this.list.onCancel = cancel;
-    this.list.onSelect = (item) => {
-      if (item.value === "inherit") {
-        inherit();
-        return;
-      }
-      this.editor = new ExtensionEditorComponent(
-        ui.tui,
-        ui.keybindings,
-        "Guardian Security Policy",
-        policy,
-        submit,
-        cancel,
-        undefined,
-        ui.externalEditorCommand,
-      );
-      this.editor.focused = true;
-    };
-  }
-  handleInput(data: string): void {
-    (this.editor ?? this.list).handleInput(data);
-  }
-  render(width: number): string[] {
-    return (this.editor ?? this.list).render(width);
-  }
-  invalidate(): void {
-    (this.editor ?? this.list).invalidate();
-  }
-}
-
-const scopeRow = "scope";
-
 /** `/guardian` settings menu built from Pi's native settings list. */
-export class GuardianSettingsMenu implements Component {
+export class GuardianSettingsMenu extends SettingsMenu {
   private scope: GuardianSettingScope = "session";
   private view: GuardianMenuView;
   private rows: SettingItem[] = [];
-  private readonly list: SettingsList;
-  private error: string | undefined;
-  /** Edits run one at a time so each reads the result of the previous one. */
-  private pending: Promise<void> = Promise.resolve();
-  private readonly border: DynamicBorder;
   private toolRows: SettingItem[] = [];
 
   constructor(
     private readonly host: GuardianMenuHost,
-    private readonly ui: GuardianMenuUi,
-    private readonly done: () => void,
+    protected override readonly ui: GuardianMenuUi,
+    done: () => void,
   ) {
+    super("Guardian settings", ui, done);
     this.view = host.view();
-    this.border = new DynamicBorder((text) => ui.theme.fg("border", text));
-    this.rows = [scopeRow, ...guardianOptionKeys].map((id) => this.createRow(id));
-    this.list = new SettingsList(
-      this.rows,
-      this.rows.length,
-      getSettingsListTheme(),
-      (id, value) => this.change(id, value),
-      this.done,
-    );
+    this.rows = ["scope", ...guardianOptionKeys].map((id) => this.createRow(id));
+    this.setList(this.rows, (id, value) => this.change(id, value));
   }
 
-  /** Resolves once every edit started so far has been applied or rejected. */
-  settled(): Promise<void> {
-    return this.pending;
+  protected headline(): readonly string[] {
+    return this.view.headline;
   }
 
   /** Re-read the host after external state changes, such as a review starting. */
-  refresh(): void {
+  override refresh(): void {
     try {
       this.view = this.host.view();
     } catch (cause) {
@@ -289,14 +214,7 @@ export class GuardianSettingsMenu implements Component {
   }
 
   private createRow(id: string): SettingItem {
-    if (id === scopeRow)
-      return {
-        id,
-        label: "Scope",
-        currentValue: this.scope,
-        values: [...this.view.scopes],
-        description: "Where edits are written",
-      };
+    if (id === "scope") return scopeRow(this.scope, this.view.scopes);
     return this.optionRow(guardianOptionKey(id));
   }
 
@@ -356,8 +274,9 @@ export class GuardianSettingsMenu implements Component {
           ...row,
           currentValue: formatGuardianOption(settings, key),
           submenu: (_value, done) =>
-            new PolicyChooser(
+            new EditorChooser(
               this.ui,
+              "Guardian Security Policy",
               settings.policy ?? "",
               (text) => {
                 this.apply({
@@ -442,15 +361,18 @@ export class GuardianSettingsMenu implements Component {
 
   /** This scope's own value, or what it inherits; notes when another scope overrides it. */
   private cycleDisplay(key: CycleKey): string {
-    const own = cycleValue(key, this.view.authored[this.scope] ?? {});
     const effective = cycleValue(key, this.view.settings) ?? "default";
     const source = this.view.sources[key] ?? "default";
-    if (own === undefined) return `inherit (${effective} · ${source})`;
-    return source === this.scope ? own : `${own} (overridden: ${effective} · ${source})`;
+    return cycleDisplay({
+      own: cycleValue(key, this.view.authored[this.scope] ?? {}),
+      inEffect: effectiveWithSource(effective, source),
+      source,
+      scope: this.scope,
+    });
   }
 
   private change(id: string, value: string): void {
-    if (id === scopeRow) {
+    if (id === "scope") {
       if (Value.Check(guardianSettingScopeSchema, value)) this.scope = value;
       this.refresh();
       return;
@@ -474,43 +396,5 @@ export class GuardianSettingsMenu implements Component {
   private apply(change: GuardianChange): void {
     const scope = this.scope;
     this.run(() => this.host.apply(scope, change));
-  }
-
-  private run(task: () => Promise<void>): void {
-    this.error = undefined;
-    this.pending = this.pending
-      .then(task)
-      .catch((cause: unknown) => {
-        this.error = errorText(cause);
-      })
-      .finally(() => {
-        this.refresh();
-        this.ui.tui.requestRender();
-      });
-  }
-
-  handleInput(data: string): void {
-    this.list.handleInput(data);
-  }
-
-  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-    return this.list.handleMouse(event);
-  }
-
-  render(width: number): string[] {
-    const { theme } = this.ui;
-    return [
-      ...this.border.render(width),
-      ` ${theme.bold("Guardian settings")}`,
-      ...this.view.headline.map((line) => ` ${line}`),
-      "",
-      ...this.list.render(width),
-      ...(this.error ? [theme.fg("error", ` ✖ ${this.error}`)] : []),
-      ...this.border.render(width),
-    ];
-  }
-
-  invalidate(): void {
-    this.list.invalidate();
   }
 }

@@ -1,11 +1,13 @@
 import type { ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import {
-  sliceByColumn,
-  truncateToWidth,
-  visibleWidth,
-  type Component,
-  type TUI,
-} from "@earendil-works/pi-tui";
+  joinInline,
+  noticeText,
+  SEPARATOR,
+  statusMark,
+  widgetLines,
+  type StatusKind,
+} from "@ian-pascoe/pi-utils/ui";
 import type { DapSessionResult, DapSessionSnapshot } from "./dap-session.js";
 import type { DapToolParameters } from "./dap-tool-contract.js";
 import { workspaceRelativeDapPath } from "./dap-tool-rendering.js";
@@ -14,7 +16,6 @@ import type { DapToolObserver } from "./dap-tool.js";
 const DAP_OBSERVER_UI_KEY = "pi-dap";
 const DAP_OBSERVER_REFRESH_MS = 1_000;
 const DAP_OBSERVER_TERMINAL_COOLDOWN_MS = 10_000;
-const DAP_OBSERVER_SEPARATOR = "  ";
 
 /** Theme operations used by the one-line Pi DAP Observer widget. */
 export type DapObserverWidgetTheme = Pick<Theme, "bold" | "fg">;
@@ -40,47 +41,23 @@ export interface DapObserverUiContext {
   readonly ui: Pick<ExtensionUIContext, "notify" | "setWidget">;
 }
 
-interface DapObserverStateParts {
-  readonly full: string;
-  readonly short: string;
-}
-
-function dapObserverStateParts(
-  view: DapObserverWidgetView,
-  theme: DapObserverWidgetTheme,
-): DapObserverStateParts {
+/** The Status Mark for a Debug Session state: a clean exit is done, a non-zero exit failed. */
+function dapObserverMark(view: DapObserverWidgetView): StatusKind {
   switch (view.state) {
     case "launching":
-      return {
-        full: theme.fg("accent", "▶ launching"),
-        short: theme.fg("accent", "▶ launching"),
-      };
     case "running":
-      return {
-        full: theme.fg("accent", "▶ running"),
-        short: theme.fg("accent", "▶ running"),
-      };
-    case "stopped": {
-      const short = theme.fg("accent", "● stopped");
-      return {
-        full:
-          view.stopReason === undefined
-            ? short
-            : `${short}${theme.fg("dim", ` · ${view.stopReason}`)}`,
-        short,
-      };
-    }
-    case "terminated": {
-      const short = theme.fg("success", "■ terminated");
-      return {
-        full:
-          view.exitCode === undefined
-            ? short
-            : `${short}${theme.fg("dim", ` · exit ${view.exitCode}`)}`,
-        short,
-      };
-    }
+      return "active";
+    case "stopped":
+      return "stopped";
+    case "terminated":
+      return view.exitCode === undefined || view.exitCode === 0 ? "done" : "failed";
   }
+}
+
+function dapObserverReason(view: DapObserverWidgetView): string | undefined {
+  if (view.state === "stopped") return view.stopReason;
+  if (view.state === "terminated" && view.exitCode !== undefined) return `exit ${view.exitCode}`;
+  return undefined;
 }
 
 function formatDapObserverDuration(elapsedMs: number | undefined): string | undefined {
@@ -91,43 +68,56 @@ function formatDapObserverDuration(elapsedMs: number | undefined): string | unde
   return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
 }
 
-function joinDapObserverParts(parts: readonly (string | undefined)[]): string {
-  return parts.filter((part): part is string => part !== undefined).join(DAP_OBSERVER_SEPARATOR);
-}
-
-/** Render one responsive Observer snapshot without exceeding the terminal width. */
-export function renderDapObserverWidgetLine(
-  view: DapObserverWidgetView,
-  width: number,
-  theme: DapObserverWidgetTheme,
-): string {
-  if (width <= 0) return "";
-  const title = theme.fg("toolTitle", theme.bold("DAP"));
-  const state = dapObserverStateParts(view, theme);
+/** The widget header's muted counts, richest first: profile and duration, profile, none. */
+function dapObserverCountOptions(view: DapObserverWidgetView): string[] {
   const profile =
     view.adapterId === undefined && view.profileId === undefined
       ? undefined
-      : theme.fg("muted", `${view.adapterId ?? "?"}/${view.profileId ?? "?"}`);
-  const path = view.path === undefined ? undefined : theme.fg("muted", view.path);
-  const durationValue = formatDapObserverDuration(view.elapsedMs);
-  const duration = durationValue === undefined ? undefined : theme.fg("muted", durationValue);
-  const candidates = [
-    joinDapObserverParts([title, state.full, profile, path, duration]),
-    joinDapObserverParts([title, state.full, profile, path]),
-    joinDapObserverParts([title, state.full, profile]),
-    joinDapObserverParts([title, state.full]),
-    joinDapObserverParts([title, state.short]),
-  ];
-  const fitting = candidates.find((candidate) => visibleWidth(candidate) <= width);
-  if (fitting !== undefined) return fitting;
-
-  if (visibleWidth(title) >= width) return truncateToWidth(title, width, "…");
-  const stateWidth = Math.max(
-    0,
-    width - visibleWidth(title) - visibleWidth(DAP_OBSERVER_SEPARATOR),
+      : `${view.adapterId ?? "?"}/${view.profileId ?? "?"}`;
+  const duration = formatDapObserverDuration(view.elapsedMs);
+  const options = [[profile, duration], [profile], []].map((parts) =>
+    parts.filter((part) => part !== undefined).join(SEPARATOR),
   );
-  const shortenedState = sliceByColumn(state.short, 0, stateWidth, true);
-  return truncateToWidth(joinDapObserverParts([title, shortenedState || undefined]), width, "…");
+  return [...new Set(options)];
+}
+
+/** The widget row's text, richest first: reason and path, reason, state alone. */
+function dapObserverRowOptions(
+  view: DapObserverWidgetView,
+  theme: DapObserverWidgetTheme,
+): string[] {
+  const state = `${statusMark(theme, dapObserverMark(view))} ${view.state}`;
+  const reasonText = dapObserverReason(view);
+  const reason = reasonText === undefined ? undefined : theme.fg("dim", reasonText);
+  const path = view.path === undefined ? undefined : theme.fg("muted", view.path);
+  return [joinInline(theme, [state, reason, path]), joinInline(theme, [state, reason]), state];
+}
+
+/**
+ * Render the Observer widget in the shared layout. Detail drops right to left as the terminal
+ * narrows (duration, path, profile, reason) and every line stays within the width.
+ */
+export function renderDapObserverWidgetLines(
+  view: DapObserverWidgetView,
+  width: number,
+  theme: DapObserverWidgetTheme,
+): string[] {
+  if (width <= 0) return [];
+  const layouts = dapObserverCountOptions(view).map((counts) =>
+    widgetLines(
+      theme,
+      counts === "" ? { title: "DAP", rows: [] } : { title: "DAP", counts, rows: [] },
+    ),
+  );
+  const header = layouts.find(
+    (lines) => (lines[0] ?? "") !== "" && visibleWidth(lines[0] ?? "") <= width,
+  );
+  const rows = dapObserverRowOptions(view, theme);
+  const row = rows.find((candidate) => visibleWidth(candidate) <= width);
+  return [
+    header?.[0] ?? truncateToWidth(layouts.at(-1)?.[0] ?? "", width, "..."),
+    row ?? truncateToWidth(rows.at(-1) ?? "", width, "..."),
+  ];
 }
 
 class DapObserverWidgetComponent implements Component {
@@ -143,7 +133,7 @@ class DapObserverWidgetComponent implements Component {
   }
 
   render(width: number): string[] {
-    return [renderDapObserverWidgetLine(this.view, width, this.theme)];
+    return renderDapObserverWidgetLines(this.view, width, this.theme);
   }
 
   invalidate(): void {}
@@ -239,10 +229,7 @@ export class DapObserverUiController implements DapToolObserver {
   /** Notify only an actionable asynchronous failure not represented by an active tool result. */
   onUnexpectedFailure(error: Error): void {
     if (this.disposed || this.activeToolCalls > 0) return;
-    const message = error.message.startsWith("Pi DAP:")
-      ? error.message
-      : `Pi DAP: ${error.message}`;
-    this.context.ui.notify(message, "error");
+    this.context.ui.notify(noticeText("DAP", error.message.replace(/^Pi DAP:\s*/u, "")), "error");
   }
 
   /** Dispose timers and the widget immediately; repeated disposal is inert. */

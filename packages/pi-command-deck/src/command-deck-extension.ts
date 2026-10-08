@@ -3,7 +3,7 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { shouldUseNerdFontIcons } from "@ian-pascoe/pi-utils";
+import { joinInline, noticeText } from "@ian-pascoe/pi-utils/ui";
 import { CommandDeckEditor } from "./command-deck-editor.js";
 import {
   formatCacheHit,
@@ -19,6 +19,7 @@ import {
   type WorktreeSnapshot,
 } from "./worktree-snapshot.js";
 
+const DISPLAY_NAME = "Command Deck";
 const GIT_TIMEOUT_MS = 2_000;
 const COMMAND_DECK_FACTORY = Symbol.for("@ian-pascoe/pi-command-deck/editor-factory");
 
@@ -61,15 +62,17 @@ export default function commandDeck(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => {
     if (ctx.mode !== "tui") return;
-    const useNerdFontIcons = shouldUseNerdFontIcons(process.env);
+    // Warnings carry the display name; info messages stay unprefixed.
+    const notify = (message: string, level: "info" | "warning"): void =>
+      ctx.ui.notify(level === "warning" ? noticeText(DISPLAY_NAME, message) : message, level);
     let clipboardWarned = false;
     const copy = (text: string): void => {
       copyToClipboard(text).catch((error) => {
         if (clipboardWarned) return;
         clipboardWarned = true;
         const reason = error instanceof Error ? error.message : String(error);
-        ctx.ui.notify(
-          `Command Deck could not copy the yank to the system clipboard (${reason}); put still works inside Pi. Run /skill:pi-command-deck to diagnose.`,
+        notify(
+          `could not copy the yank to the system clipboard (${reason}); put still works inside Pi. Run /skill:pi-command-deck to diagnose.`,
           "warning",
         );
       });
@@ -78,8 +81,8 @@ export default function commandDeck(pi: ExtensionAPI): void {
     // Install before awaiting so later extensions wrap the Command Deck rather than replace it.
     const current = ctx.ui.getEditorComponent();
     if (current !== undefined && !(COMMAND_DECK_FACTORY in current)) {
-      ctx.ui.notify(
-        "Command Deck replaced an editor installed by an earlier extension. Load pi-command-deck before extensions that wrap the editor. Run /skill:pi-command-deck to diagnose.",
+      notify(
+        "replaced an editor installed by an earlier extension. Load pi-command-deck before extensions that wrap the editor. Run /skill:pi-command-deck to diagnose.",
         "warning",
       );
     }
@@ -91,7 +94,7 @@ export default function commandDeck(pi: ExtensionAPI): void {
         editorTheme,
         keybindings,
         {
-          notify: (message, level) => ctx.ui.notify(message, level),
+          notify,
           quit: () => ctx.shutdown(),
           isPiCommand: (name) => isPiCommand(name, pi.getCommands()),
           copy,
@@ -101,22 +104,27 @@ export default function commandDeck(pi: ExtensionAPI): void {
           headerLeft: () => {
             const theme = ctx.ui.theme;
             const branch = getGitBranch();
-            const status =
-              snapshot === undefined
-                ? ""
-                : `${theme.fg("dim", " · ")}${formatWorktreeSnapshot(snapshot, theme, useNerdFontIcons)}`;
-            return `${theme.fg("dim", ` ${formatDeckCwd(ctx.cwd)}`)}${branch ? theme.fg("syntaxVariable", ` · ${branch}`) : ""}${status} `;
+            const parts = joinInline(theme, [
+              theme.fg("dim", formatDeckCwd(ctx.cwd)),
+              branch ? theme.fg("syntaxVariable", branch) : undefined,
+              snapshot === undefined ? undefined : formatWorktreeSnapshot(snapshot, theme),
+            ]);
+            return ` ${parts} `;
           },
           headerRight: () => {
             const theme = ctx.ui.theme;
             const thinking = pi.getThinkingLevel();
-            return ` ${theme.fg("syntaxFunction", ctx.model?.id ?? "no model")} ${theme.fg("dim", "·")} ${theme.getThinkingBorderColor(thinking)(thinking)} `;
+            const parts = joinInline(theme, [
+              theme.fg("syntaxFunction", ctx.model?.id ?? "no model"),
+              theme.getThinkingBorderColor(thinking)(thinking),
+            ]);
+            return ` ${parts} `;
           },
           railRight: () => {
             const theme = ctx.ui.theme;
             const cache = theme.fg("syntaxNumber", formatCacheHit(ctx.sessionManager.getEntries()));
             const context = theme.fg("muted", formatContextUsage(ctx.getContextUsage()?.percent));
-            return ` ${cache}${theme.fg("dim", " · ")}${context} `;
+            return ` ${joinInline(theme, [cache, context])} `;
           },
         },
       );
@@ -131,12 +139,7 @@ export default function commandDeck(pi: ExtensionAPI): void {
       const stopWatchingBranch = footerData.onBranchChange(() => tui.requestRender());
       return {
         render: (width: number) =>
-          formatStatusFooter(
-            footerData.getExtensionStatuses(),
-            theme.fg("dim", " · "),
-            theme.fg("dim", "…"),
-            width,
-          ),
+          formatStatusFooter(footerData.getExtensionStatuses(), theme.fg("dim", "..."), width),
         invalidate() {},
         dispose: stopWatchingBranch,
       };

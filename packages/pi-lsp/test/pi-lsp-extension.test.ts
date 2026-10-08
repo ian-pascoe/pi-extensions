@@ -10,6 +10,7 @@ import {
   createAgentSession,
   DefaultResourceLoader,
   ExtensionRunner,
+  initTheme,
   ModelRegistry,
   ModelRuntime,
   SessionManager,
@@ -20,6 +21,7 @@ import {
   type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { expectClickToggles } from "@ian-pascoe/pi-utils/ui-testing";
 import { createPiLspExtension, failureDiagnosticOutcome } from "../src/pi-lsp-extension.js";
 import { POST_EDIT_DIAGNOSTICS_ENTRY_TYPE } from "../src/lsp-post-edit-diagnostics-rendering.js";
 import { LspWorkspaceEditStore } from "../src/lsp-workspace-edit.js";
@@ -343,6 +345,8 @@ describe("Pi LSP extension lifecycle", () => {
     const command = harness.runner.getCommand("lsp");
     if (command === undefined) throw new Error("Expected /lsp command");
     await command.handler("enable typescript", harness.runner.createCommandContext());
+    // Info notices carry no prefix; warnings and errors read `LSP: ...`.
+    expect(harness.notifications.at(-1)).toMatch(/^typescript enabled at session scope/);
     const sessionLeaf = harness.sessionManager.getLeafId();
     await command.handler("disable typescript --project", harness.runner.createCommandContext());
     expect(
@@ -353,6 +357,7 @@ describe("Pi LSP extension lifecycle", () => {
       lsp: { unknownField: true, enablement: { typescript: false } },
     });
     expect(harness.sessionManager.getLeafId()).toBe(sessionLeaf);
+    expect(harness.notifications.at(-1)).toMatch(/^LSP: typescript disabled at project scope/);
     expect(harness.notifications.at(-1)).toContain("masked by session");
     expect(harness.notifications.at(-1)).toContain("enabled");
     await command.handler("disable typescript --global", harness.runner.createCommandContext());
@@ -1019,6 +1024,11 @@ describe("Pi LSP extension lifecycle", () => {
     expect(harness.runner.getEntryRenderer(POST_EDIT_DIAGNOSTICS_ENTRY_TYPE)).toBeTypeOf(
       "function",
     );
+    const renderer = harness.runner.getEntryRenderer(POST_EDIT_DIAGNOSTICS_ENTRY_TYPE);
+    const entry = entries[0];
+    if (!renderer || entry?.type !== "custom") throw new Error("Expected a diagnostics entry");
+    initTheme("dark");
+    expectClickToggles(renderer, entry, { expanded: false }, harness.runner.getUIContext().theme);
     await shutdownExtension(harness);
   });
 

@@ -1,24 +1,16 @@
+import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
+import { SettingsList, type Component, type SettingItem } from "@earendil-works/pi-tui";
 import {
-  DynamicBorder,
-  ExtensionEditorComponent,
-  getSelectListTheme,
-  getSettingsListTheme,
-  type KeybindingsManager,
-} from "@earendil-works/pi-coding-agent";
-import {
-  SelectList,
-  SettingsList,
-  type Component,
-  type SettingItem,
-  type TUI,
-  type TuiMouseEvent,
-  type TuiMouseEventResult,
-} from "@earendil-works/pi-tui";
-import {
+  cycleDisplay,
+  EditorChooser,
+  effectiveWithSource,
   errorText,
   ModelPicker,
   nextCycleValue,
+  scopeRow,
+  SettingsMenu,
   ValueInput,
+  type SettingsMenuUi,
 } from "@ian-pascoe/pi-utils/settings-menu";
 import { Value } from "typebox/value";
 import { formatAdvisorOption, type AdvisorRenderTheme } from "./advisor-rendering.js";
@@ -63,11 +55,8 @@ export interface AdvisorMenuHost {
 }
 
 /** Native UI collaborators supplied by `ctx.ui.custom`. */
-export interface AdvisorMenuUi {
-  tui: TUI;
-  keybindings: KeybindingsManager;
+export interface AdvisorMenuUi extends SettingsMenuUi {
   theme: AdvisorRenderTheme;
-  externalEditorCommand?: string;
 }
 
 const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -160,100 +149,34 @@ function parseAdvisorMenuValue(
   return { action: "set", key, patch: parseAdvisorOptions(patch, scope) };
 }
 
-/** Choose between editing the prompt in Pi's editor component and inheriting it. */
-class PromptChooser implements Component {
-  private readonly list: SelectList;
-  private editor: ExtensionEditorComponent | undefined;
-  private error: string | undefined;
-
-  /** `submit` throws a user-facing message for an invalid prompt; the editor stays open. */
-  constructor(
-    ui: AdvisorMenuUi,
-    prompt: string,
-    submit: (text: string) => void,
-    inherit: () => void,
-    cancel: () => void,
-  ) {
-    this.list = new SelectList(
-      [
-        { value: "edit", label: "Edit…" },
-        { value: "inherit", label: "inherit" },
-      ],
-      2,
-      getSelectListTheme(),
-    );
-    this.list.onCancel = cancel;
-    this.list.onSelect = (item) => {
-      if (item.value === "inherit") {
-        inherit();
-        return;
-      }
-      this.editor = new ExtensionEditorComponent(
-        ui.tui,
-        ui.keybindings,
-        "Advisor Prompt",
-        prompt,
-        (text) => {
-          try {
-            submit(text);
-          } catch (cause) {
-            this.error = ui.theme.fg("error", `✖ ${errorText(cause)}`);
-          }
-        },
-        cancel,
-        undefined,
-        ui.externalEditorCommand,
-      );
-      this.editor.focused = true;
-    };
-  }
-  handleInput(data: string): void {
-    this.error = undefined;
-    (this.editor ?? this.list).handleInput(data);
-  }
-  render(width: number): string[] {
-    const lines = (this.editor ?? this.list).render(width);
-    return this.error ? [...lines, this.error] : lines;
-  }
-  invalidate(): void {
-    (this.editor ?? this.list).invalidate();
-  }
-}
-
 /** Menu row ids that are not Advisor options. */
 const actionRows = { resume: "resume", scope: "scope" } as const;
 
 /** `/advisor` settings menu built from Pi's native settings list. */
-export class AdvisorSettingsMenu implements Component {
+export class AdvisorSettingsMenu extends SettingsMenu {
   private scope: AdvisorSettingScope = "session";
   private view: AdvisorMenuView;
   private rows: SettingItem[] = [];
-  private list: SettingsList;
-  private error: string | undefined;
   private lastRow: string = actionRows.scope;
-  /** Edits run one at a time so each reads the result of the previous one. */
-  private pending: Promise<void> = Promise.resolve();
   private submenuOpen = false;
   private rebuildPending = false;
-  private readonly border: DynamicBorder;
 
   constructor(
     private readonly host: AdvisorMenuHost,
-    private readonly ui: AdvisorMenuUi,
-    private readonly done: () => void,
+    protected override readonly ui: AdvisorMenuUi,
+    done: () => void,
   ) {
+    super("Advisor settings", ui, done);
     this.view = host.view();
-    this.border = new DynamicBorder((text) => ui.theme.fg("border", text));
-    this.list = this.createList();
+    this.createList();
   }
 
-  /** Resolves once every edit started so far has been applied or rejected. */
-  settled(): Promise<void> {
-    return this.pending;
+  protected headline(): readonly string[] {
+    return this.view.headline;
   }
 
   /** Re-read the host after external state changes, such as a Review starting. */
-  refresh(): void {
+  override refresh(): void {
     const paused = this.view.paused;
     try {
       this.view = this.host.view();
@@ -273,8 +196,7 @@ export class AdvisorSettingsMenu implements Component {
 
   private rebuild(): void {
     this.rebuildPending = false;
-    this.list = this.createList();
-    this.list.selectItem(this.view.paused ? actionRows.resume : this.lastRow);
+    this.createList().selectItem(this.view.paused ? actionRows.resume : this.lastRow);
   }
 
   private createList(): SettingsList {
@@ -284,13 +206,7 @@ export class AdvisorSettingsMenu implements Component {
       ...advisorOptionKeys,
     ];
     this.rows = ids.map((id) => this.createRow(id));
-    return new SettingsList(
-      this.rows,
-      this.rows.length,
-      getSettingsListTheme(),
-      (id, value) => this.change(id, value),
-      this.done,
-    );
+    return this.setList(this.rows, (id, value) => this.change(id, value));
   }
 
   private createRow(id: string): SettingItem {
@@ -302,14 +218,7 @@ export class AdvisorSettingsMenu implements Component {
         values: ["retry"],
         description: "Retry the Paused Advisor with its current settings",
       };
-    if (id === actionRows.scope)
-      return {
-        id,
-        label: "Scope",
-        currentValue: this.scope,
-        values: [...this.view.scopes],
-        description: "Where edits are written",
-      };
+    if (id === actionRows.scope) return scopeRow(this.scope, this.view.scopes);
     return this.optionRow(advisorOptionKey(id));
   }
 
@@ -378,8 +287,9 @@ export class AdvisorSettingsMenu implements Component {
           submenu: this.submenu(
             key,
             (close) =>
-              new PromptChooser(
+              new EditorChooser(
                 this.ui,
+                "Advisor Prompt",
                 settings.prompt ?? "",
                 (text) => {
                   // Throws for an invalid prompt, keeping the editor open.
@@ -468,12 +378,14 @@ export class AdvisorSettingsMenu implements Component {
 
   /** This scope's own value, or what it inherits; notes when another scope overrides it. */
   private cycleDisplay(key: CycleKey): string {
-    const own = cycleValue(key, this.view.authored[this.scope] ?? {});
     const effective = cycleValue(key, this.view.settings);
     const source = this.view.sources[key] ?? "default";
-    const inEffect = effective === undefined ? "observed agent" : `${effective} · ${source}`;
-    if (own === undefined) return `inherit (${inEffect})`;
-    return source === this.scope ? own : `${own} (overridden: ${inEffect})`;
+    return cycleDisplay({
+      own: cycleValue(key, this.view.authored[this.scope] ?? {}),
+      inEffect: effective === undefined ? "observed agent" : effectiveWithSource(effective, source),
+      source,
+      scope: this.scope,
+    });
   }
 
   private change(id: string, value: string): void {
@@ -514,43 +426,5 @@ export class AdvisorSettingsMenu implements Component {
   private apply(change: AdvisorChange): void {
     const scope = this.scope;
     this.run(() => this.host.apply(scope, change));
-  }
-
-  private run(task: () => Promise<void>): void {
-    this.error = undefined;
-    this.pending = this.pending
-      .then(task)
-      .catch((cause: unknown) => {
-        this.error = errorText(cause);
-      })
-      .finally(() => {
-        this.refresh();
-        this.ui.tui.requestRender();
-      });
-  }
-
-  handleInput(data: string): void {
-    this.list.handleInput(data);
-  }
-
-  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-    return this.list.handleMouse(event);
-  }
-
-  render(width: number): string[] {
-    const { theme } = this.ui;
-    return [
-      ...this.border.render(width),
-      ` ${theme.bold("Advisor settings")}`,
-      ...this.view.headline.map((line) => ` ${line}`),
-      "",
-      ...this.list.render(width),
-      ...(this.error ? [theme.fg("error", ` ✖ ${this.error}`)] : []),
-      ...this.border.render(width),
-    ];
-  }
-
-  invalidate(): void {
-    this.list.invalidate();
   }
 }
