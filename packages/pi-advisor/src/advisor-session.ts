@@ -452,7 +452,7 @@ async function buildAdvisorSession(
       services,
       sessionManager,
       model,
-      thinkingLevel: config.thinkingLevel ?? observed.thinkingLevel,
+      thinkingLevel: config.thinkingLevel,
       tools: [...config.allowedTools, options.adviceTool.name],
       customTools: [options.adviceTool],
     };

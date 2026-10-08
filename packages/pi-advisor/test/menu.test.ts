@@ -20,6 +20,7 @@ const defaults = {
   enabled: false,
   includeSubagents: false,
   prompt: "Default review prompt.",
+  thinkingLevel: "high",
   allowedTools: ["read", "grep"],
   catchUpThreshold: 3,
   reviewTimeoutMs: 120_000,
@@ -98,7 +99,7 @@ describe("Advisor settings menu", () => {
     expect(text).toContain("Advisor on");
     expect(text).toMatch(/Scope\s+session/);
     expect(text).toMatch(/enabled\s+inherit \(off · default\)/);
-    expect(text).toMatch(/thinkingLevel\s+inherit \(observed agent\)/);
+    expect(text).toMatch(/thinkingLevel\s+inherit \(high · default\)/);
     expect(text).toMatch(/model\s+inherit/);
     expect(text).toMatch(/allowedTools\s+read, grep/);
     expect(text).toMatch(/reviewTimeoutMs\s+120s/);
