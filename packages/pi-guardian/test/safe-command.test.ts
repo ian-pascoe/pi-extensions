@@ -469,6 +469,287 @@ describe("Safe Command", () => {
     });
   });
 
+  describe("quote-aware shell syntax", () => {
+    it.each([
+      // Single quotes make everything literal.
+      `grep -n 'render(40)' file`,
+      `grep -E 'a|b' file`,
+      `grep 'foo$' file`,
+      `grep '^a.*b$' file`,
+      `grep -rn 'x; rm -rf y' src`,
+      `echo 'a && b || c'`,
+      `echo '$(rm -rf ~)'`,
+      "echo '`rm -rf ~`'",
+      `echo 'back\\slash'`,
+      `echo 'bang!'`,
+      `echo '# not a comment'`,
+      `echo '~/x' '*.pem' '{a,b}' '<' '>' '&'`,
+      // Double quotes only make `$`, backtick, `\` and `!` special.
+      `grep -n "render(40)" file`,
+      `grep -E "a|b" file`,
+      `grep -E "a|b" file | head`,
+      `rg "foo.*bar" src`,
+      `echo "a; b && c || d | e & f"`,
+      `echo "(x) {y} [z] * ? # ^ < > ~"`,
+      `echo "it's"`,
+      `echo 'say "hi"'`,
+      `echo "~"`,
+      // Adjacent quoted and unquoted pieces make one word.
+      `echo a'|'b"&"c`,
+      // Tilde after a quote is not a tilde prefix.
+      `echo "a"~`,
+      `echo "a="~ "b:"~`,
+      `git diff HEAD~1`,
+    ])("allows %s", (command) => {
+      expect(isSafeCommand(command)).toBe(true);
+    });
+
+    it.each([
+      ["a command substitution in double quotes", `echo "$(rm -rf ~)"`],
+      ["a variable in double quotes", `echo "$HOME"`],
+      ["a bare dollar in double quotes", `echo "a$"`],
+      ["a backtick substitution in double quotes", 'echo "`rm -rf ~`"'],
+      ["a single backtick in double quotes", 'echo "a`b"'],
+      ["a backslash in double quotes", `echo "a\\b"`],
+      ["an escaped quote in double quotes", `echo "a\\"b"`],
+      ["a trailing backslash escaping the closing quote", `echo "a\\"`],
+      ["history expansion in double quotes", `echo "!!"`],
+      ["a bang in double quotes", `echo "hi!"`],
+      ["arithmetic in double quotes", `echo "$((1+1))"`],
+      ["a substitution after a quoted piece", `echo 'a'"$(rm x)"`],
+      ["an ANSI-C string", `echo $'a\\nb'`],
+      ["a translated string", `echo $"a"`],
+      ["an unquoted substitution beside quotes", `echo "a"$(rm x)`],
+      ["an unquoted pipe after quotes", `echo "a"|sh`],
+      ["an unquoted semicolon after quotes", `echo 'a';rm x`],
+      ["an unquoted and-chain after quotes", `echo "a" && rm x`],
+      ["an unquoted glob after quotes", `echo 'a'*`],
+      ["an unquoted brace after quotes", `echo "a"{b,c}`],
+      ["an unquoted comment after quotes", `echo "a" #x`],
+      ["an unquoted tilde word after quotes", `echo "a" ~/x`],
+      ["an unquoted tilde after a quoted word", `echo "a" ~`],
+      ["an unterminated single quote", `echo 'a`],
+      ["an unterminated double quote", `echo "a`],
+      ["an unterminated quote hiding a pipe", `echo "a|sh`],
+      ["an unterminated quote hiding a semicolon", `grep 'a; rm x`],
+      ["a quote left open by a backslash", `echo "a\\" | sh`],
+      ["a quoted newline", `echo 'a\nrm x'`],
+      ["a quoted carriage return", `echo 'a\rrm x'`],
+      ["quotes closing before an operator", `echo 'a' ; 'rm' x`],
+      ["a quoted program that is unknown", `'rm' -rf x`],
+      ["a quoted here-document operator after a real one", `cat <<'EOF'`],
+      ["a quoted-looking redirect target", `echo 'x' >'/tmp/f'`],
+    ])("reviews %s", (_case, command) => {
+      expect(isSafeCommand(command)).toBe(false);
+    });
+
+    it("keeps quoted syntax from splitting a command", () => {
+      // The semicolon, pipe, and chain are text, so the one segment is `echo`.
+      expect(isSafeCommand(`echo "a; rm x"`)).toBe(true);
+      expect(isSafeCommand(`echo 'a | sh'`)).toBe(true);
+      // A real operator after a quoted one still starts a segment that is judged.
+      expect(isSafeCommand(`echo 'a;b'; rm x`)).toBe(false);
+      expect(isSafeCommand(`echo "a&&b" && rm x`)).toBe(false);
+      expect(isSafeCommand(`echo 'a|b' | sh`)).toBe(false);
+    });
+
+    it("reads quotes the same way for Command Rules", () => {
+      expect(literalWords(`grep -E 'a|b' "c d"`)).toEqual(["grep", "-E", "a|b", "c d"]);
+      expect(literalWords(`echo "$HOME"`)).toBeUndefined();
+      expect(isSafeCommand(`make "a|b"`, { make: "allow" })).toBe(true);
+      expect(isSafeCommand(`make "$(rm x)"`, { make: "allow" })).toBe(false);
+      expect(judgeCommand(`grep -E "a|b" f`, { "grep -E": "review" }).verdict).toBe("review");
+      expect(judgeCommand(`grep -E "a|b" f`, { "grep -E": "deny" }).verdict).toBe("deny");
+    });
+  });
+
+  describe("stderr redirects", () => {
+    it.each([
+      "ls 2>/dev/null",
+      "ls 2>&1",
+      "ls -la src 2>/dev/null",
+      "ls  2>&1",
+      "ls\t2>&1",
+      "cat missing.txt 2>&1 | head",
+      "grep -rn TODO src 2>/dev/null | head -20",
+      "git status 2>&1",
+      "git log --oneline -5 2>/dev/null && ls",
+      "ls 2>/dev/null; pwd 2>&1",
+      "ls 2>/dev/null src",
+      "ls 2>/dev/null 2>&1",
+      "2>/dev/null ls",
+      `grep 'x' f 2>/dev/null`,
+      `grep -n "render(40)" file 2>&1`,
+      // A quoted redirect is only an argument.
+      `echo "2>/dev/null"`,
+      `echo '2>&1'`,
+      `echo a'2>&1'`,
+    ])("allows %s", (command) => {
+      expect(isSafeCommand(command)).toBe(true);
+    });
+
+    it.each([
+      ["stdout to /dev/null", "ls >/dev/null"],
+      ["stdout to /dev/null with a space", "ls > /dev/null"],
+      ["explicit stdout to /dev/null", "ls 1>/dev/null"],
+      ["stderr to a file", "ls 2>file"],
+      ["stderr to a file with a space", "ls 2> file"],
+      ["stderr appended to /dev/null", "ls 2>>/dev/null"],
+      ["stderr to /dev/null with a space", "ls 2> /dev/null"],
+      ["stderr to a longer path", "ls 2>/dev/nullx"],
+      ["stderr to a path below /dev/null", "ls 2>/dev/null/x"],
+      ["stderr to another device", "ls 2>/dev/tty"],
+      ["stderr to /dev/stdout", "ls 2>/dev/stdout"],
+      ["stderr to stdout in other digits", "ls 2>&10"],
+      ["stderr to a descriptor", "ls 2>&3"],
+      ["stderr to stderr", "ls 2>&2"],
+      ["stdout to stderr", "ls >&2"],
+      ["stdout to stderr as 1>&2", "ls 1>&2"],
+      ["both streams to a file", "ls &>file"],
+      ["both streams to /dev/null", "ls &>/dev/null"],
+      ["both streams appended", "ls &>>/dev/null"],
+      ["stderr redirect glued to a word", "ls a2>/dev/null"],
+      ["stderr redirect glued to a quote", `ls ''2>/dev/null`],
+      ["a redirect then a file redirect", "ls 2>&1 >out"],
+      ["a redirect glued to a file redirect", "ls 2>&1>out"],
+      ["a redirect glued to a background job", "ls 2>&1&"],
+      ["a redirect glued to a second ampersand", "ls 2>&1&&rm x"],
+      ["a redirect then input redirection", "cat 2>&1 <in"],
+      ["a redirect then a pipe-stderr", "ls 2>&1 |& cat"],
+      ["a redirect on a command that is not safe", "rm x 2>/dev/null"],
+      ["a redirect on an unsafe pipeline segment", "ls | sh 2>&1"],
+      ["a redirect with an unsafe chained segment", "ls 2>&1 && rm x"],
+      ["a redirect before an unsafe program", "2>&1 rm x"],
+      ["a redirect with a substitution", "ls 2>&1 $(rm x)"],
+      ["a redirect with a here-document", "cat 2>&1 <<EOF"],
+      ["a redirect with a here-string", "cat 2>&1 <<<x"],
+      ["a redirect with an environment assignment", "A=b 2>&1 ls"],
+      ["a redirect with an unknown program", "node 2>/dev/null"],
+      ["a redirect after a comment", "ls # 2>&1"],
+      ["a redirect with a newline", "ls 2>&1\nrm x"],
+      ["a quoted redirect operator", `ls "2">/dev/null`],
+      ["a redirect with a leading digit", "ls 22>/dev/null"],
+      ["a redirect with a space in the number", "ls 2 >/dev/null"],
+    ])("reviews %s", (_case, command) => {
+      expect(isSafeCommand(command)).toBe(false);
+    });
+
+    it("does not let a redirect hide a segment from a review or deny Command Rule", () => {
+      expect(judgeCommand("git log 2>&1", { "git log": "review" }).verdict).toBe("review");
+      expect(judgeCommand("2>&1 git log", { "git log": "review" }).verdict).toBe("review");
+      expect(judgeCommand("git 2>/dev/null log", { "git log": "review" }).verdict).toBe("review");
+      expect(judgeCommand("2>/dev/null git status", { "git status": "deny" }).verdict).toBe("deny");
+      expect(judgeCommand("ls 2>&1 | rm x", { rm: "deny" }).verdict).toBe("deny");
+      expect(judgeCommand("git status 2>&1", { "git status": "allow" }).verdict).toBe("allow");
+      expect(judgeCommand("npm 2>&1 test", { "npm test": "allow" }).verdict).toBe("allow");
+      expect(judgeCommand("npm 2>&1 publish", { "npm test": "allow" }).verdict).toBe("review");
+    });
+
+    it("keeps redirects out of literal words and Command Rule prefixes", () => {
+      expect(literalWords("ls 2>/dev/null")).toBeUndefined();
+      expect(literalWords("ls 2>&1")).toBeUndefined();
+    });
+  });
+
+  describe("sed -n print-only scripts", () => {
+    it.each([
+      "sed -n 5p file",
+      "sed -n '5p' file",
+      `sed -n "5p" file`,
+      "sed -n '10,20p' file",
+      "sed -n 10,20p file",
+      "sed -n '$p' file",
+      "sed -n '5,$p' file",
+      "sed -n '$,$p' file",
+      "sed -n '/foo/p' file",
+      "sed -n '/foo bar/p' a.txt b.txt",
+      "sed -n '/start/,/end/p' file",
+      "sed -n '3,/end/p' file",
+      "sed -n '/a;w x/p' file",
+      "sed -n 1p",
+      "cat file | sed -n '2,4p'",
+      "sed -n 1p file 2>/dev/null",
+      "sed -n '1p' file | head",
+    ])("allows %s", (command) => {
+      expect(isSafeCommand(command)).toBe(true);
+    });
+
+    it.each([
+      ["a write command", "sed -n 'w out' file"],
+      ["a write after a print", "sed -n '1p;w x' file"],
+      ["a write after a range", "sed -n '1,2p;w x' file"],
+      ["a write with an address", "sed -n '1w out' file"],
+      ["a newline-joined command", "sed -n '1p\nw x' file"],
+      ["an execute command", "sed -n 'e cmd' file"],
+      ["an execute with an address", "sed -n '1e cmd' file"],
+      ["a read command", "sed -n '1r /etc/passwd' file"],
+      ["a substitution", "sed -n 's/a/b/p' file"],
+      ["a substitution with execute", "sed -n 's/a/b/e' file"],
+      ["a print then a command", "sed -n '1p;2d' file"],
+      ["a print and an execute", "sed -n 'p;e' file"],
+      ["a negated print", "sed -n '1!p' file"],
+      ["a delete", "sed -n '1d' file"],
+      ["print with trailing text", "sed -n '1p x' file"],
+      ["print followed by a brace", "sed -n '1{p}' file"],
+      ["print without an address", "sed -n p file"],
+      ["a step address", "sed -n '1~2p' file"],
+      ["a relative range", "sed -n '1,+2p' file"],
+      ["a regex address with an escape", "sed -n '/a\\/b/p' file"],
+      ["a regex address with a flag", "sed -n '/a/Ip' file"],
+      ["a regex address closing early", "sed -n '/a/;w x/p' file"],
+      ["a regex address with a custom delimiter", "sed -n '\\,a,p' file"],
+      ["an empty regex", "sed -n '//p' file"],
+      ["a bare number with spaces", "sed -n ' 1p' file"],
+      ["a lowercase address letter", "sed -n 'ap' file"],
+      ["the script in double quotes with an expansion", `sed -n "$x" file`],
+      ["a script dollar in double quotes", `sed -n "$p" file`],
+      ["no -n", "sed 5p file"],
+      ["in-place editing", "sed -i 5p file"],
+      ["in-place editing with -n", "sed -n -i 5p file"],
+      ["in-place editing after the script", "sed -n 5p -i file"],
+      ["in-place editing after the files", "sed -n 5p file -i"],
+      ["in-place editing with a suffix", "sed -n 5p file -i.bak"],
+      ["long in-place editing", "sed -n 5p file --in-place"],
+      ["long in-place editing with a suffix", "sed -n 5p file --in-place=.bak"],
+      ["combined -ni", "sed -ni 5p file"],
+      ["combined -ne", "sed -ne 5p file"],
+      ["combined -n and -i", "sed -in 5p file"],
+      ["-n then -e", "sed -n -e 5p file"],
+      ["two -e scripts", "sed -n -e 5p -e 'w x' file"],
+      ["-e before the print", "sed -n -e '1p' -e '2p' file"],
+      ["-f script file", "sed -n -f script.sed file"],
+      ["-f after the print", "sed -n 5p -f script.sed file"],
+      ["-s separate files", "sed -n 5p -s file"],
+      ["--expression", "sed -n --expression=5p file"],
+      ["--file", "sed -n --file=x file"],
+      ["--quiet instead of -n", "sed --quiet 5p file"],
+      ["--sandbox absent but -E option", "sed -n -E 5p file"],
+      ["a lone dash operand", "sed -n 5p -"],
+      ["a double dash", "sed -n 5p -- file"],
+      ["a repeated -n", "sed -n -n 5p file"],
+      ["the script before -n", "sed 5p -n file"],
+      ["only -n", "sed -n"],
+      ["no arguments", "sed"],
+      ["a program path", "/usr/bin/sed -n 5p file"],
+      ["sed in an unsafe pipeline", "sed -n 5p file | sh"],
+      ["sed with output redirection", "sed -n 5p file > out"],
+      ["sed with stdout to /dev/null", "sed -n 5p file >/dev/null"],
+      ["sed with an unquoted glob address", "sed -n 5p *.txt"],
+    ])("reviews %s", (_case, command) => {
+      expect(isSafeCommand(command)).toBe(false);
+    });
+
+    it("lets a review or deny Command Rule govern sed", () => {
+      expect(judgeCommand("sed -n 5p file", { sed: "review" }).verdict).toBe("review");
+      expect(judgeCommand("sed -n 5p file", { sed: "deny" }).verdict).toBe("deny");
+    });
+
+    it("lets an allow Command Rule extend sed as configured", () => {
+      expect(isSafeCommand("sed -i 5p file")).toBe(false);
+      expect(isSafeCommand("sed -i 5p file", { "sed -i": "allow" })).toBe(true);
+    });
+  });
+
   it("splits literal words with quotes", () => {
     expect(literalWords(`rg -n "two words" 'x y' z`)).toEqual([
       "rg",

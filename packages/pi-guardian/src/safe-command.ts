@@ -10,6 +10,7 @@ import {
   commandStarts,
   commandWords,
   looseCommands,
+  safeRedirect,
   splitSegments,
   type Segments,
 } from "./shell-syntax.js";
@@ -20,26 +21,39 @@ import {
 } from "./sensitive-paths.js";
 
 /**
- * Characters that make a command more than one simple command of literal words: pipes,
- * redirection, chaining, background jobs, subshells, grouping, command/process substitution,
- * variable/arithmetic/brace/history expansion, globbing, comments, and escapes.
+ * Characters that make a command more than one simple command of literal words when unquoted:
+ * pipes, redirection, chaining, background jobs, subshells, grouping, command/process
+ * substitution, variable/arithmetic/brace/history expansion, globbing, comments, and escapes.
  */
 const shellSyntax = /[|&;<>()$`\\*?[\]{}!#^]/;
-/** Tilde expansion: `~` starting a word or following `=` or `:` (`HEAD~1` stays literal). */
-const tildeExpansion = /(?:^|[\s=:])~/;
+/**
+ * Characters the shell still interprets inside double quotes: expansions, command substitution,
+ * escapes, and history expansion. Inside single quotes nothing is special.
+ */
+const doubleQuoteSyntax = /[$`\\!]/;
+/** Where an unquoted `~` is tilde expansion: starting a word or following `=` or `:`. */
+const tildePrefix = /[\s=:]/;
 // oxlint-disable-next-line no-control-regex -- Control characters (including newlines) are exactly what this rejects.
 const controlCharacters = /[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u2028\u2029]/;
 
-/** Split a command into literal words; `undefined` when it is not one simple command. */
-export function literalWords(command: string): string[] | undefined {
-  if (controlCharacters.test(command) || shellSyntax.test(command) || tildeExpansion.test(command))
-    return undefined;
+/**
+ * Split a command into literal words, reading quotes as the shell does: no unquoted shell syntax,
+ * and no `$`, backtick, `\`, or `!` inside double quotes; `undefined` when it is not one simple
+ * command. With `redirects`, the two stderr redirections {@link safeRedirect} names, which sit as
+ * words of their own, are dropped; any other redirection, or one glued to a word or quoted, is not
+ * literal words.
+ */
+function lexWords(command: string, redirects: boolean): string[] | undefined {
+  if (controlCharacters.test(command)) return undefined;
   const words: string[] = [];
   let word: string | undefined;
   let quote: "'" | '"' | undefined;
-  for (const character of command) {
+  // Every structural character is ASCII, so UTF-16 indexes are safe here.
+  for (let index = 0; index < command.length; index++) {
+    const character = command[index] ?? "";
     if (quote) {
       if (character === quote) quote = undefined;
+      else if (quote === '"' && doubleQuoteSyntax.test(character)) return undefined;
       else word = (word ?? "") + character;
       continue;
     }
@@ -53,11 +67,34 @@ export function literalWords(command: string): string[] | undefined {
       word = undefined;
       continue;
     }
+    if (redirects && word === undefined) {
+      const redirect = safeRedirect.exec(command.slice(index));
+      if (redirect) {
+        index += redirect[0].length - 1;
+        continue;
+      }
+    }
+    if (shellSyntax.test(character)) return undefined;
+    if (character === "~" && (index === 0 || tildePrefix.test(command[index - 1] ?? "")))
+      return undefined;
     word = (word ?? "") + character;
   }
   if (quote) return undefined;
   if (word !== undefined) words.push(word);
   return words.length ? words : undefined;
+}
+
+/** Split a command into literal words; `undefined` when it is not one simple command. */
+export function literalWords(command: string): string[] | undefined {
+  return lexWords(command, false);
+}
+
+/**
+ * A Safe Command segment's words: {@link literalWords}, with `2>/dev/null` and `2>&1` dropped
+ * wherever they stand as words of their own.
+ */
+function segmentWords(segment: string): string[] | undefined {
+  return lexWords(segment, true);
 }
 
 /** Validates a built-in safe program's arguments; `true` when they cannot cause side effects. */
@@ -108,6 +145,21 @@ const gitSubcommands = new Map<string, ArgumentCheck>([
   ["rev-parse", anyArguments],
 ]);
 
+/** A `sed` line address: a line number, the last line, or a regular expression without escapes. */
+const sedAddress = String.raw`(?:\d+|\$|/[^/\\\n\r]+/)`;
+/** A `sed` script that only prints: an address or range, then `p`, and nothing else. */
+const sedPrintScript = new RegExp(String.raw`^${sedAddress}(?:,${sedAddress})?p$`);
+
+/**
+ * `sed -n '<address>p' file…` only prints lines. Any other option, even after the files (`-i`,
+ * `-f`, `-s`), script (`w`, `e`, `r`, `s///e`, a second command), or `-e` is not accepted.
+ */
+const sedPrintOnly: ArgumentCheck = ([flag, script, ...files]) =>
+  flag === "-n" &&
+  script !== undefined &&
+  sedPrintScript.test(script) &&
+  !files.some((file) => file.startsWith("-"));
+
 /** Built-in safe programs and their argument checks. */
 const builtInPrograms = new Map<string, ArgumentCheck>([
   ["ls", anyArguments],
@@ -127,6 +179,7 @@ const builtInPrograms = new Map<string, ArgumentCheck>([
   ["whoami", anyArguments],
   ["uname", anyArguments],
   ["grep", anyArguments],
+  ["sed", sedPrintOnly],
   // `--pre` and `--hostname-bin` run arbitrary programs.
   ["rg", rejectOptions("--pre", "--pre-glob", "--hostname-bin")],
   ["find", (args) => !args.some((arg) => findActions.has(arg))],
@@ -268,7 +321,7 @@ function safeSegment(
   /** An earlier `cd` left the directory unknown: built-in `git` may read another repository. */
   directoryUnknown: boolean,
 ): boolean {
-  const words = literalWords(segment);
+  const words = segmentWords(segment);
   const program = words?.[0];
   if (!words || program === undefined) return false;
   // An environment assignment (`PAGER=x git log`) or a path (`./ls`) is not a known program.
@@ -365,7 +418,7 @@ function safeSegments(
   let directories = where ? [where.cwd] : [];
   let directoryUnknown = false;
   for (const [index, segment] of segments.entries()) {
-    const words = literalWords(segment);
+    const words = segmentWords(segment);
     if (words?.[0] === "cd") {
       const piped = operators[index - 1] === "|" || operators[index] === "|";
       const targets =
