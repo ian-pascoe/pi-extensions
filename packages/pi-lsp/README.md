@@ -100,12 +100,12 @@ workspace. A server without `rootMarkers` gets no package warning. One server fo
 workspace also uses more memory than one per package.
 
 `includeHintDiagnostics` (default `false`) controls whether Post-edit Diagnostics include
-hint-severity findings; a project value overrides the global one. Global and project timeouts merge by field. A project server replaces the complete global server
-with the same ID; set a project server to `null` to remove it. `initializationOptions` is sent only
+hint-severity findings; a project value overrides the global one. Global and project timeouts
+merge by field. A project server replaces the complete global server with the same ID; set a project server to `null` to remove it. `initializationOptions` is sent only
 during initialization. `settings` is used for `workspace/didChangeConfiguration` and
 `workspace/configuration`. Environment strings override `process.env`; `null` removes a variable.
-Invalid server definitions and timeout fields are quarantined individually and remain visible
-through `status`; unrelated valid settings continue to work. An invalid project server replacement
+Invalid server definitions, timeout fields, and `includeHintDiagnostics` are quarantined
+individually and remain visible through `status`; unrelated valid settings continue to work. An invalid project server replacement
 still shadows the global definition. Untrusted project settings are ignored.
 
 Pi's `/reload` reloads configuration. Servers start lazily on first use and live for one Pi session.

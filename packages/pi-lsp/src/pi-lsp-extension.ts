@@ -141,7 +141,8 @@ function branchLspToolResultDetails(
   return [...records.values()];
 }
 
-function normalizedDiagnosticOutcome(
+/** Normalize one protocol Diagnostic; a missing severity is an Error, so default hint filtering keeps it. */
+export function normalizedDiagnosticOutcome(
   diagnostic: Diagnostic,
   serverId: string,
   filePath: string,
@@ -160,7 +161,8 @@ function normalizedDiagnosticOutcome(
       path: filePath,
       line: position.line,
       character: position.character,
-      severity: diagnostic.severity ?? 4,
+      // LSP leaves a missing severity to the client; treat it as an Error, like vscode-languageclient.
+      severity: diagnostic.severity ?? 1,
       message: Value.Check(Type.String(), diagnostic.message)
         ? diagnostic.message
         : Value.Parse(DiagnosticMarkupContentSchema, diagnostic.message).value,
