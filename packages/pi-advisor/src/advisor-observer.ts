@@ -84,7 +84,6 @@ function observationBoundary(session: AgentSession) {
   return {
     sessionId: session.sessionManager.getSessionId(),
     model: session.model,
-    thinkingLevel: session.thinkingLevel,
   };
 }
 interface OperationBase {
@@ -300,7 +299,6 @@ export class AdvisorObserver {
     };
     observed.agent.streamFunction = this.captureStream;
     this.unsubscribeSession = observed.subscribe((event) => {
-      if (event.type === "thinking_level_changed") this.reset();
       // Request completion: the run has ended after its steering and follow-ups, and Pi will not
       // retry it. Observed compaction afterwards neither invalidates nor cancels this Review.
       if (
@@ -373,10 +371,7 @@ export class AdvisorObserver {
       state,
       backlog: this.completed - this.reviewed,
       effectiveModel,
-      effectiveThinkingLevel:
-        this.runtime?.session.thinkingLevel ??
-        this.config.thinkingLevel ??
-        this.observed.thinkingLevel,
+      effectiveThinkingLevel: this.runtime?.session.thinkingLevel ?? this.config.thinkingLevel,
       cost:
         runtime && stats && (stats.cost > 0 || (stats.tokens.total > 0 && priced(runtime)))
           ? stats.cost
