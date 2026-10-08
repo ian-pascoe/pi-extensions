@@ -151,7 +151,7 @@ it("projects the same messages byte-identically, in a seed and as an incremental
   expect(incremental).not.toContain("MIDDLE");
 });
 
-it("measures what fits, and the calibrated sample, on the capped evidence", async () => {
+it("measures whether new evidence fits the seed budget on the capped evidence", async () => {
   const privateRequests: PrivateRequest[] = [];
   globalThis.advisorObserverTest = longSessionStream(
     { "First request": 1, "Second request": 4 },
