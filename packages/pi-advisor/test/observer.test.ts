@@ -1777,6 +1777,8 @@ it.each([
       enabled: true,
       catchUpThreshold: 1,
       seedBudgetTokens,
+      // This test bounds the seed by its budget alone, so tool results stay uncapped.
+      maxToolResultChars: 1_000_000,
     };
     const observer = new AdvisorObserver(session, config, "headless-root");
     globalThis.advisorObserverTest.settled = () => observer.settled();
@@ -1887,6 +1889,8 @@ it("keeps the newest turn when its tool result alone exceeds the seed budget", a
       enabled: true,
       catchUpThreshold: 1,
       seedBudgetTokens: 3_000,
+      // Only the seed budget shortens this result.
+      maxToolResultChars: 1_000_000,
     },
     "headless-root",
   );

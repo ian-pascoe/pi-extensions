@@ -16,7 +16,14 @@ async function observe(config: Partial<AdvisorConfig>) {
   const session = await activeFixture();
   const observer = new AdvisorObserver(
     session,
-    { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: 1, ...config },
+    {
+      ...readAdvisorSettings(session).settings,
+      enabled: true,
+      catchUpThreshold: 1,
+      // These tests size evidence by token budgets, so they leave tool results uncapped.
+      maxToolResultChars: 1_000_000,
+      ...config,
+    },
     "headless-root",
   );
   globalThis.advisorObserverTest.settled = () => observer.settled();

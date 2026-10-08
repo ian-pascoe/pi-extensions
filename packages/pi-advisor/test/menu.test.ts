@@ -30,6 +30,7 @@ const defaults = {
   seedBudgetTokens: "auto",
   reviewEvery: "turn",
   maxSessionTokens: "auto",
+  maxToolResultChars: 4_000,
 } satisfies AdvisorOptions;
 
 /** In-memory scoped settings with the same precedence as the extension. */
@@ -301,6 +302,11 @@ describe("Advisor settings menu", () => {
     type("120000");
     press(keys.enter);
     await settle();
+    goTo("maxToolResultChars");
+    press(keys.enter);
+    type("2000");
+    press(keys.enter);
+    await settle();
     goTo("maxNitsPerRequest");
     press(keys.enter);
     type("0");
@@ -311,6 +317,7 @@ describe("Advisor settings menu", () => {
       { action: "set", key: "reviewEvery", patch: { reviewEvery: 4 } },
       { action: "set", key: "reviewEvery", patch: { reviewEvery: "turn" } },
       { action: "set", key: "maxSessionTokens", patch: { maxSessionTokens: 120_000 } },
+      { action: "set", key: "maxToolResultChars", patch: { maxToolResultChars: 2_000 } },
       { action: "set", key: "maxNitsPerRequest", patch: { maxNitsPerRequest: 0 } },
     ]);
   });

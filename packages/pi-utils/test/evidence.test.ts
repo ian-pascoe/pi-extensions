@@ -1,6 +1,7 @@
 import { fauxAssistantMessage, type Message } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import {
+  capText,
   combineEvidence,
   evidenceItemsCost,
   evidenceRefs,
@@ -150,6 +151,71 @@ describe("evidence projection", () => {
       "user",
       "unknown",
     ]);
+  });
+});
+
+describe("tool-result cap", () => {
+  const cap = { limit: 100, marker: (omitted: number) => `[cut ${omitted}]` };
+  const text = `${"H".repeat(300)}${"M".repeat(400)}${"T".repeat(300)}`;
+  const long: Message[] = [
+    { role: "user", content: text, timestamp: 1 },
+    assistant([
+      { type: "text", text },
+      { type: "thinking", thinking: text, thinkingSignature: "S" },
+      { type: "toolCall", id: "c1", name: "read", arguments: { path: text } },
+    ]),
+    {
+      role: "toolResult",
+      toolCallId: "c1",
+      toolName: "read",
+      content: [{ type: "text", text }, image, { type: "text", text: "short" }],
+      isError: true,
+      timestamp: 2,
+    },
+  ];
+
+  it("is off unless a caller opts in, so every text is projected whole", () => {
+    expect(projectEvidence(long)).toEqual(projectEvidence(long, {}));
+    expect(JSON.stringify(projectEvidence(long))).toContain(text);
+    expect(projectEvidenceItem(long[2]!)?.message).toEqual(projectEvidence([long[2]!]).messages[0]);
+  });
+
+  it("keeps head and tail of tool-result text only, with the reference and error status", () => {
+    const capped = projectEvidence(long, { toolResultCap: cap });
+    const plain = projectEvidence(long);
+    expect(capped.messages.slice(0, 2)).toEqual(plain.messages.slice(0, 2));
+    expect(capped.images).toEqual(plain.images);
+    expect(capped.messages[2]).toEqual({
+      role: "toolResult",
+      ref: toolCallRef("c1"),
+      toolName: "read",
+      isError: true,
+      content: [
+        { type: "text", text: `${"H".repeat(50)}\n[cut 900]\n${"T".repeat(50)}` },
+        { type: "image", attachment: 1 },
+        { type: "text", text: "short" },
+      ],
+    });
+    expect(projectEvidenceItem(long[2]!, { toolResultCap: cap })?.message).toEqual(
+      capped.messages[2],
+    );
+  });
+
+  it("is deterministic and leaves text within the limit, or that a marker would not shorten, as is", () => {
+    const first = JSON.stringify(projectEvidence(long, { toolResultCap: cap }));
+    expect(JSON.stringify(projectEvidence(long, { toolResultCap: cap }))).toBe(first);
+    expect(capText("x".repeat(100), cap)).toBe("x".repeat(100));
+    expect(capText("x".repeat(101), cap)).toBe("x".repeat(101));
+    expect(capText("x".repeat(200), cap)).toHaveLength(50 + 50 + "\n[cut 100]\n".length);
+  });
+
+  it("never splits a surrogate pair", () => {
+    const emoji = "😀".repeat(200);
+    const capped = capText(emoji, cap);
+    expect(capped).not.toMatch(
+      /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/,
+    );
+    expect(capped).toContain("[cut ");
   });
 });
 
