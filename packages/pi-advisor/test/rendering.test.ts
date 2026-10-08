@@ -255,7 +255,7 @@ describe("Advisor status", () => {
       },
       true,
     );
-    expect(text).toMatch(/└─ worker\s+● armed\s+2 Reviews \$0\.05 · last Review \$0\.02/);
+    expect(text).toMatch(/└─ worker\s+● on\s+2 Reviews \$0\.05 · last Review \$0\.02/);
   });
 
   it("counts findings awaiting re-validation and findings dropped, only when there are any", () => {

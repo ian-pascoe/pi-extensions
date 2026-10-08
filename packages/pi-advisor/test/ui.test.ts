@@ -59,7 +59,7 @@ describe("Advisor status entries", () => {
     const rendered = renderer?.(entry, { expanded: false }, themeFromRunner(session));
     const text = stripVTControlCharacters(rendered?.render(120).join("\n") ?? "");
     expect(text).toContain("✓ enabled → true [session]");
-    expect(text).toContain("Advisor ● armed");
+    expect(text).toContain("Advisor ● on");
     expect(text).not.toContain('"settings"');
   });
 });
@@ -345,12 +345,12 @@ describe("/advisor settings menu", () => {
     };
     const command = session.prompt("/advisor");
     await vi.waitFor(() => expect(host.shown.component).toBeDefined());
-    expect(host.screen()).toContain("Advisor ● armed");
+    expect(host.screen()).toContain("Advisor ● on");
     // The menu has focus in a real TUI; drive a turn directly to start a Review.
     await session.agent.prompt({ role: "user", content: "Task", timestamp: Date.now() });
     await vi.waitFor(() => expect(host.screen()).toContain("Advisor ● reviewing"));
     releaseReview.resolve();
-    await vi.waitFor(() => expect(host.screen()).toContain("Advisor ● armed"));
+    await vi.waitFor(() => expect(host.screen()).toContain("Advisor ● on"));
     host.press("\x1b");
     await command;
   });

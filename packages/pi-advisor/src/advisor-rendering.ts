@@ -306,8 +306,13 @@ export function formatAdvisorOption(options: AdvisorOptions, key: keyof AdvisorO
   }
 }
 
+/** The word shown for a state. Guardian says `on` when idle, so an armed Advisor does too; `armed` stays the stored state. */
+function stateWord(state: AdvisorState): string {
+  return state === "armed" ? "on" : state;
+}
+
 function badge(state: AdvisorState, theme: AdvisorRenderTheme, paint: Paint): string {
-  return `${statusMark(theme, stateMarkKind[state])} ${paint(state)}`;
+  return `${statusMark(theme, stateMarkKind[state])} ${paint(stateWord(state))}`;
 }
 
 function joinDefined(parts: ReadonlyArray<string | undefined>, separator: string): string {
@@ -468,8 +473,7 @@ export function advisorFooterText(
       name: "advisor",
       value: theme.fg("warning", "paused"),
     });
-  // Guardian's footer says `on` when idle, so an armed Advisor does too; `armed` stays the stored state.
-  const parts: string[] = [root.state === "armed" ? "on" : root.state];
+  const parts: string[] = [stateWord(root.state)];
   if ((root.state === "reviewing" || root.state === "consulting") && root.backlog > 0)
     parts.push(`backlog ${root.backlog}`);
   // Consultations come only from the main agent, so a child segment shows Reviews and pauses.

@@ -50,7 +50,7 @@ function createHost({ paused = false, failWith }: { paused?: boolean; failWith?:
         for (const key of Object.keys(authored[scope])) sources[key] = scope;
       }
       return {
-        headline: [state.paused ? "Advisor paused: Deadline exceeded" : "Advisor armed"],
+        headline: [state.paused ? "Advisor paused: Deadline exceeded" : "Advisor on"],
         paused: state.paused,
         scopes: ["session", "project", "global"],
         settings,
@@ -95,7 +95,7 @@ describe("Advisor settings menu", () => {
   it("shows the live headline, the scope, and every setting with its effective value", () => {
     const { screen } = createMenu();
     const text = screen();
-    expect(text).toContain("Advisor armed");
+    expect(text).toContain("Advisor on");
     expect(text).toMatch(/Scope\s+session/);
     expect(text).toMatch(/enabled\s+inherit \(off · default\)/);
     expect(text).toMatch(/thinkingLevel\s+inherit \(observed agent\)/);
