@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import * as piAi from "@earendil-works/pi-ai";
+import type { Api, CacheRetention, Model } from "@earendil-works/pi-ai";
 import * as piSdk from "@earendil-works/pi-coding-agent";
 import type {
   SourceInfo,
@@ -68,6 +69,23 @@ export const contextManagementTools = ["context_notes", "context_history", "cont
 /** Whether these tool names include all of Context Management's; it then owns compaction. */
 export function providesContextManagement(tools: { has(name: string): boolean }): boolean {
   return contextManagementTools.every((name) => tools.has(name));
+}
+
+/**
+ * Prompt-cache retention the Advisor asks for on its own requests. Pi's adapters map `long` to
+ * what each API accepts: OpenAI `prompt_cache_retention: "24h"` (`prompt_cache_options` on
+ * models with explicit cache modes), which costs nothing extra, and Anthropic's `ttl: "1h"`,
+ * whose writes cost 2× instead of 1.25×, so it needs the `anthropicLongCache` opt-in. Other
+ * providers keep their default: the Codex adapter sends no retention field and ChatGPT
+ * sign-in rejects the OpenAI one.
+ */
+export function advisorCacheRetention(
+  model: Pick<Model<Api>, "provider">,
+  config: Pick<AdvisorConfig, "anthropicLongCache">,
+): CacheRetention | undefined {
+  if (model.provider === "openai") return "long";
+  if (model.provider === "anthropic" && config.anthropicLongCache) return "long";
+  return undefined;
 }
 
 /** Private role is native journal state and is installed before session_start. */
@@ -470,6 +488,19 @@ async function buildAdvisorSession(
     created.session.setActiveToolsByName(
       created.session.getActiveToolNames().filter((name) => !scriptOnly.has(name)),
     );
+    // Retention is a per-request stream option on the Advisor's own agent, never a process-wide
+    // setting, so the observed agent's requests are untouched. Pi's native compaction of this
+    // session reuses this stream function and sets `cacheRetention: "none"` on its summary
+    // call on purpose, so a retention the caller chose is never overridden.
+    const advisorStream = created.session.agent.streamFunction;
+    created.session.agent.streamFunction = (model, context, streamOptions) => {
+      const cacheRetention = streamOptions?.cacheRetention ?? advisorCacheRetention(model, config);
+      return advisorStream(
+        model,
+        context,
+        cacheRetention ? { ...streamOptions, cacheRetention } : streamOptions,
+      );
+    };
     return { ...created, services, diagnostics: services.diagnostics };
   };
   const runtime = await piSdk.createAgentSessionRuntime(factory, {

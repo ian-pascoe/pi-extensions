@@ -1,5 +1,11 @@
 import { StringEnum, type JsonValue } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import {
+  defineTool,
+  type ExtensionAPI,
+  type ExtensionContext,
+  type SessionEntry,
+} from "@earendil-works/pi-coding-agent";
+import { acceptNullForOptionalArguments } from "@ian-pascoe/pi-utils/null-optional-arguments";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import {
@@ -250,7 +256,7 @@ export function registerContextTools(
   pi: ExtensionAPI,
   onMutationFailure?: (cause: Error, ctx: ExtensionContext) => void,
 ): void {
-  pi.registerTool<typeof HistoryParameters, ContextToolDetails>({
+  const historyTool = defineTool<typeof HistoryParameters, ContextToolDetails>({
     name: "context_history",
     label: "Context History",
     description:
@@ -362,7 +368,8 @@ export function registerContextTools(
       return result(search(recordedEntries(), params.query, offset, limit));
     },
   });
-  pi.registerTool<typeof NotesParameters, ContextToolDetails>({
+  pi.registerTool(acceptNullForOptionalArguments(historyTool));
+  const notesTool = defineTool<typeof NotesParameters, ContextToolDetails>({
     name: "context_notes",
     label: "Context Notes",
     description:
@@ -453,4 +460,5 @@ export function registerContextTools(
       return result({ action: params.action, name: params.name, saved: true });
     },
   });
+  pi.registerTool(acceptNullForOptionalArguments(notesTool));
 }

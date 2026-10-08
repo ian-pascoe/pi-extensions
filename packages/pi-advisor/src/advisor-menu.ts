@@ -64,12 +64,18 @@ const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max
 const cycleValues = {
   enabled: ["inherit", "on", "off"],
   includeSubagents: ["inherit", "on", "off"],
+  anthropicLongCache: ["inherit", "on", "off"],
   thinkingLevel: ["inherit", ...thinkingLevels],
 } as const satisfies Record<string, readonly string[]>;
 type CycleKey = keyof typeof cycleValues;
 
 function isCycleKey(key: keyof AdvisorOptions): key is CycleKey {
-  return key === "enabled" || key === "includeSubagents" || key === "thinkingLevel";
+  return (
+    key === "enabled" ||
+    key === "includeSubagents" ||
+    key === "anthropicLongCache" ||
+    key === "thinkingLevel"
+  );
 }
 
 /** A cycled option's value as shown and cycled; undefined when absent. */
@@ -99,6 +105,8 @@ const descriptions = {
     "Advisor Session size that triggers native compaction; auto is half the Advisor model's context window, at most 100k",
   maxToolResultChars:
     "Longest tool-result text kept whole in Review Evidence, in characters; longer results keep their head and tail",
+  anthropicLongCache:
+    "Ask Anthropic for 1h prompt caching on Advisor requests; cache writes cost 2× instead of 1.25×",
 } satisfies Record<keyof AdvisorOptions, string>;
 const inheritRow = "\u0000inherit";
 const inputHints = {
@@ -127,6 +135,7 @@ function parseAdvisorMenuValue(
     switch (key) {
       case "enabled":
       case "includeSubagents":
+      case "anthropicLongCache":
         return { [key]: value === "on" ? true : value === "off" ? false : value };
       case "catchUpThreshold":
         return { catchUpThreshold: value === "off" ? value : Number(value) };
@@ -253,6 +262,7 @@ export class AdvisorSettingsMenu extends SettingsMenu {
     switch (key) {
       case "enabled":
       case "includeSubagents":
+      case "anthropicLongCache":
       case "thinkingLevel":
         // The row shows and cycles this scope's own value, so every state is reachable.
         return {

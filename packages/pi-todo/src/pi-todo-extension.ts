@@ -1,6 +1,12 @@
 import { StringEnum } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import {
+  defineTool,
+  type ExtensionAPI,
+  type ExtensionContext,
+  type Theme,
+} from "@earendil-works/pi-coding-agent";
 import { type Component } from "@earendil-works/pi-tui";
+import { acceptNullForOptionalArguments } from "@ian-pascoe/pi-utils/null-optional-arguments";
 import { noticeText } from "@ian-pascoe/pi-utils/ui";
 import { Type } from "typebox";
 import { projectTodoContext, todoStateFromEntry } from "./todo-context.js";
@@ -175,7 +181,7 @@ export default function piTodoExtension(pi: ExtensionAPI): void {
     }
   });
 
-  pi.registerTool<typeof TodoParameters, TodoToolDetails | undefined>({
+  const todoTool = defineTool<typeof TodoParameters, TodoToolDetails | undefined>({
     name: "todo",
     label: "Todo",
     description: "Manage the current session branch's Todo List.",
@@ -211,6 +217,7 @@ export default function piTodoExtension(pi: ExtensionAPI): void {
     renderResult: (result, options, theme, context) =>
       renderTodoResult(result, options, theme, context),
   });
+  pi.registerTool(acceptNullForOptionalArguments(todoTool));
 
   pi.registerCommand("todo", {
     description: "Manage the Todo List",

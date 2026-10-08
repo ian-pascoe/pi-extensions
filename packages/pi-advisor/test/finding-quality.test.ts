@@ -2,6 +2,7 @@ import { onTestFinished, expect, it, vi } from "vitest";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import {
   activeFixture,
+  effectful,
   longSessionStream,
   seedPayload,
   type LongSessionOptions,
@@ -100,7 +101,12 @@ function expectStableAdvisorPrefix(requests: PrivateRequest[]) {
   }
 }
 
-const ok: LongSessionOptions = { result: (id) => `ok ${id}`, isError: () => false };
+/** Successful tool calls with effects, so every turn starts a Review under the default cadence. */
+const ok: LongSessionOptions = {
+  result: (id) => `ok ${id}`,
+  isError: () => false,
+  call: effectful,
+};
 
 it("withholds a Superseded Finding and has the next Review re-validate it", async () => {
   const privateRequests: PrivateRequest[] = [];
@@ -145,6 +151,40 @@ it("withholds a Superseded Finding and has the next Review re-validate it", asyn
   expect(intervention).toBeGreaterThan(final);
   // Deferral adds no model call and keeps the Advisor's prompt prefix stable.
   expectStableAdvisorPrefix(privateRequests);
+});
+
+it("re-validates a withheld finding while the agent only reads, instead of at request completion", async () => {
+  const privateRequests: PrivateRequest[] = [];
+  const gate = turnGate();
+  const concern: AdvisorFinding = {
+    severity: "concern",
+    message: "The edit was not verified.",
+    evidence: { quote: "ok 0-0" },
+  };
+  // The first turn has effects; every turn after it only reads.
+  globalThis.advisorObserverTest = longSessionStream({ "Edit then explore": 8 }, privateRequests, {
+    ...ok,
+    call: (id) => (id === "0-0" ? effectful(id) : { name: "read", arguments: { path: "/x" } }),
+    // The Review of the edit answers only after two read-only turns completed.
+    hold: (review) => (review === 1 ? gate.until(3) : undefined),
+    report: () => ({ findings: [concern] }),
+  });
+  const { session, observer } = await observe({ catchUpThreshold: "off" });
+  gate.watch(session);
+  await session.prompt("Edit then explore");
+  expect(observer.status).toMatchObject({ lastError: null, backlog: 0, deferredFindings: 0 });
+  // The edit's Review, then the re-validation, then the final answer's Review.
+  expect(privateRequests).toHaveLength(3);
+  expect(seedPayload(privateRequests[1]).evidence.deferredFindings).toEqual({
+    instruction: expect.any(String),
+    findings: [concern],
+  });
+  expect(delivered(session)).toEqual(["Advisor concern: The edit was not verified."]);
+  // The Concern steered the run while it was still exploring, before its final answer.
+  const final = session.messages.findLastIndex((message) => message.role === "assistant");
+  const intervention = session.messages.findIndex((message) => message.role === "custom");
+  expect(intervention).toBeGreaterThan(-1);
+  expect(intervention).toBeLessThan(final);
 });
 
 it("defers a Superseded Finding only once, so turns arriving faster than Reviews never starve a Concern", async () => {
@@ -652,6 +692,33 @@ it("accepts a corrected advisor_report after one invalid call without pausing", 
     isError: true,
   });
   expect(delivered(session)).toEqual(["Advisor concern: Corrected."]);
+});
+
+it("accepts null for an optional field of an advisor_report finding's evidence like omitting it", async () => {
+  const privateRequests: PrivateRequest[] = [];
+  globalThis.advisorObserverTest = longSessionStream({}, privateRequests, {
+    ...ok,
+    // Models trained on `T | null` schemas send null for the evidence they do not cite; the
+    // arguments are untyped JSON as the model emits them, not the schema's `Static` type.
+    report: () => ({
+      findings: [
+        {
+          severity: "concern",
+          message: "Cited.",
+          evidence: JSON.parse('{ "quote": "Answer", "refs": null }'),
+        },
+      ],
+    }),
+  });
+  const { session, observer } = await observe({});
+  await session.prompt("Answer");
+  expect(observer.status).toMatchObject({
+    lastError: null,
+    droppedFindings: { invalidReviews: 0, unsupported: 0 },
+  });
+  // No report was rejected with a request to retry.
+  expect(JSON.stringify(privateRequests)).not.toContain("Call advisor_report again");
+  expect(delivered(session)).toEqual(["Advisor concern: Cited."]);
 });
 
 it("drops a legacy single-finding report, which cites no evidence", async () => {
