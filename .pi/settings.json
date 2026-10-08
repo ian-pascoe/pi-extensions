@@ -79,10 +79,9 @@
   ],
   "guardian": {
     "enabled": true,
+    "classifierModel": "typesafe/jev-latest",
     "model": "anthropic/claude-haiku-5-5",
-    "thinkingLevel": "off",
-    "escalationModel": "anthropic/claude-sonnet-5-5",
-    "escalationThinkingLevel": "low"
+    "thinkingLevel": "low"
   },
   "advisor": {
     "enabled": false,
