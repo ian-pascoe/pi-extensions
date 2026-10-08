@@ -203,6 +203,22 @@ function limiter(max: number): <T>(task: () => Promise<T>) => Promise<T> {
   };
 }
 
+/**
+ * A promise for when `released` settles or `signal` aborts, whichever comes first, so a waiter
+ * can never outlive either.
+ */
+function untilReleased(released: Promise<void>, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const done = () => {
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    signal.addEventListener("abort", done, { once: true });
+    void released.then(done);
+  });
+}
+
 /** What one review sees, before its evidence is sized to a model. */
 interface ReviewInputs {
   /** The rendered Reviewed Call, never shortened. */
@@ -417,6 +433,7 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
     reason: string | undefined,
     batch: readonly ToolCall[],
     signal: AbortSignal | undefined,
+    onStreamStart?: () => void,
   ): Promise<ReviewResult> {
     const session = host.session();
     if (!session) return failed(host.unavailable());
@@ -456,6 +473,8 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
     try {
       const classifier = configuredClassifier(config);
       if (classifier !== undefined) {
+        // A classifier's request has no prompt cache for a sibling to wait for.
+        onStreamStart?.();
         const first = await classifierPass(ctx, config, classifier, inputs, signal);
         const trigger = classifierTrigger(first, config.escalationThreshold);
         if (!trigger) return first;
@@ -475,6 +494,7 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
         signal,
         sessionId: inputs.sessionId,
         categories: inputs.categories,
+        onStreamStart,
       });
       const measured =
         first.promptTokens === undefined
@@ -779,7 +799,15 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
     });
   }
 
-  /** Start early reviews for a response's calls, so parallel calls are reviewed concurrently. */
+  /**
+   * Start early reviews for a response's calls, so parallel calls are reviewed concurrently.
+   *
+   * Sibling reviews share their system prompt and evidence, which a provider such as Anthropic
+   * makes readable only once the response that wrote it begins. So the first review starts at
+   * once and its siblings wait, holding no slot, until its stream emits its first event. They
+   * start early whenever that cannot happen: the first review settles (it failed, was aborted, or
+   * timed out), its early review is discarded or aborted, or a sibling is itself aborted.
+   */
   function prefetch(ctx: ExtensionContext, blocks: readonly ToolCall[]): void {
     const { config, error } = host.settings();
     if (!config.enabled || error || ending) return;
@@ -787,6 +815,8 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
     // In a sequential batch each call's preflight follows the earlier calls' results, which an
     // early review could not see, so only the first call is reviewed early.
     const candidates = sequentialBatch(blocks) ? blocks.slice(0, 1) : blocks;
+    /** Settles when siblings of the first early review may start; unset until it is created. */
+    let firstStarted: Promise<void> | undefined;
     for (const block of candidates) {
       if (prefetched.has(block.id)) continue;
       const tool = tools.find((candidate) => candidate.name === block.name);
@@ -810,14 +840,35 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
       const signal = ctx.signal
         ? AbortSignal.any([ctx.signal, controller.signal])
         : controller.signal;
+      let start: () => Promise<ReviewResult>;
+      if (firstStarted === undefined) {
+        let release = () => {};
+        firstStarted = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        if (signal.aborted) release();
+        else signal.addEventListener("abort", release, { once: true });
+        const onStreamStart = release;
+        start = () =>
+          prefetchSlot(() =>
+            review(ctx, config, call, policy.detail, blocks, signal, onStreamStart),
+          ).finally(release);
+      } else {
+        const started = firstStarted;
+        start = async () => {
+          await untilReleased(started, signal);
+          // Aborted while waiting: no request is worth sending.
+          if (signal.aborted)
+            return { kind: "aborted", model: null, durationMs: 0, usage: null, cost: null };
+          return prefetchSlot(() => review(ctx, config, call, policy.detail, blocks, signal));
+        };
+      }
       prefetched.set(block.id, {
         call,
         basis: reviewBasis(ctx, config, policy),
         controller,
         // A review settling after a session switch must not become an unhandled rejection.
-        result: prefetchSlot(() => review(ctx, config, call, policy.detail, blocks, signal)).catch(
-          (cause: unknown) => failed(errorMessage(cause)),
-        ),
+        result: start().catch((cause: unknown) => failed(errorMessage(cause))),
         consumed: false,
       });
     }
