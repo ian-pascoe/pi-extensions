@@ -23,7 +23,7 @@ The Pi packages and `typebox` are optional peers; Pi's extension loader supplies
 | `./layered-settings`           | `typebox`                                                                        |
 | `./settings-menu`              | `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui`                   |
 | `./settings-command`           | Nothing; its declarations reference `@earendil-works/pi-tui` types               |
-| `./ui`                         | `@earendil-works/pi-coding-agent` (`keyText`); declarations reference pi-tui     |
+| `./ui`                         | `@earendil-works/pi-coding-agent` (`keyText`) and `@earendil-works/pi-tui`       |
 | `./ui-testing`                 | `@earendil-works/pi-tui` (`visibleWidth`)                                        |
 
 Type-only imports from `@earendil-works/pi-ai` and `@earendil-works/pi-coding-agent` are erased from the compiled JavaScript, but the published declarations reference them, so TypeScript consumers outside Pi need those packages installed to type-check.
