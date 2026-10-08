@@ -34,6 +34,8 @@ type Payload = Static<typeof payloadSchema>;
 
 interface Request {
   advisor: boolean;
+  /** A native compaction summary of the Advisor Session: a request without tools. */
+  summary: boolean;
   /** The exact bytes the adapter would send, from `JSON.stringify`. */
   json: string;
   body: Payload;
@@ -61,9 +63,9 @@ function adapterFor(model: Model<Api>, context: TranscriptContext, options: Simp
  */
 function recordPayloads(requests: Request[]) {
   globalThis.advisorObserverTest.request = (model, context, options) => {
-    const advisor = getCurrentTools(context.messages).some(
-      (tool) => tool.name === "advisor_report",
-    );
+    const tools = getCurrentTools(context.messages);
+    const advisor = tools.some((tool) => tool.name === "advisor_report");
+    const summary = tools.length === 0;
     const recorded: SimpleStreamOptions = {
       ...options,
       apiKey: model.api === "openai-codex-responses" ? codexToken : "offline",
@@ -74,6 +76,7 @@ function recordPayloads(requests: Request[]) {
         const json = JSON.stringify(next);
         requests.push({
           advisor,
+          summary,
           json,
           body: Value.Parse(payloadSchema, JSON.parse(json)),
           options,
@@ -83,20 +86,25 @@ function recordPayloads(requests: Request[]) {
     };
     const stream = adapterFor(model, context, recorded);
     if (stream) void stream.result();
-    else requests.push({ advisor, json: "{}", body: {}, options });
+    else requests.push({ advisor, summary, json: "{}", body: {}, options });
   };
 }
 
 /** Run one observed request (two model calls) under a provider; the Advisor is optional. */
-async function run(provider: string, config?: Partial<AdvisorConfig>, prompts = ["Request 1."]) {
-  const privateRequests: PrivateRequest[] = [];
-  globalThis.advisorObserverTest = longSessionStream({ Request: 1 }, privateRequests, {
+async function run(
+  provider: string,
+  config?: Partial<AdvisorConfig>,
+  prompts = ["Request 1."],
+  stream: Parameters<typeof longSessionStream>[2] = {
     result: (id) => `ok ${id}`,
     isError: () => false,
-  });
+  },
+) {
+  const privateRequests: PrivateRequest[] = [];
+  globalThis.advisorObserverTest = longSessionStream({ Request: 1 }, privateRequests, stream);
   const requests: Request[] = [];
   recordPayloads(requests);
-  const session = await activeFixture({}, [
+  const session = await activeFixture({ compaction: { enabled: false, keepRecentTokens: 1_000 } }, [
     fileURLToPath(new URL("./fixtures/provider-extension.ts", import.meta.url)),
   ]);
   const model = session.modelRuntime.getModel(provider, `offline-${provider}`);
@@ -115,7 +123,8 @@ async function run(provider: string, config?: Partial<AdvisorConfig>, prompts = 
   return {
     session,
     advisor: requests.filter((request) => request.advisor),
-    observed: requests.filter((request) => !request.advisor),
+    observed: requests.filter((request) => !request.advisor && !request.summary),
+    summaries: requests.filter((request) => request.summary),
   };
 }
 
@@ -229,3 +238,32 @@ it("leaves providers without a retention opt-in at their default", async () => {
   expect(requests.some((request) => request.advisor)).toBe(true);
   for (const request of requests) expect(request.options?.cacheRetention).toBeUndefined();
 });
+
+it.each([
+  ["openai", {}],
+  ["anthropic", { anthropicLongCache: true }],
+])(
+  "keeps native compaction summaries of the Advisor Session uncached on %s",
+  async (provider, config) => {
+    const prompts = Array.from({ length: 6 }, (_, index) => `Request ${index + 1}.`);
+    const { advisor, summaries } = await run(
+      provider,
+      { ...config, reviewEvery: "request", maxSessionTokens: 4_000 },
+      prompts,
+      {
+        result: (id) => `result ${id} ${"x".repeat(8_000)}`,
+        isError: () => false,
+        reportContextTokens: true,
+      },
+    );
+    expect(summaries.length).toBeGreaterThan(0);
+    for (const request of summaries) {
+      expect(request.options?.cacheRetention).toBe("none");
+      expect(request.json).not.toContain("cache_control");
+      expect(request.body).not.toHaveProperty("prompt_cache_retention");
+      expect(request.body).not.toHaveProperty("prompt_cache_key");
+    }
+    expect(advisor.length).toBeGreaterThan(0);
+    for (const request of advisor) expect(request.options?.cacheRetention).toBe("long");
+  },
+);

@@ -489,11 +489,12 @@ async function buildAdvisorSession(
       created.session.getActiveToolNames().filter((name) => !scriptOnly.has(name)),
     );
     // Retention is a per-request stream option on the Advisor's own agent, never a process-wide
-    // setting, so the observed agent's requests are untouched. Pi's compaction and summary
-    // calls bypass this stream function and keep their own cache policy.
+    // setting, so the observed agent's requests are untouched. Pi's native compaction of this
+    // session reuses this stream function and sets `cacheRetention: "none"` on its summary
+    // call on purpose, so a retention the caller chose is never overridden.
     const advisorStream = created.session.agent.streamFunction;
     created.session.agent.streamFunction = (model, context, streamOptions) => {
-      const cacheRetention = advisorCacheRetention(model, config);
+      const cacheRetention = streamOptions?.cacheRetention ?? advisorCacheRetention(model, config);
       return advisorStream(
         model,
         context,

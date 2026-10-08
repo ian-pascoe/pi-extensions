@@ -110,7 +110,7 @@ Under `N` or `"request"`, a turn whose tool call failed still starts a Review at
 A provider's prompt cache lasts about five minutes by default, so a Review after a longer idle gap re-reads the whole Advisor Session uncached. Advisor asks for longer retention on its own requests only, as a per-request stream option on the Advisor Session's agent; it never sets the process-wide `PI_CACHE_RETENTION`, and the observed agent's requests are byte-for-byte unchanged.
 
 - **OpenAI** (the `openai` provider): Advisor requests send `prompt_cache_retention: "24h"` (`prompt_cache_options.ttl` on models with explicit cache modes). It costs nothing extra, so it is always on.
-- **Anthropic** (the `anthropic` provider): `anthropicLongCache` (default `false`) asks for the 1h cache TTL on Advisor requests. A 1h cache write costs 2× the input price instead of 1.25×, so enable it only when Reviews are routinely more than five minutes apart.
+- **Anthropic** (the `anthropic` provider): `anthropicLongCache` (default `false`) asks for the 1h cache TTL on Advisor requests. A 1h cache write costs 2× the input price instead of 1.25×, so enable it only when Reviews are routinely more than five minutes apart. With `false`, Advisor requests use the provider default, so a process-wide `PI_CACHE_RETENTION=long` still applies to them.
 - **OpenAI Codex** (`openai-codex`) and other providers keep their default: Pi's Codex adapter sends no retention field, and ChatGPT sign-in rejects the OpenAI one.
 
 Pi's own cache warming (`cacheWarming`) reads the retention of the request it replays, so it follows these lifetimes.
