@@ -230,7 +230,7 @@ export default function advisor(pi: ExtensionAPI): void {
     for (const child of children.values()) child.observer?.reset();
     await refresh(ctx);
   });
-  pi.on("model_select", () => observer?.reset());
+  pi.on("model_select", () => observer?.modelChanged());
   pi.on("before_agent_start", () => observer?.beforeTask());
   pi.on("agent_settled", () => observer?.settled());
   pi.on("session_shutdown", async () => {

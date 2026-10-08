@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calibratedFactor, fallbackTokenFactor } from "../src/guardian-calibration.js";
+import { calibratedFactor, fallbackTokenFactor, tokenFactor } from "../src/token-calibration.js";
 
 describe("token estimate calibration", () => {
   it("starts conservative and rises to the reported ratio in quarter steps", () => {
@@ -20,5 +20,17 @@ describe("token estimate calibration", () => {
     expect(calibratedFactor(1.5, 1_000, 5_000)).toBe(1.5);
     expect(calibratedFactor(1.5, 10_000, 0)).toBe(1.5);
     expect(calibratedFactor(1.5, 10_000, 90_000)).toBe(3);
+  });
+});
+
+describe("tokenFactor", () => {
+  it("folds samples in order from the fallback, or from a caller's own fallback", () => {
+    const samples = [{ estimated: 32_000, reported: 54_000 }];
+    expect(tokenFactor([])).toBe(fallbackTokenFactor);
+    expect(tokenFactor(samples)).toBe(1.75);
+    expect(tokenFactor([], 2)).toBe(2);
+    // A ratio within the hysteresis band of the caller's fallback leaves it unchanged.
+    expect(tokenFactor(samples, 1.75)).toBe(1.75);
+    expect(tokenFactor([...samples, { estimated: 10_000, reported: 11_000 }])).toBe(1.25);
   });
 });

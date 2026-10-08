@@ -114,6 +114,11 @@ export interface LongSessionOptions {
   usage?: AssistantMessage["usage"];
   /** Report each private response's input as Pi's chars/4 estimate of its context. */
   reportContextTokens?: boolean;
+  /**
+   * Report each private response's input as its provider would: the cached system prompt and
+   * tools at Pi's estimate, and the messages at this multiple of Pi's chars/4 estimate.
+   */
+  tokenRatio?: number;
   /** Private compaction summary requests, recorded in order. */
   summaries?: Context[];
   /** Milliseconds each Review response is held, by timer, before it completes. */
@@ -143,6 +148,7 @@ export function longSessionStream(
     report = () => ({ findings: [] }),
     usage,
     reportContextTokens,
+    tokenRatio,
     summaries,
     reviewDelayMs,
     summaryDelayMs,
@@ -186,6 +192,12 @@ export function longSessionStream(
         if (usage) message.usage = structuredClone(usage);
         if (reportContextTokens) {
           const input = Math.ceil(JSON.stringify(context).length / 4);
+          message.usage = { ...message.usage, input, totalTokens: input + message.usage.output };
+        }
+        if (tokenRatio) {
+          const setup = Math.ceil(JSON.stringify([context.systemPrompt, context.tools]).length / 4);
+          const input =
+            setup + Math.ceil(Math.ceil(JSON.stringify(context.messages).length / 4) * tokenRatio);
           message.usage = { ...message.usage, input, totalTokens: input + message.usage.output };
         }
         if (!text.startsWith("Consultation request")) {

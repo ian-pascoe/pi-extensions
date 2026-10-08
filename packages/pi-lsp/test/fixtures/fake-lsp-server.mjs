@@ -41,6 +41,13 @@ function respondError(id, code, message) {
 }
 
 function diagnostics(message = "fake diagnostic") {
+  if (process.env.FAKE_DIAGNOSTICS === "error-and-hint") {
+    const range = { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } };
+    return [
+      { range, severity: 1, message, source: "fake" },
+      { range, severity: 4, message: "fake hint", source: "fake" },
+    ];
+  }
   return process.env.FAKE_DIAGNOSTICS === "one"
     ? [
         {

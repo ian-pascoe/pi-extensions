@@ -83,7 +83,7 @@ const descriptions = {
   includeSubagents: "Also review Minimal Subagents Child Agents",
   prompt: "Advisor Prompt; replaces the whole prompt",
   model: "Advisor model; inherit follows the observed agent",
-  thinkingLevel: "Advisor thinking level; inherit follows the observed agent",
+  thinkingLevel: "Advisor thinking level; inherit uses the default (high)",
   allowedTools: "Tools the Advisor may call (Tool Grant)",
   catchUpThreshold: "Review Backlog that starts a Catch-up Wait; a positive integer or off",
   reviewTimeoutMs: "Deadline for each Review, in seconds",
@@ -92,11 +92,11 @@ const descriptions = {
   maxFindingsPerReview: "Findings accepted from one Review (1–32)",
   maxNitsPerRequest: "Nits delivered per request; further Nits are dropped (0 delivers none)",
   seedBudgetTokens:
-    "Token budget for the Context Seed; auto is a quarter of the Advisor model's context window, at most 100k",
+    "Token budget for the Context Seed; auto is a quarter of the Advisor model's context window, at most 50k",
   reviewEvery:
     "When Reviews run: every turn, every N turns, or once per request; a tool error reviews at once",
   maxSessionTokens:
-    "Advisor Session size that triggers native compaction; auto is half the Advisor model's context window, at most 200k",
+    "Advisor Session size that triggers native compaction; auto is half the Advisor model's context window, at most 100k",
 } satisfies Record<keyof AdvisorOptions, string>;
 const inheritRow = "\u0000inherit";
 const inputHints = {

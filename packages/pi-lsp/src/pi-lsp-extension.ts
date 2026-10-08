@@ -71,6 +71,7 @@ export interface PiLspLifecycleEffects {
 interface ActivePiLspSession {
   readonly cwd: string;
   configuredEnablement: ReadonlyMap<string, LspServerEnablement>;
+  readonly includeHintDiagnostics: boolean;
   readonly manager: LspServerManager<LspServerClient>;
   readonly sessionFiles: LspSessionFiles;
   readonly workspaceEdits: LspWorkspaceEditStore;
@@ -140,7 +141,8 @@ function branchLspToolResultDetails(
   return [...records.values()];
 }
 
-function normalizedDiagnosticOutcome(
+/** Normalize one protocol Diagnostic; a missing severity is an Error, so default hint filtering keeps it. */
+export function normalizedDiagnosticOutcome(
   diagnostic: Diagnostic,
   serverId: string,
   filePath: string,
@@ -159,7 +161,8 @@ function normalizedDiagnosticOutcome(
       path: filePath,
       line: position.line,
       character: position.character,
-      severity: diagnostic.severity ?? 4,
+      // LSP leaves a missing severity to the client; treat it as an Error, like vscode-languageclient.
+      severity: diagnostic.severity ?? 1,
       message: Value.Check(Type.String(), diagnostic.message)
         ? diagnostic.message
         : Value.Parse(DiagnosticMarkupContentSchema, diagnostic.message).value,
@@ -250,6 +253,7 @@ async function appendSessionPostEditDiagnostics(
     event,
     (paths) => new ManagerPostEditDiagnosticsRunner(session, context.signal).run(paths),
     session.cwd,
+    { includeHints: session.includeHintDiagnostics },
   );
   if (patch === undefined) return undefined;
   const appendedValue = patch.content.at(-1);
@@ -367,6 +371,7 @@ export class PiLspLifecycleController {
     this.session = {
       cwd: context.cwd,
       configuredEnablement: settings.enablement,
+      includeHintDiagnostics: settings.includeHintDiagnostics,
       manager,
       sessionFiles,
       workspaceEdits,
