@@ -129,6 +129,8 @@ import {
   LspApplyOutputSchema,
   LspCodeActionsOutputSchema,
   LspOperationParametersSchemas,
+  LspPlainReadOutputSchema,
+  LspPositionItemListOutputSchema,
   LspPositionReadOutputSchema,
   LspPreviewOutputSchema,
   LspReadOutputSchema,
@@ -2323,9 +2325,11 @@ function lspToolOutputSchema(operation: LspOperationName): TSchema {
     case "apply":
       return LspApplyOutputSchema;
     default:
-      return isLspPositionReadOperation(operation)
-        ? LspPositionReadOutputSchema
-        : LspReadOutputSchema;
+      if (operation === "completion") return LspPositionItemListOutputSchema;
+      if (isLspPositionReadOperation(operation)) return LspPositionReadOutputSchema;
+      return operation === "document_symbols" || operation === "workspace_symbols"
+        ? LspReadOutputSchema
+        : LspPlainReadOutputSchema;
   }
 }
 
@@ -2360,7 +2364,9 @@ function buildLspToolDefinition<TOperation extends LspOperationName>(
     name: lspToolName(operation),
     label: `LSP ${humanizeLspOperation(operation)}`,
     description: LSP_TOOL_DESCRIPTIONS[operation],
-    promptGuidelines: [LSP_TOOL_GUIDELINE],
+    // Pi appends a listed tool's guidelines to its codemode declaration, so the shared guideline is
+    // declared once through the direct tools and not repeated on every script-callable one.
+    promptGuidelines: lspToolExposure(operation) === "direct" ? [LSP_TOOL_GUIDELINE] : [],
     parameters: LspOperationParametersSchemas[operation],
     outputSchema: lspToolOutputSchema(operation),
     exposure: lspToolExposure(operation),

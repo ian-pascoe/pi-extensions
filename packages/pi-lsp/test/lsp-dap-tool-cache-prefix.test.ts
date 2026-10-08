@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -269,6 +270,13 @@ async function serializeTurn(turn: TurnContext) {
   return captured;
 }
 
+const BASELINE_DIRECT_TOOLS_SHA256 =
+  "fb90edbbc8c0cb94079097d6867f1401d5438c3f9f3f5013068dacdefd72a8cc";
+
+function sha256(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+
 afterEach(async () => {
   for (const session of sessions.splice(0)) session.dispose();
   await Promise.all(
@@ -469,6 +477,36 @@ test.each([
     expect(fixture.providerRequests).toEqual([]);
   },
 );
+
+/**
+ * Issue #372: Pi appends every listed tool's prompt guidelines to its codemode declaration, so a
+ * guideline repeated on each script-callable tool used up the shared inline budget. The listing
+ * must reach the tools scripts need most, while the directly declared definitions and the system
+ * prompt stay byte-identical.
+ */
+test("lists the most useful script-callable tools under the default codemode budget", async () => {
+  const fixture = await createToolCacheFixture(["lsp"], { builtins: ["codemode"] });
+  const turns = await runTurnsAcrossReload(fixture);
+  const codemode = turns[0]?.tools.find(({ name }) => name === "codemode")?.description ?? "";
+  for (const name of [
+    "lsp_workspace_diagnostics",
+    "lsp_incoming_calls",
+    "lsp_goto_implementation",
+  ]) {
+    expect(codemode, name).toContain(`### \`${name}\``);
+  }
+  expect(codemode).not.toContain("Use the lsp_* tools for semantic code navigation");
+});
+
+test("keeps the directly declared LSP tool definitions byte-identical", async () => {
+  const fixture = await createToolCacheFixture(["lsp"], { builtins: ["codemode"] });
+  const turns = await runTurnsAcrossReload(fixture);
+  const first = turns[0];
+  const direct = (first?.tools ?? []).filter(({ name }) => DIRECT_LSP_TOOLS.includes(name));
+  expect(direct.map(({ name }) => name)).toEqual(DIRECT_LSP_TOOLS);
+  // SHA-256 of the ordered direct definitions as the provider receives them, recorded before the change.
+  expect(sha256(JSON.stringify(direct))).toBe(BASELINE_DIRECT_TOOLS_SHA256);
+});
 
 test("lists the lsp_* family once in the default system prompt and keeps it stable", async () => {
   const fixture = await createToolCacheFixture(["lsp"], { defaultSystemPrompt: true });

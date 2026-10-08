@@ -579,7 +579,25 @@ const MutationManifestOutputSchema = Type.Array(
 );
 
 /**
- * Structured result of every read query: each answering server's normalized protocol value.
+ * Structured result of a read query that never filters or cuts its items: each answering server's
+ * normalized protocol value. Keeping `prefix` and `omitted*` out of the shape keeps every
+ * script-callable declaration short.
+ */
+export const LspPlainReadOutputSchema = Type.Object({
+  results: Type.Array(
+    Type.Object({
+      server_id: Type.String(),
+      root_path: Type.String(),
+      value: Type.Unknown(),
+    }),
+  ),
+  warnings: Type.Array(Type.String()),
+  ...StructuredResultEnvelope,
+});
+
+/**
+ * Structured result of the item-list read queries (`lsp_document_symbols`, `lsp_workspace_symbols`,
+ * `lsp_completion`): each answering server's normalized protocol value.
  * Completion and workspace-symbol values hold only the items kept by the prefix and limit.
  */
 export const LspReadOutputSchema = Type.Object({
@@ -588,49 +606,40 @@ export const LspReadOutputSchema = Type.Object({
       server_id: Type.String(),
       root_path: Type.String(),
       value: Type.Unknown(),
-      prefix: Type.Optional(
-        Type.String({ description: "The prefix completions were filtered by" }),
-      ),
-      omitted: Type.Optional(
-        Type.Integer({
-          minimum: 0,
-          description:
-            "Matching items left out by the limit, or the nested symbols and import bindings left out of a document outline",
-        }),
-      ),
-      omitted_imports: Type.Optional(
-        Type.Integer({
-          minimum: 0,
-          description:
-            "The part of `omitted` that is import bindings, left out of a document outline",
-        }),
-      ),
+      prefix: Type.Optional(Type.String()),
+      omitted: Type.Optional(Type.Integer({ minimum: 0 })),
+      omitted_imports: Type.Optional(Type.Integer({ minimum: 0 })),
     }),
   ),
   warnings: Type.Array(Type.String()),
   ...StructuredResultEnvelope,
 });
 
+const PositionOutputProperty = Type.Object(
+  {
+    path: Type.String(),
+    line: Type.Integer({ minimum: 1 }),
+    character: Type.Integer({ minimum: 1 }),
+    token: Type.Optional(Type.String()),
+    line_text: Type.String(),
+  },
+  { description: "Requested position" },
+);
+
 /**
  * Structured result of a position-based query: a read result plus what the requested position
  * held in the text sent to the servers.
  */
 export const LspPositionReadOutputSchema = Type.Object({
-  position: Type.Object(
-    {
-      path: Type.String(),
-      line: Type.Integer({ minimum: 1 }),
-      character: Type.Integer({ minimum: 1 }),
-      token: Type.Optional(
-        Type.String({
-          description:
-            "Identifier or punctuation run at the position; absent on whitespace or past the line end",
-        }),
-      ),
-      line_text: Type.String({ description: "Trimmed line holding the position" }),
-    },
-    { description: "The requested position and the token it resolved to" },
-  ),
+  position: PositionOutputProperty,
+  results: LspPlainReadOutputSchema.properties.results,
+  warnings: LspPlainReadOutputSchema.properties.warnings,
+  ...StructuredResultEnvelope,
+});
+
+/** Structured result of `lsp_completion`: a position result whose items carry `prefix` and `omitted`. */
+export const LspPositionItemListOutputSchema = Type.Object({
+  position: PositionOutputProperty,
   results: LspReadOutputSchema.properties.results,
   warnings: LspReadOutputSchema.properties.warnings,
   ...StructuredResultEnvelope,
