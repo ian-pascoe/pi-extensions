@@ -1,6 +1,6 @@
 {
   "defaultProvider": "anthropic",
-  "defaultModel": "claude-sonnet-5-5",
+  "defaultModel": "claude-opus-5-5",
   "defaultThinkingLevel": "high",
   "defaultTools": [
     "+codemode",
@@ -88,14 +88,14 @@
     }
   ],
   "guardian": {
-    "enabled": true,
+    "enabled": false,
     "classifierModel": "typesafe/jev-latest",
     "model": "anthropic/claude-haiku-5-5",
     "thinkingLevel": "low"
   },
   "advisor": {
-    "enabled": true,
-    "model": "anthropic/claude-opus-5-5",
+    "enabled": false,
+    "model": "anthropic/claude-fable-5-1",
     "thinkingLevel": "high",
     "allowedTools": [
       "codemode",
