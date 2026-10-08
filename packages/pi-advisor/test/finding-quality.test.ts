@@ -2,6 +2,7 @@ import { onTestFinished, expect, it, vi } from "vitest";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import {
   activeFixture,
+  effectful,
   longSessionStream,
   seedPayload,
   type LongSessionOptions,
@@ -100,7 +101,12 @@ function expectStableAdvisorPrefix(requests: PrivateRequest[]) {
   }
 }
 
-const ok: LongSessionOptions = { result: (id) => `ok ${id}`, isError: () => false };
+/** Successful tool calls with effects, so every turn starts a Review under the default cadence. */
+const ok: LongSessionOptions = {
+  result: (id) => `ok ${id}`,
+  isError: () => false,
+  call: effectful,
+};
 
 it("withholds a Superseded Finding and has the next Review re-validate it", async () => {
   const privateRequests: PrivateRequest[] = [];

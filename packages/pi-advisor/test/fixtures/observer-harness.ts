@@ -13,6 +13,7 @@ import {
   type Context,
   type Model,
   type SimpleStreamOptions,
+  type ToolCall,
 } from "@earendil-works/pi-ai";
 import {
   createAgentSessionServices,
@@ -96,10 +97,21 @@ export interface PrivateRequest {
   summariesBefore: number;
 }
 
+/** One observed tool call of a batch. */
+export interface ObservedCall {
+  name: string;
+  arguments: ToolCall["arguments"];
+}
+
 /** Fixture behavior beyond the observed tool batches. */
 export interface LongSessionOptions {
   /** Observed tool-result text by batch ID. */
   result?: (id: string) => string;
+  /**
+   * Observed tool call of each batch, by batch ID; defaults to `read` of a missing file. Reads are
+   * read-only, so a test that needs a Review per turn under `turn` calls a tool with effects.
+   */
+  call?: (id: string) => ObservedCall | ObservedCall[];
   /** Whether an observed tool result is an error; unset keeps the native (missing-file) error. */
   isError?: (id: string) => boolean;
   /**
@@ -139,6 +151,7 @@ export function longSessionStream(
 ) {
   const {
     result = (id: string) => `result ${id} ${"x".repeat(8_000)}`,
+    call = (id: string) => ({ name: "read", arguments: { path: `/missing-advisor-${id}` } }),
     isError,
     report = () => ({ findings: [] }),
     usage,
@@ -239,9 +252,11 @@ export function longSessionStream(
         const planned = Object.entries(batches).find(([prompt]) => text.includes(prompt))?.[1];
         if (done.length < (planned ?? 0)) {
           const id = `${start}-${done.length}`;
-          message.content = [
-            { type: "toolCall", id, name: "read", arguments: { path: `/missing-advisor-${id}` } },
-          ];
+          message.content = [call(id)].flat().map((entry, index) => ({
+            type: "toolCall" as const,
+            id: index ? `${id}#${index}` : id,
+            ...entry,
+          }));
           message.stopReason = "toolUse";
         }
       }
@@ -288,3 +303,9 @@ export function expectPrefix(
   expect(earlier?.messages.length).toBeGreaterThan(0);
   expect(later?.messages.slice(0, earlier?.messages.length)).toEqual(earlier?.messages);
 }
+
+/** A batch call with effects, so each turn starts a Review under `reviewEvery: "turn"`. */
+export const effectful: NonNullable<LongSessionOptions["call"]> = () => ({
+  name: "bash",
+  arguments: { command: "true" },
+});
