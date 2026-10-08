@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,7 +35,7 @@ import { Value } from "typebox/value";
 import { afterEach, expect, test } from "vitest";
 import { createPiLspExtension } from "../src/pi-lsp-extension.js";
 import { LSP_OPERATION_NAMES } from "../src/lsp-tool-contract.js";
-import { lspToolExposure } from "../src/lsp-tool.js";
+import { LSP_TOOL_GUIDELINE, lspToolExposure } from "../src/lsp-tool.js";
 
 const directories: string[] = [];
 const sessions: AgentSession[] = [];
@@ -75,6 +76,8 @@ interface ToolCacheOptions {
   readonly defaultTools?: readonly string[];
   /** Keep Pi's default system prompt, whose "Available tools" list shows prompt snippets. */
   readonly defaultSystemPrompt?: boolean;
+  /** Pi's `codemode.mode`; default "on". */
+  readonly codemodeMode?: "on" | "only";
 }
 
 /** Real Pi collaborators; the only scripted collaborator is the external model stream. */
@@ -90,7 +93,7 @@ async function createToolCacheFixture(
   const defaultTools = options.defaultTools ?? (builtins.length === 0 ? undefined : [...builtins]);
   const settingsData: NonNullable<Parameters<typeof SettingsManager.inMemory>[0]> = {
     retry: { enabled: false },
-    codemode: { mode: "on" },
+    codemode: { mode: options.codemodeMode ?? "on" },
   };
   if (defaultTools !== undefined) settingsData.defaultTools = [...defaultTools];
   const settings = SettingsManager.inMemory(settingsData);
@@ -267,6 +270,13 @@ async function serializeTurn(turn: TurnContext) {
     throw new Error("Unexpected installed OpenAI-compatible payload");
   }
   return captured;
+}
+
+const BASELINE_DIRECT_TOOLS_SHA256 =
+  "fb90edbbc8c0cb94079097d6867f1401d5438c3f9f3f5013068dacdefd72a8cc";
+
+function sha256(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
 }
 
 afterEach(async () => {
@@ -469,6 +479,87 @@ test.each([
     expect(fixture.providerRequests).toEqual([]);
   },
 );
+
+/**
+ * Issue #372: Pi appends every listed tool's prompt guidelines to its codemode declaration, so a
+ * guideline repeated on each script-callable tool used up the shared inline budget. The listing
+ * must reach the tools scripts need most, while the directly declared definitions and the system
+ * prompt stay byte-identical.
+ */
+test("lists the most useful script-callable tools under the default codemode budget", async () => {
+  const fixture = await createToolCacheFixture(["lsp"], { builtins: ["codemode"] });
+  const turns = await runTurnsAcrossReload(fixture);
+  const codemode = turns[0]?.tools.find(({ name }) => name === "codemode")?.description ?? "";
+  for (const name of [
+    "lsp_workspace_diagnostics",
+    "lsp_incoming_calls",
+    "lsp_goto_implementation",
+  ]) {
+    expect(codemode, name).toContain(`### \`${name}\``);
+  }
+  // The rules appear once, under the namespace header, not on every declaration.
+  expect(codemode.split(LSP_TOOL_GUIDELINE)).toHaveLength(2);
+});
+
+/**
+ * `codemode.mode: "only"` hides the direct declarations, so the shared rules must reach the model
+ * through the codemode listing exactly once. Pi cannot read `codemode.mode` while extensions load,
+ * so the direct tools still carry the guideline and may fall behind in the listing.
+ */
+test("shows the shared LSP rules exactly once when codemode is the only surface", async () => {
+  const fixture = await createToolCacheFixture(["lsp"], {
+    builtins: ["codemode"],
+    codemodeMode: "only",
+  });
+  const turns = await runTurnsAcrossReload(fixture);
+  expectStablePrefix(turns);
+  const first = turns[0];
+  const everything = [
+    first?.systemPrompt ?? "",
+    ...(first?.tools ?? []).map(({ description }) => description),
+  ].join("\n");
+  expect(everything.split(LSP_TOOL_GUIDELINE)).toHaveLength(2);
+  const codemode = first?.tools.find(({ name }) => name === "codemode")?.description ?? "";
+  expect(codemode).toContain(LSP_TOOL_GUIDELINE);
+});
+
+test("keeps the shared guideline once when only a subset of direct tools is active", async () => {
+  const fixture = await createToolCacheFixture(["lsp"], { defaultSystemPrompt: true });
+  fixture.session.setActiveToolsByName(["read", "lsp_diagnostics", "lsp_hover"]);
+  fixture.responses.push(fauxAssistantMessage("Ready."));
+  await fixture.session.prompt("Start");
+  const prompt = fixture.turns[0]?.systemPrompt ?? "";
+  expect(prompt.split(LSP_TOOL_GUIDELINE)).toHaveLength(2);
+  expect(fixture.turns[0]?.tools.map(({ name }) => name)).toEqual([
+    "read",
+    "lsp_diagnostics",
+    "lsp_hover",
+  ]);
+});
+
+test("keeps the directly declared LSP tool definitions byte-identical", async () => {
+  const fixture = await createToolCacheFixture(["lsp"], { builtins: ["codemode"] });
+  const turns = await runTurnsAcrossReload(fixture);
+  const first = turns[0];
+  const direct = (first?.tools ?? []).filter(({ name }) => DIRECT_LSP_TOOLS.includes(name));
+  expect(direct.map(({ name }) => name)).toEqual(DIRECT_LSP_TOOLS);
+  // SHA-256 of the ordered direct definitions as the provider receives them, recorded before the change.
+  expect(sha256(JSON.stringify(direct))).toBe(BASELINE_DIRECT_TOOLS_SHA256);
+});
+
+test("keeps the LSP lines of the default system prompt unchanged", async () => {
+  const fixture = await createToolCacheFixture(["lsp"], {
+    builtins: ["codemode"],
+    defaultSystemPrompt: true,
+  });
+  const turns = await runTurnsAcrossReload(fixture);
+  const lines = (turns[0]?.systemPrompt ?? "").split("\n").filter((line) => line.includes("lsp_"));
+  // Every line that mentions an LSP tool, as before the change: one snippet and one guideline.
+  expect(lines).toEqual([
+    "- lsp_diagnostics: Language-server diagnostics; the lsp_* tools also cover navigation and previewed edits",
+    `- ${LSP_TOOL_GUIDELINE}`,
+  ]);
+});
 
 test("lists the lsp_* family once in the default system prompt and keeps it stable", async () => {
   const fixture = await createToolCacheFixture(["lsp"], { defaultSystemPrompt: true });
