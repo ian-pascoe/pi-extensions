@@ -116,7 +116,7 @@ export const guardianSettingSourceSchema = Type.Union([
 export type GuardianSettingSource = Static<typeof guardianSettingSourceSchema>;
 
 export const guardianDefaults: GuardianConfig = {
-  enabled: true,
+  enabled: false,
   thinkingLevel: "low",
   escalationThreshold: 0.2,
   tools: {},

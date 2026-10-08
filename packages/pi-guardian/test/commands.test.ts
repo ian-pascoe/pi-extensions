@@ -77,7 +77,7 @@ describe("/guardian command", () => {
       state: "enabled",
       followsRoot: null,
       settings: { enabled: true, model: "guardian-test/reviewer", thinkingLevel: "low" },
-      sources: { model: "global", enabled: "default" },
+      sources: { model: "global", enabled: "global" },
       // The Rejection's Escalation Pass adds its cost to the same review.
       totals: {
         reviews: 2,

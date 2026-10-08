@@ -62,8 +62,11 @@ export interface CapturedReview {
 }
 
 export interface HarnessOptions {
-  /** `guardian` settings in the global settings document. */
-  guardianSettings?: GuardianOptions;
+  /**
+   * `guardian` settings in the global settings document. Guardian is disabled by default, so
+   * these enable it unless they say otherwise; `null` leaves Guardian unconfigured.
+   */
+  guardianSettings?: GuardianOptions | null;
   /** Dialog-capable UI; omitted for headless (print) sessions. */
   ui?: Partial<ExtensionUIContext>;
   /** Mode bound with `ui`; the settings menu needs `tui`. */
@@ -170,10 +173,12 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
     { retry: { enabled: false }, compaction: { enabled: false } },
     { projectTrusted: options.projectTrusted ?? true },
   );
-  if (options.guardianSettings)
+  if (options.guardianSettings !== null) {
+    const guardianSettings = { enabled: true, ...options.guardianSettings };
     Object.defineProperty(settings, "getGlobalSettings", {
-      value: () => ({ guardian: options.guardianSettings }),
+      value: () => ({ guardian: guardianSettings }),
     });
+  }
   const reviews: CapturedReview[] = [];
   const guardianReplies: GuardianReply[] = [];
   const classifications: CapturedClassification[] = [];

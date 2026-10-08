@@ -16,7 +16,7 @@ pi -e ./packages/pi-guardian/src/index.ts
 
 **Install Guardian last.** Pi runs `tool_call` handlers in extension load order, and an extension loaded after Guardian can rewrite a call's arguments after Guardian reviewed them. Guardian detects this after the call runs (see [Limitations](#limitations)).
 
-Guardian is **enabled by default** and reviews with the session's current model unless `model` is set. Without a usable model, every call that needs review is a Review Failure.
+Guardian is **disabled by default**: installing it changes nothing until you turn it on with `/guardian on --global` (or `--project`, or for the session without a flag), the Enabled row of `/guardian`, or `"enabled": true` in settings. Once enabled, it reviews with the session's current model unless `model` is set. Without a usable model, every call that needs review is a Review Failure. Invalid `guardian` settings fail closed even so, since they may have enabled it (see below).
 
 **Choose a small, fast Guardian model with thinking off.** Every Reviewed Call waits for its review, and a large session model makes that slow and costly: in live use, Claude Opus took 6 to 17 s and about $0.27 per review, while `anthropic/claude-haiku-4-5` with `thinkingLevel: "off"` took about 1.4 s and $0.05. Set both in `/guardian` (Model, thinking level) or in settings, as in the [example](#settings). A would-be Rejection is rechecked by an [Escalation Pass](#escalation-pass), with thinking `low` by default, so the fast first pass need not be careful on its own. While `model` is unset, Guardian shows a one-time notice at session start, and `/guardian status` marks the model as inherited from the session.
 
@@ -193,7 +193,7 @@ Settings live under `guardian` in Pi's global and trusted-project `settings.json
 
 | Key                        | Default   | Meaning                                                                                              |
 | -------------------------- | --------- | ---------------------------------------------------------------------------------------------------- |
-| `enabled`                  | `true`    | Gate tool calls. While disabled Guardian does nothing, including `deny` Tool Policies.               |
+| `enabled`                  | `false`   | Gate tool calls. While disabled Guardian does nothing, including `deny` Tool Policies.               |
 | `model`                    | session   | Guardian model as `provider/id`; absent follows the session's current model. Prefer a small one.     |
 | `thinkingLevel`            | `"low"`   | `off` … `max`, clamped to the model.                                                                 |
 | `classifierModel`          | none      | Classifier model of the [First Pass](#classifier-first-pass) as `provider/id`; `off` turns it off.   |
@@ -216,6 +216,7 @@ The Security Policy can name trusted destinations and forbid actions, and a call
 ```json
 {
   "guardian": {
+    "enabled": true,
     "model": "anthropic/claude-haiku-4-5",
     "thinkingLevel": "off",
     "tools": { "mcp__github__create_issue": "allow", "terminal_send": "deny" },

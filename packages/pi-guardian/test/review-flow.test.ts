@@ -204,6 +204,19 @@ describe("Guardian Review lifecycle", () => {
     expect(resultText(harness, "call-1")).toMatch(/denied by Guardian's Tool Policy/);
   });
 
+  it("is disabled until a setting enables it", async () => {
+    const harness = await createGuardianHarness({ guardianSettings: null });
+    harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
+    await harness.session.prompt("Deploy a.");
+    expect(harness.reviews).toHaveLength(0);
+    expect(harness.executed).toEqual(["deploy:a"]);
+    await harness.session.prompt("/guardian status");
+    expect(harness.entries("pi-guardian-status").at(-1)).toMatchObject({
+      state: "disabled",
+      sources: { enabled: "default" },
+    });
+  });
+
   it("does nothing when disabled", async () => {
     const harness = await createGuardianHarness({
       guardianSettings: { ...reviewer, enabled: false, tools: { deploy: "deny" } },

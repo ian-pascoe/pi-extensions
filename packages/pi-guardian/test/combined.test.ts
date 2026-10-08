@@ -52,7 +52,7 @@ async function delegateDeploy(
     JSON.stringify({
       extensions: [fixture, guardian],
       minimalSubagents: { enabled: true },
-      guardian: { model: "guardian-combined/reviewer" },
+      guardian: { enabled: true, model: "guardian-combined/reviewer" },
       compaction: { enabled: false },
       retry: { enabled: false },
     }),

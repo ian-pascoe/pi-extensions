@@ -43,10 +43,10 @@ function resolveInvalid(global: string) {
 }
 
 describe("Guardian settings", () => {
-  it("defaults to enabled with conservative review settings", () => {
+  it("defaults to disabled with conservative review settings", () => {
     expect(resolve({}, {})).toEqual({
       settings: {
-        enabled: true,
+        enabled: false,
         thinkingLevel: "low",
         escalationThreshold: 0.2,
         tools: {},
