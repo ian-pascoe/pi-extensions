@@ -25,19 +25,27 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import "./fixtures/observer-extension.js";
 
+/**
+ * Pi 1.1 stamps each assistant message with the wall-clock `durationMs` of its call. Two runtimes
+ * differ by a few milliseconds under load, so every transcript compared here zeroes it.
+ */
+const withStableDuration = <Message extends object>(message: Message): Message =>
+  "durationMs" in message ? { ...message, durationMs: 0 } : message;
+
 /** Pi 0.86+ records tool declarations on system messages; compare declarations, not callbacks. */
 function sessionTranscript(runtime: AgentSessionRuntime | undefined) {
-  return runtime?.session.messages.map((message) =>
-    message.role === "system" && message.toolsAdded
-      ? {
-          ...message,
-          toolsAdded: message.toolsAdded.map((tool) => {
-            const { name, description, parameters } = toToolDeclaration(tool);
-            return { name, description, parameters };
-          }),
-        }
-      : message,
-  );
+  return runtime?.session.messages.map((message) => {
+    if (message.role === "system" && message.toolsAdded) {
+      return {
+        ...message,
+        toolsAdded: message.toolsAdded.map((tool) => {
+          const { name, description, parameters } = toToolDeclaration(tool);
+          return { name, description, parameters };
+        }),
+      };
+    }
+    return withStableDuration(message);
+  });
 }
 
 const isSystem = (message: { role: string }): message is SystemMessage => message.role === "system";
@@ -88,6 +96,7 @@ it.each(["none", "on", "only"] as const)(
         (privateRole ? reviewRequests : mainRequests).push(
           structuredClone({
             ...context,
+            messages: context.messages.map(withStableDuration),
             tools: (context.tools ?? []).map(({ name, description, parameters }) => ({
               name,
               description,
