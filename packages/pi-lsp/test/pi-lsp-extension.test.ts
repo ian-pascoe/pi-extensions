@@ -22,7 +22,12 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { expectClickToggles } from "@ian-pascoe/pi-utils/ui-testing";
-import { createPiLspExtension, failureDiagnosticOutcome } from "../src/pi-lsp-extension.js";
+import {
+  createPiLspExtension,
+  failureDiagnosticOutcome,
+  normalizedDiagnosticOutcome,
+} from "../src/pi-lsp-extension.js";
+import { appendPostEditDiagnostics } from "../src/lsp-post-edit-diagnostics.js";
 import { POST_EDIT_DIAGNOSTICS_ENTRY_TYPE } from "../src/lsp-post-edit-diagnostics-rendering.js";
 import { LspWorkspaceEditStore } from "../src/lsp-workspace-edit.js";
 import { LSP_TOOL_GUIDELINE } from "../src/lsp-tool.js";
@@ -1120,6 +1125,71 @@ describe("Pi LSP extension lifecycle", () => {
       type: "text",
       text: "\n\nLSP diagnostics\nsource.ts:1:1 error [gated]: fake diagnostic",
     });
+    await shutdownExtension(harness);
+  });
+
+  test("maps a diagnostic without severity to an Error so hint filtering keeps it", async () => {
+    const outcome = normalizedDiagnosticOutcome(
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, message: "m" },
+      "srv",
+      "/work/a.ts",
+      "x\n",
+      "utf-16",
+    );
+    expect(outcome).toMatchObject({ kind: "diagnostic", diagnostic: { severity: 1 } });
+    const result = await appendPostEditDiagnostics(
+      {
+        type: "tool_result",
+        toolCallId: "c",
+        toolName: "write",
+        input: { path: "/work/a.ts" },
+        content: [],
+        details: undefined,
+        isError: false,
+      } satisfies ToolResultEvent,
+      async () => [outcome],
+      "/work",
+    );
+    expect(result?.content.at(-1)).toMatchObject({
+      text: "\n\nLSP diagnostics\na.ts:1:1 error [srv]: m",
+    });
+  });
+
+  test.each([
+    [{}, "\n\nLSP diagnostics\nsource.ts:1:1 error [hinted]: fake diagnostic\n1 hint omitted"],
+    [
+      { includeHintDiagnostics: true },
+      "\n\nLSP diagnostics\nsource.ts:1:1 error [hinted]: fake diagnostic\nsource.ts:1:1 hint [hinted]: fake hint",
+    ],
+  ])("applies lsp settings %j to hint post-edit diagnostics", async (setting, expected) => {
+    const fakeServerPath = fileURLToPath(new URL("fixtures/fake-lsp-server.mjs", import.meta.url));
+    const harness = await createExtensionHarness(false, {
+      lsp: {
+        ...setting,
+        timeouts: { diagnosticsMs: 1_000, initializeMs: 5_000, shutdownMs: 1_000 },
+        servers: {
+          hinted: {
+            command: process.execPath,
+            args: [fakeServerPath],
+            environment: { FAKE_DIAGNOSTICS: "error-and-hint" },
+            languages: [{ extensions: [".ts"], languageId: "typescript" }],
+          },
+        },
+      },
+    });
+    await startExtension(harness);
+    const filePath = resolve(harness.sessionManager.getCwd(), "source.ts");
+    await writeFile(filePath, "const value: string = 1;\n");
+    const augmented = await harness.runner.emitToolResult({
+      type: "tool_result",
+      toolCallId: "hint-write",
+      toolName: "write",
+      input: { path: filePath, content: "const value: string = 1;\n" },
+      content: [{ type: "text", text: "Wrote source.ts" }],
+      details: { bytesWritten: 25 },
+      isError: false,
+    } satisfies ToolResultEvent);
+    expect(augmented?.content?.at(-1)).toMatchObject({ type: "text", text: expected });
     await shutdownExtension(harness);
   });
 

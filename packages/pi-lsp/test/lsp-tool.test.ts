@@ -214,6 +214,7 @@ function resolvedSettings(
 ): ResolvedLspSettings {
   return {
     enablement: new Map(),
+    includeHintDiagnostics: false,
     warnings: [],
     timeouts: {
       diagnosticsMs: 100,

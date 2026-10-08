@@ -174,11 +174,13 @@ function diagnosticOutcome(
 async function appendedText(
   outcomes: readonly PostEditDiagnosticOutcome[],
   cwd = "/work",
+  options?: { includeHints?: boolean },
 ): Promise<string | undefined> {
   const result = await appendPostEditDiagnostics(
     mutationEvent({ toolName: "apply_patch", details: applyPatchDetails(["unused"]) }),
     async () => outcomes,
     cwd,
+    options,
   );
   const appended = result?.content.at(-1);
   return appended?.type === "text" ? appended.text : undefined;
@@ -230,13 +232,17 @@ test("appends diagnostics after a partial mutation without changing mutation fie
 
 test("names severities and shows workspace-relative paths for findings", async () => {
   await expect(
-    appendedText([
-      diagnosticOutcome("/work/src/a.ts", 4, "consider this"),
-      diagnosticOutcome("/work/src/a.ts", 3, "fyi"),
-      diagnosticOutcome("/work/src/a.ts", 2, "careful"),
-      diagnosticOutcome("/work/src/a.ts", 1, "broken\n  in two lines"),
-      diagnosticOutcome("/elsewhere/b.ts", 9, "unknown severity"),
-    ]),
+    appendedText(
+      [
+        diagnosticOutcome("/work/src/a.ts", 4, "consider this"),
+        diagnosticOutcome("/work/src/a.ts", 3, "fyi"),
+        diagnosticOutcome("/work/src/a.ts", 2, "careful"),
+        diagnosticOutcome("/work/src/a.ts", 1, "broken\n  in two lines"),
+        diagnosticOutcome("/elsewhere/b.ts", 9, "unknown severity"),
+      ],
+      "/work",
+      { includeHints: true },
+    ),
   ).resolves.toBe(
     [
       "",
@@ -352,4 +358,55 @@ test("leaves the mutation result unchanged when no edited file has a configured 
       "/work",
     ),
   ).resolves.toBeUndefined();
+});
+
+test("omits hints by default and reports how many were omitted", async () => {
+  await expect(
+    appendedText([
+      diagnosticOutcome("/work/a.ts", 1, "broken"),
+      diagnosticOutcome("/work/a.ts", 4, "hint one"),
+      diagnosticOutcome("/work/b.ts", 4, "hint two"),
+    ]),
+  ).resolves.toBe(
+    [
+      "",
+      "",
+      "LSP diagnostics",
+      "a.ts:3:7 error [typescript]: broken",
+      "no diagnostics: b.ts",
+      "2 hints omitted",
+    ].join("\n"),
+  );
+});
+
+test("collapses a hint-only result to the one-line clean result with the omitted count", async () => {
+  await expect(appendedText([diagnosticOutcome("/work/a.ts", 4, "hint")])).resolves.toBe(
+    "\n\nLSP diagnostics: no diagnostics (1 hint omitted)",
+  );
+});
+
+test("keeps hints and reports no omission when includeHints is set", async () => {
+  await expect(
+    appendedText([diagnosticOutcome("/work/a.ts", 4, "hint")], "/work", { includeHints: true }),
+  ).resolves.toBe("\n\nLSP diagnostics\na.ts:3:7 hint [typescript]: hint");
+});
+
+test("leaves hints out of the persisted outcomes by default", async () => {
+  const result = await appendPostEditDiagnostics(
+    mutationEvent(),
+    async () => [diagnosticOutcome("/work/a.ts", 4, "hint")],
+    "/work",
+  );
+  expect(result?.outcomes).toEqual([{ kind: "no_diagnostics", path: "/work/a.ts" }]);
+});
+
+test("reports a hint-only file as clean beside another server's timeout", async () => {
+  await expect(
+    appendedText([
+      diagnosticOutcome("/work/a.ts", 4, "hint"),
+      { kind: "timeout", path: "/work/a.ts", serverId: "slow" },
+    ]),
+  ).resolves.toBe(
+    "\n\nLSP diagnostics\na.ts: diagnostics timeout (slow)\nno diagnostics: a.ts\n1 hint omitted",
+  );
 });
