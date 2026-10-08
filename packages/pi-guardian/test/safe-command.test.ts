@@ -272,6 +272,7 @@ describe("Safe Command", () => {
         "home/.config/tool",
         "home/bin",
         "home/notes",
+        "home/docs",
         "agent",
       ])
         await mkdir(join(root, directory), { recursive: true });
@@ -280,6 +281,9 @@ describe("Safe Command", () => {
       await writeFile(join(workspace, "file.txt"), "");
       await symlink(join(root, "outside"), join(workspace, "escape"));
       await symlink(join(root, "home", ".ssh"), join(workspace, "ssh-link"));
+      await writeFile(join(root, "home", ".ssh", "id_rsa"), "");
+      // `link/..` is the home directory after symlinks, `outside` before.
+      await symlink(join(root, "home", "docs"), join(root, "outside", "link"));
       await symlink(join(workspace, "src"), join(workspace, "src-link"));
       await symlink(join(root, "outside", "inner"), join(workspace, "inner-link"));
       await symlink(join(workspace, "vendor", "nested"), join(workspace, "repo-link"));
@@ -411,17 +415,17 @@ describe("Safe Command", () => {
           "an absolute path outside, then reading there",
           () => `cd ${outside()} && cat file | head`,
         ],
-        ["a parent escape", () => "cd .. && ls"],
+        ["a parent escape that stays clear of home", () => "cd ../outside && ls"],
         ["a parent escape into a sibling", () => "cd ../outside && rg -n x ."],
         ["a symlink pointing outside", () => "cd escape && ls"],
         ["a nested repository", () => "cd vendor/nested && ls"],
         ["a bare repository", () => "cd bare && cat HEAD"],
         ["a missing directory", () => "cd missing && ls"],
         ["a file", () => "cd file.txt && ls"],
-        ["the home directory itself", () => `cd ${home()} && ls`],
+        ["a directory inside the home directory", () => `cd ${home()}/notes && ls`],
         ["a chain of such cds", () => `cd /opt && cd /var && ls`],
         ["a relative cd from an earlier one", () => `cd /opt && cd sub && ls`],
-        ["a chain through the workspace", () => "cd packages && cd ../.. && pwd"],
+        ["a chain that stays clear of home", () => "cd packages && cd ../../outside && pwd"],
         ["a failing cd's `||` branch", () => "cd /opt || ls"],
         ["a list", () => "cd /opt; ls; pwd"],
         ["print-only sed", () => "cd /opt && sed -n '1,5p' file.txt"],
@@ -429,7 +433,7 @@ describe("Safe Command", () => {
         ["a quoted operand", () => "cd '/opt' && ls"],
         ["git before the cd", () => "git status && cd /opt && ls"],
         ["a path operand that is ordinary", () => "cd /opt && cat notes.txt /etc/hostname"],
-        ["a pattern that is no Sensitive Path", () => `cd ${home()} && grep -rn TODO notes`],
+        ["a pattern that is no Sensitive Path", () => `cd ${home()}/notes && grep -rn TODO .`],
       ])("allows %s", (_case, command) => {
         expect(isSafeCommand(command(), {}, where), command()).toBe(true);
       });
@@ -454,11 +458,37 @@ describe("Safe Command", () => {
         expect(isSafeCommand("cd src && git status && cd /opt", {}, where)).toBe(true);
       });
 
-      it("reviews a git that a Command Rule covers only as the user chose", () => {
-        expect(isSafeCommand("cd /opt && git status", { git: "allow" }, where)).toBe(true);
-        expect(isSafeCommand("cd /opt && git status", { "git status": "review" }, where)).toBe(
-          false,
+      it("reviews a segment that only an allow Command Rule permits, as git config may run code", () => {
+        // `cd evil && git describe` would run the fsmonitor of `evil/.git/config`.
+        for (const [rules, command] of [
+          [{ "git describe": "allow" }, "cd /opt && git describe"],
+          [{ "git describe": "allow" }, "cd missing; git describe --tags"],
+          [{ "git commit": "allow" }, "cd /elsewhere && git commit -m x"],
+          [{ git: "allow" }, "cd /opt && git status"],
+          [{ "npm test": "allow" }, "cd /opt && npm test"],
+          [{ "npm test": "allow" }, "cd vendor/nested || npm test"],
+          [{ "git status": "review" }, "cd /opt && git status"],
+        ] as const)
+          expect(isSafeCommand(command, rules, where), command).toBe(false);
+        // Where the directory is known, the user's rule applies as before.
+        expect(isSafeCommand("cd src && git describe", { "git describe": "allow" }, where)).toBe(
+          true,
         );
+        expect(isSafeCommand("git describe && cd /opt", { "git describe": "allow" }, where)).toBe(
+          true,
+        );
+        // A rule for a built-in program changes nothing there.
+        expect(isSafeCommand("cd /opt && ls", { ls: "allow" }, where)).toBe(true);
+      });
+
+      it("keeps a rule-allowed directory change as the user chose", () => {
+        const rules = { "cd /opt": "allow", pushd: "allow", "git describe": "allow" } as const;
+        // The user allowed this very `cd`, so the directory is theirs to vouch for.
+        expect(isSafeCommand("cd /opt && git describe", rules, where)).toBe(true);
+        expect(isSafeCommand("cd /var && pushd /opt && ls", rules, where)).toBe(true);
+        // A directory change after a relaxed `cd` stays unknown: git is still reviewed.
+        expect(isSafeCommand("cd /var && pushd /opt && git status", rules, where)).toBe(false);
+        expect(isSafeCommand("cd /var && pushd /opt && git describe", rules, where)).toBe(false);
       });
 
       it.each([
@@ -475,6 +505,20 @@ describe("Safe Command", () => {
         ["a Sensitive Path after an ordinary cd", () => `cd /opt && cd ${home()}/.ssh && ls`],
         ["a relative Sensitive Path after an ordinary cd", () => `cd ${root} && cd home/.ssh`],
         ["a Sensitive Path via `..`", () => `cd ${outside()} && cd ../home/.ssh`],
+        [
+          "a symlink and `..` that land in a credential directory",
+          () => `cd ${outside()}/link/../.ssh && cat id_rsa`,
+        ],
+        ["a relative symlink and `..`", () => `cd ${outside()} && cd link/../.ssh && cat id_rsa`],
+        ["the home directory", () => `cd ${home()} && ls`],
+        ["the home directory, grepped", () => `cd ${home()} && grep -r SECRET .`],
+        ["the home directory, searched with find", () => `cd ${home()} && find . -name id_rsa`],
+        ["the home directory, searched with rg", () => `cd ${home()} && rg -uu SECRET`],
+        ["an ancestor of the home directory", () => `cd ${root} && ls`],
+        ["the root directory", () => "cd / && ls"],
+        ["an ancestor reached with `..`", () => "cd .. && ls"],
+        ["the home directory through a symlink and `..`", () => `cd ${outside()}/link/.. && ls`],
+        ["an ancestor, then reading home", () => `cd ${root} && grep -r X home`],
         ["a Sensitive Path the first cd may reach", () => `cd .. && cd workspace/.git && ls`],
       ])("still reviews a cd into %s", (_case, command) => {
         expect(isSafeCommand(command(), {}, where), command()).toBe(false);
@@ -519,6 +563,19 @@ describe("Safe Command", () => {
         ["a sibling segment", () => `cd ${home()} && ls | cat .ssh/id_rsa`],
         ["a rule-allowed program", () => `cd ${home()} && tee .bashrc`],
         ["a symlink to one", () => "cd .. && ls workspace/ssh-link"],
+        ["a symlink and `..` into one", () => `cd ${outside()} && cat link/../.ssh/id_rsa`],
+        [
+          "a symlink and `..` into a credential directory",
+          () => `cd ${outside()} && ls link/../.ssh`,
+        ],
+        ["the home directory through `..`", () => `cd ${home()}/notes && grep -r x ..`],
+        ["the home directory as `.`", () => `cd ${home()}/notes && cd .. && ls .`],
+        ["an attached short-option value", () => `cd ${home()}/notes && grep -f../.ssh/id_rsa x`],
+        [
+          "a value attached among combined flags",
+          () => `cd ${home()}/notes && grep -rnf../.ssh/id_rsa x`,
+        ],
+        ["an option value after `=`", () => `cd ${home()}/notes && grep --file=../.ssh/id_rsa x`],
       ])("reviews a relative operand naming %s after an unknown cd", (_case, command) => {
         expect(isSafeCommand(command(), { tee: "allow" }, where), command()).toBe(false);
       });
@@ -531,6 +588,16 @@ describe("Safe Command", () => {
         expect(isSafeCommand(`cat ${home()}/.bashrc`, {}, where)).toBe(true);
         // Absolute operands are judged alike with or without an unknown cd.
         expect(isSafeCommand(`cd /opt && cat ${home()}/.bashrc`, {}, where)).toBe(true);
+      });
+
+      it("reviews rg while RIPGREP_CONFIG_PATH is relative, as with or without a cd", () => {
+        const env = (value: string) => ({
+          env: { PATH: "/usr/bin:/bin", RIPGREP_CONFIG_PATH: value },
+        });
+        expect(isSafeCommand("rg -n x .", {}, where, env(".rgrc"))).toBe(false);
+        expect(isSafeCommand("cd /opt && rg -n x .", {}, where, env("rc/.rgrc"))).toBe(false);
+        expect(isSafeCommand("rg -n x .", {}, where, env("/home/me/.rgrc"))).toBe(true);
+        expect(isSafeCommand("cd /opt && ls", {}, where, env(".rgrc"))).toBe(true);
       });
 
       it("never relaxes without a workspace to judge it from", () => {
@@ -583,8 +650,9 @@ describe("Safe Command", () => {
           verdict: "deny",
         });
         expect(judgeCommand("cd /opt && ls", { ls: "review" }, where).verdict).toBe("review");
+        // An allow rule no longer vouches for a segment after a cd Guardian relaxed.
         expect(judgeCommand("cd /opt && npm test", { "npm test": "allow" }, where).verdict).toBe(
-          "allow",
+          "review",
         );
       });
 

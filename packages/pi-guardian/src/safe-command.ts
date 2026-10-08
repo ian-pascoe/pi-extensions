@@ -4,7 +4,8 @@
  * a Safe Command and goes to the Guardian.
  */
 import { readdirSync, realpathSync, statSync } from "node:fs";
-import { delimiter, dirname, isAbsolute, resolve, win32 } from "node:path";
+import { homedir } from "node:os";
+import { delimiter, dirname, isAbsolute, relative, resolve, sep, win32 } from "node:path";
 import type { PolicyEntries, ToolPolicy } from "./guardian-settings.js";
 import {
   commandStarts,
@@ -204,8 +205,9 @@ export const builtInSafePrograms: readonly string[] = [...builtInPrograms.keys()
  * in a bare repository, `config` and `HEAD` themselves. Every other program takes its settings
  * from its arguments, the environment, or files under the home directory, and only reads where
  * it is pointed: `rg` also honors `.ignore`, `.rgignore`, and `.gitignore` files in the working
- * directory and its parents, but they only hide matches; its `--pre` and `RIPGREP_CONFIG_PATH`
- * are not read from there. Adding a built-in program requires adding it here, deliberately.
+ * directory and its parents, which only change which files it lists or searches (`!` can un-hide
+ * one, never run code); its `--pre` is rejected, and a relative `RIPGREP_CONFIG_PATH`, which would
+ * read a config from the working directory, makes `rg` unsafe. Adding a built-in program requires adding it here, deliberately.
  */
 export const directorySensitivePrograms: ReadonlySet<string> = new Set(["git"]);
 
@@ -333,6 +335,12 @@ function safeSegment(
   environment: ShellEnvironment,
   /** An earlier `cd` left the directory unknown: a program that reads the directory's own configuration (`git`) may run another's. */
   directoryUnknown: boolean,
+  /**
+   * The directory is unknown because Guardian let a literal `cd` through, not because the user
+   * allowed a directory change: the user's `allow` rule was not written with that directory in
+   * mind, so it no longer vouches for the segment (`git describe` would run `evil/.git/config`).
+   */
+  relaxed: boolean,
 ): boolean {
   const words = segmentWords(segment);
   const program = words?.[0];
@@ -340,11 +348,17 @@ function safeSegment(
   // An environment assignment (`PAGER=x git log`) or a path (`./ls`) is not a known program.
   if (program.includes("=") || program.includes("/") || program === "") return false;
   if (exportedFunction(program, environment.env)) return false;
-  // An `allow` Command Rule is the user's choice, even for `git` in an unknown directory.
-  if (rule?.policy === "allow") return true;
+  // An `allow` Command Rule is the user's choice, even for `git` in a directory the user's own
+  // allowed directory change left unknown; after a `cd` Guardian relaxed it vouches only for
+  // further directory changes, which keep the directory unknown.
+  if (rule?.policy === "allow" && (!relaxed || directoryChanges.has(program))) return true;
   if (directoryUnknown && directorySensitivePrograms.has(program)) return false;
   if (program === "git" && gitRedirections.some((name) => isSet(environment.env[name])))
     return false;
+  // A relative `RIPGREP_CONFIG_PATH` is read from the working directory, where a `--pre=` line
+  // in a file the agent wrote would run a program.
+  const ripgrepConfig = environment.env["RIPGREP_CONFIG_PATH"];
+  if (program === "rg" && isSet(ripgrepConfig) && !isAbsolute(ripgrepConfig ?? "")) return false;
   const check = builtInPrograms.get(program);
   return check ? check(words.slice(1)) : false;
 }
@@ -419,18 +433,44 @@ function physicalDirectory(directory: string): string {
 
 /**
  * Where `path` may lead from `directory`: lexically (bash's logical `cd`, which removes `..`
- * before the lookup) and from the directory's resolved path (`cd -P`, or the physical lookup
- * when the logical one fails).
+ * before the lookup), from the directory's resolved path, and as the kernel resolves the path
+ * unnormalized (`cd -P`, or the physical lookup bash falls back to when the logical one fails:
+ * `link/../.ssh` follows `link` first, then goes up from where it points).
  */
 function spellings(directory: string, path: string): string[] {
-  return [...new Set([resolve(directory, path), resolve(physicalDirectory(directory), path)])];
+  const found = [resolve(directory, path), resolve(physicalDirectory(directory), path)];
+  try {
+    found.push(
+      realpathSync.native(isAbsolute(path) ? path : `${physicalDirectory(directory)}/${path}`),
+    );
+  } catch {
+    // Not an existing path: the lexical spellings stand.
+  }
+  return [...new Set(found)];
 }
 
-/** Whether `path` is a Sensitive Path other than by lying outside the workspace root. */
+/** Whether `path` is the home directory or one of its ancestors, so it holds home's files. */
+function holdsHome(path: string, where: SensitivePathContext): boolean {
+  const home = where.home ?? homedir();
+  return [home, physicalDirectory(home)].some((candidate) => {
+    const relation = relative(path, candidate);
+    return (
+      relation === "" ||
+      (relation !== ".." && !relation.startsWith(`..${sep}`) && !isAbsolute(relation))
+    );
+  });
+}
+
+/**
+ * Whether `path` is a Sensitive Path other than by lying outside the workspace root, or is the
+ * home directory or an ancestor of it: a program reading it (`grep -r .`) reaches the persistence
+ * and credential locations below, which the path itself does not name.
+ */
 function sensitiveBeyondWorkspace(path: string, where: SensitivePathContext): boolean {
   // Pi's file tools rewrite some spellings (`@`, odd spaces), so such a path is judged elsewhere.
   return (
     resolveToolPath(path, where.cwd) !== path ||
+    holdsHome(path, where) ||
     sensitivePathReason(path, where, { outsideIsOrdinary: true }) !== undefined
   );
 }
@@ -463,24 +503,39 @@ function unknownCdTargets(
 }
 
 /**
+ * What a word may name as a path: the word itself, the value after its `=` (`--file=.bashrc`),
+ * and, for a short option, any tail that may be a value attached to it (`-f.ssh/id_rsa`, or
+ * `-rnf.ssh/id_rsa` among combined flags).
+ */
+function pathCandidates(word: string): string[] {
+  if (!word.startsWith("-")) return [word];
+  const found = word.includes("=") ? [word.slice(word.indexOf("=") + 1)] : [];
+  if (!word.startsWith("--"))
+    for (let index = 2; index < word.length; index++) found.push(word.slice(index));
+  return found;
+}
+
+/**
  * Whether a relative operand of `words` (after the program) could name a Sensitive Path from any
- * of `directories`, the places an unknown `cd` may have left the shell. A word that starts with
- * `-` counts only after its `=` (`--file=.bashrc`); absolute words are not judged against the
- * directory. Conservative: a search pattern that spells such a path counts too.
+ * of `directories`, the places an unknown `cd` may have left the shell. Absolute words are not
+ * judged against the directory. Conservative: a search pattern that spells such a path counts too.
  */
 function operandsReachSensitive(
   words: readonly string[],
   directories: readonly string[],
   where: SensitivePathContext,
 ): boolean {
-  return words.slice(1).some((word) => {
-    const operand = word.startsWith("-") ? word.slice(word.indexOf("=") + 1) : word;
-    if (!operand || (word.startsWith("-") && !word.includes("=")) || isAbsolute(operand))
-      return false;
-    return directories.some((directory) =>
-      spellings(directory, operand).some((path) => sensitiveBeyondWorkspace(path, where)),
+  return words
+    .slice(1)
+    .flatMap(pathCandidates)
+    .some(
+      (operand) =>
+        operand !== "" &&
+        !isAbsolute(operand) &&
+        directories.some((directory) =>
+          spellings(directory, operand).some((path) => sensitiveBeyondWorkspace(path, where)),
+        ),
     );
-  });
 }
 
 /**
@@ -508,6 +563,8 @@ function safeSegments(
   let directoryUnknown = false;
   // A directory change that only an `allow` Command Rule permits: nothing is known any more.
   let lost = false;
+  // Guardian let a literal `cd` through: an `allow` Command Rule no longer vouches for the rest.
+  let relaxed = false;
   for (const [index, segment] of segments.entries()) {
     const words = segmentWords(segment);
     if (words?.[0] === "cd" && where) {
@@ -522,12 +579,13 @@ function safeSegments(
         }
       }
       const found =
-        piped || lost
+        piped || lost || matched[index]?.policy === "allow"
           ? undefined
           : unknownCdTargets(words.slice(1), directories, where, environment);
       if (found) {
         directories = [...new Set([...directories, ...found])];
         directoryUnknown = true;
+        relaxed = true;
         continue;
       }
     } else if (
@@ -538,7 +596,7 @@ function safeSegments(
     ) {
       return false;
     }
-    if (!safeSegment(segment, matched[index], environment, directoryUnknown)) return false;
+    if (!safeSegment(segment, matched[index], environment, directoryUnknown, relaxed)) return false;
     if (directoryChanges.has(words?.[0] ?? "")) {
       directories = [];
       directoryUnknown = true;
