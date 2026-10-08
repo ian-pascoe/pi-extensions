@@ -29,7 +29,7 @@ import {
   type EscalationRecord,
   type ReviewEntry,
 } from "./guardian-audit.js";
-import { tokenFactor } from "./guardian-calibration.js";
+import { tokenFactor } from "@ian-pascoe/pi-utils/token-calibration";
 import {
   classifierFailure,
   classifierQuestions,

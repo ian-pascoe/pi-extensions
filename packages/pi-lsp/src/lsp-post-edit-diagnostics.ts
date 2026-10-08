@@ -280,9 +280,15 @@ function cleanPathsLine(
  * are grouped on one line, leaving out a file any server reported a finding for, and when every
  * file is clean the section is a single line.
  */
-export function formatPostEditDiagnostics(outcomes: readonly ShownOutcome[], cwd: string): string {
+export function formatPostEditDiagnostics(
+  outcomes: readonly ShownOutcome[],
+  cwd: string,
+  omittedHints = 0,
+): string {
+  const omittedNote =
+    omittedHints > 0 ? `${omittedHints} ${omittedHints === 1 ? "hint" : "hints"} omitted` : "";
   if (outcomes.every(({ kind }) => kind === "no_diagnostics")) {
-    return "\n\nLSP diagnostics: no diagnostics";
+    return `\n\nLSP diagnostics: no diagnostics${omittedNote === "" ? "" : ` (${omittedNote})`}`;
   }
   const clean: string[] = [];
   const reported: ReportedOutcome[] = [];
@@ -295,8 +301,51 @@ export function formatPostEditDiagnostics(outcomes: readonly ShownOutcome[], cwd
       .sort((left, right) => compareOutcomes(left, right, cwd))
       .map((outcome) => formatOutcome(outcome, cwd)),
     ...cleanPathsLine(clean, reported, cwd),
+    ...(omittedNote === "" ? [] : [omittedNote]),
   ];
   return `\n\nLSP diagnostics\n${lines.join("\n")}`;
+}
+
+/** Options for Post-edit Diagnostics feedback. */
+export interface PostEditDiagnosticsOptions {
+  /** Include hint-severity findings; they are omitted and counted by default. */
+  readonly includeHints?: boolean;
+}
+
+const HINT_SEVERITY = 4;
+
+interface HintFilterResult {
+  readonly outcomes: ShownOutcome[];
+  readonly omittedHints: number;
+}
+
+/**
+ * Drop hint-severity findings and count them. A file left with no finding after the drop is
+ * reported clean, so the omission never makes it disappear from the section.
+ */
+function omitHintOutcomes(outcomes: readonly ShownOutcome[]): HintFilterResult {
+  const kept: ShownOutcome[] = [];
+  const hintPaths = new Set<string>();
+  let omittedHints = 0;
+  for (const outcome of outcomes) {
+    if (outcome.kind === "diagnostic" && outcome.diagnostic.severity === HINT_SEVERITY) {
+      omittedHints++;
+      hintPaths.add(outcome.diagnostic.path);
+    } else kept.push(outcome);
+  }
+  const accountedPaths = new Set(
+    kept.flatMap((outcome) =>
+      outcome.kind === "diagnostic"
+        ? [outcome.diagnostic.path]
+        : outcome.kind === "no_diagnostics"
+          ? [outcome.path]
+          : [],
+    ),
+  );
+  for (const path of hintPaths) {
+    if (!accountedPaths.has(path)) kept.push({ kind: "no_diagnostics", path });
+  }
+  return { outcomes: kept, omittedHints };
 }
 
 /** Append fresh Post-edit Diagnostics while preserving every mutation-result field Pi already owns. */
@@ -304,20 +353,28 @@ export async function appendPostEditDiagnostics(
   event: ToolResultEvent,
   diagnostics: PostEditDiagnosticsRunner,
   cwd: string,
+  options: PostEditDiagnosticsOptions = {},
 ): Promise<PostEditDiagnosticsResultPatch | undefined> {
   const extracted = extractPostEditDiagnosticPaths(event);
   if (extracted === undefined) return undefined;
   // The one place a file no Server Definition covers is dropped: it is noise, not a finding.
+  const shown = (await diagnostics(extracted.paths)).filter(isShownOutcome);
+  const { outcomes: filtered, omittedHints } = options.includeHints
+    ? { outcomes: shown, omittedHints: 0 }
+    : omitHintOutcomes(shown);
   const outcomes: ShownOutcome[] = [
     ...extracted.warnings.map((message): ShownOutcome => ({
       kind: "warning",
       message,
     })),
-    ...(await diagnostics(extracted.paths)).filter(isShownOutcome),
+    ...filtered,
   ];
   if (outcomes.length === 0) return undefined;
   const patch: PostEditDiagnosticsResultPatch = {
-    content: [...event.content, { type: "text", text: formatPostEditDiagnostics(outcomes, cwd) }],
+    content: [
+      ...event.content,
+      { type: "text", text: formatPostEditDiagnostics(outcomes, cwd, omittedHints) },
+    ],
     details: event.details,
     structuredContent: event.structuredContent,
     isError: event.isError,
