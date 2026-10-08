@@ -507,8 +507,6 @@ describe("Safe Command", () => {
         ["grep -R", "grep -R x ."],
         ["grep -rnR", "grep -rnR x ."],
         ["grep --dereference-recursive", "grep --dereference-recursive x ."],
-        ["grep --deref (an unambiguous prefix)", "grep --deref x ."],
-        ["grep --dereference-r", "grep --dereference-r x ."],
         ["find -L", "find -L . -name x"],
         ["find -follow", "find . -follow -name x"],
         ["rg -L", "rg -L x ."],
@@ -524,6 +522,19 @@ describe("Safe Command", () => {
           ),
         ).toBe(true);
         expect(isSafeCommand(command, {}, where), command).toBe(true);
+      });
+
+      it.each(["--deref", "--dereference-r", "--dereference-recursiv"])(
+        "reviews grep %s, an unambiguous prefix, after an unknown cd",
+        (option) => {
+          expect(isSafeCommand(`cd /opt && grep ${option} x .`, {}, where)).toBe(false);
+          expect(isSafeCommand(`grep ${option} x .`, {}, where)).toBe(true);
+        },
+      );
+
+      it("does not read a short prefix as --dereference-recursive", () => {
+        // `--de` is ambiguous (`--devices`), so grep rejects it rather than following links.
+        expect(isSafeCommand("cd /opt && grep --de x .", {}, where)).toBe(true);
       });
 
       it("keeps a rule-allowed directory change as the user chose", () => {
