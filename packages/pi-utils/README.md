@@ -21,12 +21,36 @@ The Pi packages and `typebox` are optional peers; Pi's extension loader supplies
 | `./pi-agent-session-discovery` | Nothing; the caller passes `AgentSession` from `@earendil-works/pi-coding-agent` |
 | `./evidence`                   | `@earendil-works/pi-coding-agent` (`convertToLlm`, `estimateTokens`)             |
 | `./layered-settings`           | `typebox`                                                                        |
+| `./null-optional-arguments`    | `typebox`                                                                        |
+| `./tool-testing`               | `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and `typebox`        |
 | `./settings-menu`              | `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui`                   |
 | `./settings-command`           | Nothing; its declarations reference `@earendil-works/pi-tui` types               |
 | `./ui`                         | `@earendil-works/pi-coding-agent` (`keyText`) and `@earendil-works/pi-tui`       |
 | `./ui-testing`                 | `@earendil-works/pi-tui` (`visibleWidth`)                                        |
 
 Type-only imports from `@earendil-works/pi-ai` and `@earendil-works/pi-coding-agent` are erased from the compiled JavaScript, but the published declarations reference them, so TypeScript consumers outside Pi need those packages installed to type-check.
+
+## Null for optional tool arguments
+
+Models trained on tool schemas that declare an optional parameter as `T | null` pass `null` for "not given", while an extension's `Type.Optional(T)` rejects it. `acceptNullForOptionalArguments(tool)` from `@ian-pascoe/pi-utils/null-optional-arguments` returns the tool with a `prepareArguments` that drops those `null`s, so the call behaves as if the parameter were omitted. Every package registers its tools through it, so behaviour is identical everywhere:
+
+```ts
+pi.registerTool(acceptNullForOptionalArguments(tool));
+```
+
+Pi runs `prepareArguments` before schema validation, for model calls and for nested calls from codemode scripts (`tools.*`, `ctx.executeTool()`) alike. A `prepareArguments` the tool already has runs afterwards, on the normalized arguments, so a strict parser such as Pi DAP's sees omitted parameters, not `null`. Only `prepareArguments` is added: the schema, description, and every other field are unchanged, so the declaration the model sees and any provider prompt-cache prefix stay byte-identical.
+
+Pi 1.1's own validation already drops a `null` for a top-level optional property whose schema rejects `null`, but only after `prepareArguments`, so strict parsers there still see it; it also skips union members (coercing `null` to `0` or `"null"`) and `$ref` properties. The helper closes those gaps and does not depend on that behaviour.
+
+The rule, which `omitNullOptionalArguments(schema, args)` implements for the helper:
+
+- A property is dropped only when its value is `null`, it is not `required`, and its own schema rejects `null`. Where `null` already means something, it stays: `Type.Union([T, Type.Null()])` (Todo's `description: null` removes a description), `Type.Unknown()`, and any schema that cannot be evaluated alone, such as a `$ref`.
+- Nested optional properties are normalized as well: through object `properties`, array `items` and `prefixItems`, `allOf`, and `anyOf`/`oneOf` members. Models write `null` for a nested optional field (a breakpoint's `condition`, a finding's `evidence.refs`) as readily as for a top-level one, and a `null` the schema rejects can only fail the call. A union value that already satisfies a member is left alone; otherwise the first member whose normalized value validates is used.
+- Record values (`additionalProperties`, `patternProperties`) are not rewritten: their entries are not optional parameters and dropping one would change which keys the tool receives.
+- A `null` for a required property is never repaired; validation reports it as before.
+- The arguments are never mutated, and the same object is returned when nothing changes.
+
+`@ian-pascoe/pi-utils/tool-testing` holds the shared test helpers: `expectNullOptionalArgumentsOmitted(tool, args?, skip?)` proves every top-level optional parameter that rejects `null` behaves like omitting it (arguments default to a sample built from the schema), `recordToolRegistrations()` runs an extension factory against a recording stand-in for `ExtensionAPI`, `withoutPreparedArguments(factory)` registers the same tools without `prepareArguments` for a before/after comparison of what a real Pi session declares to the model, and `toolDeclarations(tools)` serializes ordered declarations for a byte comparison.
 
 ## Locked file updates
 

@@ -7,6 +7,7 @@ import type {
   ToolDefinition,
   ToolExposure,
 } from "@earendil-works/pi-coding-agent";
+import { acceptNullForOptionalArguments } from "@ian-pascoe/pi-utils/null-optional-arguments";
 import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
 import {
@@ -2408,7 +2409,13 @@ export function registerLspTools(
   getDependencies: () => LspToolDependencies,
 ): void {
   for (const operation of LSP_OPERATION_NAMES) {
-    if (operation === "apply") pi.registerTool(createLspApplyToolDefinition(getDependencies));
-    else pi.registerTool(createLspToolDefinition(operation, getDependencies));
+    if (operation === "apply")
+      pi.registerTool(
+        acceptNullForOptionalArguments(createLspApplyToolDefinition(getDependencies)),
+      );
+    else
+      pi.registerTool(
+        acceptNullForOptionalArguments(createLspToolDefinition(operation, getDependencies)),
+      );
   }
 }

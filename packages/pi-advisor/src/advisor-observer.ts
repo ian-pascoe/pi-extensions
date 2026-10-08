@@ -3,6 +3,7 @@ import * as piAi from "@earendil-works/pi-ai";
 import type { Context } from "@earendil-works/pi-ai";
 import * as piSdk from "@earendil-works/pi-coding-agent";
 import type { AgentSession, AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
+import { acceptNullForOptionalArguments } from "@ian-pascoe/pi-utils/null-optional-arguments";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import {
@@ -689,7 +690,7 @@ export class AdvisorObserver {
       });
       const sessionOptions: AdvisorSessionOptions = {
         config: this.config,
-        adviceTool,
+        adviceTool: acceptNullForOptionalArguments(adviceTool),
         signal: operation.cancellation.signal,
         controlExtension: (pi) => {
           pi.on("tool_call", (event, ctx) => {

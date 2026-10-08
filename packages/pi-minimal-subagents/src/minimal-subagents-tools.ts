@@ -10,6 +10,7 @@ import {
   type ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
 import { Container, type Component, type TUI } from "@earendil-works/pi-tui";
+import { acceptNullForOptionalArguments } from "@ian-pascoe/pi-utils/null-optional-arguments";
 import { appendDurationFooter, callDurationFooter } from "@ian-pascoe/pi-utils/ui";
 import type { MinimalSubagentsCoordinator } from "./minimal-subagents-coordinator.js";
 import { withTroubleshootingHint } from "./troubleshooting-skill.js";
@@ -512,7 +513,9 @@ export function createCoordinatorToolDefinitions(
     Object.assign(deleteTool, { outputSchema: CoordinatorToolOutputSchemas.subagent_delete }),
   ];
   const allowFanoutTools = options.allowFanoutTools ?? options.callerId === "root";
-  return allowFanoutTools
-    ? coordinatorTools
-    : coordinatorTools.filter((tool) => NON_SPAWNING_CHILD_COORDINATOR_TOOL_NAMES.has(tool.name));
+  return (
+    allowFanoutTools
+      ? coordinatorTools
+      : coordinatorTools.filter((tool) => NON_SPAWNING_CHILD_COORDINATOR_TOOL_NAMES.has(tool.name))
+  ).map((tool) => acceptNullForOptionalArguments(tool));
 }

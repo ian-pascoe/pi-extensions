@@ -8,6 +8,7 @@ import type {
 import { isDeepStrictEqual } from "node:util";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { acceptNullForOptionalArguments } from "@ian-pascoe/pi-utils/null-optional-arguments";
 import { discoverPiAgentSession } from "@ian-pascoe/pi-utils/pi-agent-session-discovery";
 import { expandEntryOnClick, expandMessageOnClick, noticeText } from "@ian-pascoe/pi-utils/ui";
 import {
@@ -124,7 +125,7 @@ export default function advisor(pi: ExtensionAPI): void {
 
   function setAskToolAvailable(available: boolean): void {
     if (available && !askToolRegistered) {
-      pi.registerTool({
+      const askTool = piSdk.defineTool({
         name: askToolName,
         label: "Ask Advisor",
         description:
@@ -163,6 +164,7 @@ export default function advisor(pi: ExtensionAPI): void {
           }
         },
       });
+      pi.registerTool(acceptNullForOptionalArguments(askTool));
       askToolRegistered = true;
       return;
     }
