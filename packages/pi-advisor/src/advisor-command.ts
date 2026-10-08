@@ -1,64 +1,43 @@
+import {
+  completeSettingsCommandArguments,
+  parseSettingsCommand,
+  type SettingsCommand,
+} from "@ian-pascoe/pi-utils/settings-command";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import {
   advisorOptionKey,
   advisorOptionKeys,
   parseAdvisorOptions,
   type AdvisorOptions,
+  type AdvisorSettingScope,
 } from "./advisor-settings.js";
 
 /** Native command completion values replace the entire argument prefix. */
 export function completeAdvisorCommandArguments(prefix: string): AutocompleteItem[] {
-  const candidates = ["on", "off", "status", "prompt", "inherit", "set"];
-  const keyPrefix = /^((?:set|inherit)\s+)\S*$/.exec(prefix)?.[1];
-  if (keyPrefix) candidates.push(...advisorOptionKeys.map((key) => `${keyPrefix}${key}`));
-  const scopePrefix = /^(.*\s+)(--\S*)?$/s.exec(prefix)?.[1];
-  if (scopePrefix) {
-    try {
-      const command = parseAdvisorCommand(scopePrefix);
-      if ("scope" in command && command.scope === "session")
-        candidates.push(`${scopePrefix}--global`, `${scopePrefix}--project`);
-    } catch {
-      // Incomplete commands and JSON values cannot accept a scope yet.
-    }
-  }
-  return candidates
-    .filter((value) => value.startsWith(prefix))
-    .map((value) => ({ value, label: value }));
+  return completeSettingsCommandArguments(prefix, {
+    words: ["on", "off", "status", "prompt", "inherit", "set"],
+    optionKeys: advisorOptionKeys,
+    parse: parseAdvisorCommand,
+  });
 }
 
 const usage =
   "Usage: /advisor [on|off|status|prompt|inherit [key]|set <key> <JSON>] [--global|--project]; /advisor alone opens settings";
 
+/** One parsed `/advisor` command. */
+export type AdvisorCommand = SettingsCommand<
+  AdvisorOptions,
+  keyof AdvisorOptions,
+  { action: "prompt"; scope: AdvisorSettingScope }
+>;
+
 /** Parse one configuration change; validated patches cannot invent option keys. */
-export function parseAdvisorCommand(input: string) {
-  const flag = /\s+--(global|project)$/.exec(input.trim());
-  const scope =
-    flag?.[1] === "global"
-      ? ("global" as const)
-      : flag?.[1] === "project"
-        ? ("project" as const)
-        : ("session" as const);
-  const text = flag ? input.trim().slice(0, flag.index) : input.trim();
-  if (text === "" || text === "status") {
-    if (flag) throw new Error(usage);
-    return text === "" ? { action: "menu" as const } : { action: "status" as const };
-  }
-  if (text === "prompt") return { action: "prompt" as const, scope };
-  if (text === "on" || text === "off") {
-    return {
-      action: "set" as const,
-      scope,
-      key: "enabled" as const,
-      patch: { enabled: text === "on" },
-    };
-  }
-  const inherit = /^inherit(?:\s+(\S+))?$/.exec(text);
-  if (inherit) {
-    return { action: "inherit" as const, scope, key: advisorOptionKey(inherit[1] ?? "enabled") };
-  }
-  const set = /^set\s+(\S+)\s+([\s\S]+)$/.exec(text);
-  if (!set?.[1] || !set[2]) throw new Error(usage);
-  const key = advisorOptionKey(set[1]);
-  const patch: AdvisorOptions = parseAdvisorOptions({ [key]: JSON.parse(set[2]) }, scope);
-  return { action: "set" as const, scope, key, patch };
+export function parseAdvisorCommand(input: string): AdvisorCommand {
+  return parseSettingsCommand(input, {
+    usage,
+    optionKey: advisorOptionKey,
+    parseOptions: parseAdvisorOptions,
+    toggle: (enabled) => ({ key: "enabled", patch: { enabled } }),
+    parseExtra: (text, scope) => (text === "prompt" ? { action: "prompt", scope } : undefined),
+  });
 }

@@ -70,8 +70,8 @@ async function discoverWorkspaceManifests() {
   }
   manifests.sort((left, right) => left.manifest.name.localeCompare(right.manifest.name));
   assertPackCondition(
-    manifests.length === 15,
-    `expected 15 workspace manifests, found ${manifests.length}`,
+    manifests.length === 16,
+    `expected 16 workspace manifests, found ${manifests.length}`,
   );
   return manifests;
 }
@@ -105,6 +105,10 @@ function validatePackedFileList(packageName, files) {
       "dist/layered-settings.js",
       "dist/evidence.d.ts",
       "dist/evidence.js",
+      "dist/settings-menu.d.ts",
+      "dist/settings-menu.js",
+      "dist/settings-command.d.ts",
+      "dist/settings-command.js",
       "package.json",
     ]) {
       assertPackCondition(paths.includes(requiredPath), `${packageName} omits ${requiredPath}`);
@@ -186,7 +190,11 @@ function validatePackedManifest(sourceManifest, packedManifest, piUtilsVersion) 
         packedManifest.exports?.["./layered-settings"]?.import === "./dist/layered-settings.js" &&
         packedManifest.exports?.["./layered-settings"]?.types === "./dist/layered-settings.d.ts" &&
         packedManifest.exports?.["./evidence"]?.import === "./dist/evidence.js" &&
-        packedManifest.exports?.["./evidence"]?.types === "./dist/evidence.d.ts",
+        packedManifest.exports?.["./evidence"]?.types === "./dist/evidence.d.ts" &&
+        packedManifest.exports?.["./settings-menu"]?.import === "./dist/settings-menu.js" &&
+        packedManifest.exports?.["./settings-menu"]?.types === "./dist/settings-menu.d.ts" &&
+        packedManifest.exports?.["./settings-command"]?.import === "./dist/settings-command.js" &&
+        packedManifest.exports?.["./settings-command"]?.types === "./dist/settings-command.d.ts",
       `${packageName} has an invalid compiled library entrypoint`,
     );
     assertPackCondition(
@@ -358,5 +366,5 @@ try {
 }
 
 console.log(
-  "Validated fifteen package tarballs, fourteen source entrypoints, package skills, and the shared utility.",
+  "Validated sixteen package tarballs, fifteen source entrypoints, package skills, and the shared utility.",
 );

@@ -6,18 +6,20 @@ import {
   type KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
 import {
-  fuzzyFilter,
-  getKeybindings,
-  Input,
   SelectList,
   SettingsList,
   type Component,
-  type SelectItem,
   type SettingItem,
   type TUI,
   type TuiMouseEvent,
   type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
+import {
+  errorText,
+  ModelPicker,
+  nextCycleValue,
+  ValueInput,
+} from "@ian-pascoe/pi-utils/settings-menu";
 import { Value } from "typebox/value";
 import { formatAdvisorOption, type AdvisorRenderTheme } from "./advisor-rendering.js";
 import {
@@ -119,12 +121,6 @@ const inputHints = {
   reviewEvery: "turn, request, a number of turns, or inherit",
   maxSessionTokens: "a token count, auto, or inherit",
 } as const;
-const listActions = [
-  "tui.select.up",
-  "tui.select.down",
-  "tui.select.confirm",
-  "tui.select.cancel",
-] as const;
 
 /** Convert one typed or selected menu value into a validated change. */
 function parseAdvisorMenuValue(
@@ -162,94 +158,6 @@ function parseAdvisorMenuValue(
     }
   })();
   return { action: "set", key, patch: parseAdvisorOptions(patch, scope) };
-}
-
-function errorText(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
-}
-
-/** Single-line value entry with inline validation. */
-class ValueInput implements Component {
-  private readonly input: Input;
-  private error: string | undefined;
-
-  constructor(
-    private readonly title: string,
-    private readonly hint: string,
-    private readonly theme: AdvisorRenderTheme,
-    submit: (text: string) => void,
-    cancel: () => void,
-  ) {
-    this.input = new Input({ placeholder: hint });
-    this.input.focused = true;
-    this.input.onSubmit = (text) => {
-      try {
-        submit(text);
-      } catch (cause) {
-        this.error = errorText(cause);
-      }
-    };
-    this.input.onEscape = cancel;
-  }
-  handleInput(data: string): void {
-    this.error = undefined;
-    this.input.handleInput(data);
-  }
-  render(width: number): string[] {
-    return [
-      this.theme.bold(this.title),
-      ...this.input.render(width),
-      this.error ? this.theme.fg("error", `✖ ${this.error}`) : this.theme.fg("dim", this.hint),
-    ];
-  }
-  invalidate(): void {
-    this.input.invalidate();
-  }
-}
-
-/** Fuzzy-searchable model list with an inherit choice. */
-class ModelPicker implements Component {
-  private readonly input = new Input({ placeholder: "type to search" });
-  private list: SelectList;
-
-  constructor(
-    private readonly models: readonly string[],
-    private readonly choose: (value: string) => void,
-    private readonly cancel: () => void,
-  ) {
-    this.input.focused = true;
-    this.list = this.createList("");
-  }
-  private createList(query: string): SelectList {
-    const items: SelectItem[] = ["inherit", ...this.models].map((value) => ({
-      value,
-      label: value,
-    }));
-    const list = new SelectList(
-      query ? fuzzyFilter(items, query, (item) => item.value) : items,
-      10,
-      getSelectListTheme(),
-    );
-    list.onSelect = (item) => this.choose(item.value);
-    list.onCancel = this.cancel;
-    return list;
-  }
-  handleInput(data: string): void {
-    const bindings = getKeybindings();
-    if (listActions.some((action) => bindings.matches(data, action))) {
-      this.list.handleInput(data);
-      return;
-    }
-    this.input.handleInput(data);
-    this.list = this.createList(this.input.getValue());
-  }
-  render(width: number): string[] {
-    return [...this.input.render(width), ...this.list.render(width)];
-  }
-  invalidate(): void {
-    this.input.invalidate();
-    this.list.invalidate();
-  }
 }
 
 /** Choose between editing the prompt in Pi's editor component and inheriting it. */
@@ -586,8 +494,7 @@ export class AdvisorSettingsMenu implements Component {
     // text is not one of the values, so ignore its suggestion.
     const values = cycleValues[key];
     const own = cycleValue(key, this.view.authored[this.scope] ?? {}) ?? "inherit";
-    const next =
-      values[(values.findIndex((option) => option === own) + 1) % values.length] ?? "inherit";
+    const next = nextCycleValue(values, own) ?? "inherit";
     let change: AdvisorChange;
     try {
       change = parseAdvisorMenuValue(key, next, this.scope);

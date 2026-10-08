@@ -1,0 +1,3 @@
+# Let trusted projects weaken Guardian
+
+Guardian resolves every setting from defaults, global, trusted project, and session scopes, like pi-advisor; an untrusted project's settings are ignored, but a trusted project may disable Guardian or allow tools. A prompt-injected repository is exactly what Guardian defends against, so restricting projects to tightening changes was considered. We rejected it because a trusted project can already load arbitrary extension code, so a tighten-only rule would add configuration friction without a real security boundary. Pi's project trust remains that boundary, while the agent's own edits to Pi settings are Sensitive Paths and therefore always reviewed.

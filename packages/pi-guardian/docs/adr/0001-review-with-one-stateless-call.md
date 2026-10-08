@@ -1,0 +1,3 @@
+# Review each call with one stateless model call
+
+Each Guardian Review is a single completion without tools: built-in policy and Security Policy, then budgeted evidence, then the Reviewed Call. Requests share an append-only prefix so provider prompt caches still apply across reviews. Codex's Guardian and pi-advisor instead keep a persistent private reviewer session, and Codex's can run read-only checks before deciding. We rejected that because every Reviewed Call blocks the agent until its review ends, and because a nested Pi session would load Guardian itself and need to review its own investigation. Without investigation, the policy leans conservative when evidence is missing, and the Decision Table rather than the model fixes the Outcome.

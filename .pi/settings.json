@@ -11,6 +11,7 @@
         "+packages/pi-dap/src/index.ts",
         "+packages/pi-formatter/src/index.ts",
         "+packages/pi-git-checkpoints/src/index.ts",
+        "+packages/pi-guardian/src/index.ts",
         "+packages/pi-lsp/src/index.ts",
         "+packages/pi-minimal-subagents/src/index.ts",
         "+packages/pi-skills-selector/src/index.ts",
@@ -27,6 +28,7 @@
         "+packages/pi-dap/skills/pi-dap/SKILL.md",
         "+packages/pi-formatter/skills/pi-formatter/SKILL.md",
         "+packages/pi-git-checkpoints/skills/pi-git-checkpoints/SKILL.md",
+        "+packages/pi-guardian/skills/pi-guardian/SKILL.md",
         "+packages/pi-lsp/skills/pi-lsp/SKILL.md",
         "+packages/pi-minimal-subagents/skills/pi-minimal-subagents/SKILL.md",
         "+packages/pi-skills-selector/skills/pi-skills-selector/SKILL.md",
@@ -47,6 +49,7 @@
         "-packages/pi-dap/src/index.ts",
         "-packages/pi-formatter/src/index.ts",
         "-packages/pi-git-checkpoints/src/index.ts",
+        "-packages/pi-guardian/src/index.ts",
         "-packages/pi-lsp/src/index.ts",
         "-packages/pi-minimal-subagents/src/index.ts",
         "-packages/pi-skills-selector/src/index.ts",
@@ -63,6 +66,7 @@
         "-packages/pi-dap/skills/pi-dap/SKILL.md",
         "-packages/pi-formatter/skills/pi-formatter/SKILL.md",
         "-packages/pi-git-checkpoints/skills/pi-git-checkpoints/SKILL.md",
+        "-packages/pi-guardian/skills/pi-guardian/SKILL.md",
         "-packages/pi-lsp/skills/pi-lsp/SKILL.md",
         "-packages/pi-minimal-subagents/skills/pi-minimal-subagents/SKILL.md",
         "-packages/pi-skills-selector/skills/pi-skills-selector/SKILL.md",
@@ -73,6 +77,12 @@
       ]
     }
   ],
+  "guardian": {
+    "enabled": true,
+    "classifierModel": "typesafe/jev-latest",
+    "model": "anthropic/claude-haiku-5-5",
+    "thinkingLevel": "low"
+  },
   "advisor": {
     "enabled": false,
     "model": "anthropic/claude-fable-5-1",
@@ -227,9 +237,5 @@
         "requireRootMarker": true
       }
     }
-  },
-  "extensions": [
-    "/home/ianpascoe/.pi/agent/extensions/command-deck-editor.ts",
-    "-/home/ianpascoe/.pi/agent/extensions/command-deck-editor.ts"
-  ]
+  }
 }
