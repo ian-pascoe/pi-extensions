@@ -17,8 +17,7 @@ import {
   type Outcome,
   type RiskCategory,
 } from "./guardian-assessment.js";
-import type { ReviewUsage } from "./guardian-audit.js";
-import type { Classification } from "./guardian-classifier.js";
+import type { Classification, EscalationTrigger, ReviewUsage } from "./guardian-audit.js";
 import { errorMessage } from "./guardian-notify.js";
 import type { GuardianThinkingLevel } from "./guardian-settings.js";
 
@@ -44,13 +43,6 @@ export interface ReviewMetrics {
   /** Set when a classifier made the First Pass. */
   classification?: Classification;
 }
-
-/**
- * Why a First Pass escalated: its assessment would be rejected, or, for a classifier's, its
- * Rejection Probability reached the threshold, it rated `high` or `critical` risk without a Risk
- * Category, or it failed.
- */
-export type EscalationTrigger = "rejected" | "uncertain" | "uncategorized" | "failed";
 
 /** A review's Escalation Pass: why it ran, the First Pass's assessment, and what it produced. */
 export interface Escalation {
@@ -193,7 +185,7 @@ function escalationFailure(
   const doubt =
     trigger === "uncertain"
       ? "the Guardian classifier was unsure"
-      : "the Guardian classifier rated the risk high without a Risk Category";
+      : "the Guardian classifier rated the risk high or critical without a Risk Category";
   return `${doubt}, and the Escalation Pass failed: ${failure}`;
 }
 

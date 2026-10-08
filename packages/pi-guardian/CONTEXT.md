@@ -33,11 +33,11 @@ A file path whose modification is reviewed even though ordinary workspace edits 
 _Avoid_: Protected file
 
 **Guardian Review**:
-One assessment of one Reviewed Call, producing a Risk Level, a User Authorization, a Risk Category when the risk is `high` or `critical`, and a rationale. It starts with a First Pass, which an Escalation Pass may follow.
+One assessment of one Reviewed Call, producing a Risk Level, a User Authorization, a Risk Category when the risk is `high` or `critical`, and, from a language model, a rationale. It starts with a First Pass, which an Escalation Pass may follow.
 _Avoid_: Review (an Advisor term), approval
 
 **First Pass**:
-The initial assessment of a Guardian Review, made either by a language model or by a classifier. A language model's First Pass is escalated when it would be rejected; a classifier's, which gives no rationale, is escalated when it would be rejected, when its Rejection Probability reaches the threshold, when it rates the risk `high` or `critical` without a Risk Category, or when it fails.
+The initial assessment of a Guardian Review, made either by a language model or by a classifier. A language model's First Pass is escalated when it would be rejected; a classifier's, which gives no rationale, is escalated when it would be rejected, when its Rejection Probability reaches the level the user set for escalating, when it rates the risk `high` or `critical` without a Risk Category, or when it fails.
 _Avoid_: Quick check, triage
 
 **Rejection Probability**:
@@ -53,7 +53,7 @@ The Guardian's judgment of a Reviewed Call's potential for harm: `low`, `medium`
 _Avoid_: Danger score
 
 **Risk Category**:
-The concrete reason a Reviewed Call is `high` or `critical` risk, from a closed list: `data_egress`, `credential_access`, `destruction`, `persistence`, `sensitive_path`, `safety_weakening`, `remote_code`, `unreviewed_execution`, and, when the user configured a Security Policy or a `deny` Command Rule, `security_policy`. A `high` or `critical` Risk Level without one is asked about once more, then decided as `medium`; a malformed answer to that question is a Review Failure.
+The concrete reason a Reviewed Call is `high` or `critical` risk, from a closed list: `data_egress`, `credential_access`, `destruction`, `persistence`, `sensitive_path`, `safety_weakening`, `remote_code`, `unreviewed_execution`, and, when the user configured a Security Policy or a `deny` Command Rule, `security_policy`. A language model's `high` or `critical` Risk Level without one is asked about once more, then decided as `medium`; a malformed answer to that question is a Review Failure. A classifier's is escalated instead.
 _Avoid_: Reason code
 
 **User Authorization**:

@@ -107,7 +107,7 @@ const descriptions = {
   model: "Guardian model; inherit follows the session's current model",
   thinkingLevel: "Guardian thinking level",
   classifierModel:
-    "Classifier that makes the First Pass, escalating to a language model when unsure; off or inherit uses the Guardian model",
+    "Classifier that makes the First Pass, escalating to a language model when unsure; off uses the Guardian model",
   escalationThreshold:
     "Rejection Probability, from 0 to 1, at which a classifier's First Pass escalates",
   escalationModel:

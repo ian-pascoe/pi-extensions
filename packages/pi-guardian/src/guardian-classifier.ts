@@ -16,7 +16,7 @@ import {
   type RiskLevel,
   type UserAuthorization,
 } from "./guardian-assessment.js";
-import type { ReviewUsage } from "./guardian-audit.js";
+import type { EscalationTrigger, ReviewUsage } from "./guardian-audit.js";
 import {
   authorizationLevels,
   authorizationRules,
@@ -29,8 +29,9 @@ import {
   riskCategoryLevels,
   riskLevelRules,
   riskLevels,
+  securityPolicyDefinition,
 } from "./guardian-prompt.js";
-import type { EscalationTrigger, ReviewMetrics, ReviewResult } from "./guardian-review.js";
+import type { ReviewMetrics, ReviewResult } from "./guardian-review.js";
 
 /** A classifier First Pass's answer distributions, as recorded for audit. */
 export const classificationProbabilitiesSchema = Type.Object({
@@ -39,18 +40,6 @@ export const classificationProbabilitiesSchema = Type.Object({
   riskCategory: Type.Record(Type.String(), Type.Number()),
 });
 export type ClassificationProbabilities = Static<typeof classificationProbabilitiesSchema>;
-
-/** What a classifier First Pass produced besides its assessment. */
-export interface Classification {
-  /** The answers' distributions; absent when the classifier failed. */
-  probabilities?: ClassificationProbabilities;
-  /** The Rejection Probability; `null` when the classifier failed. */
-  rejectionProbability: number | null;
-  /** The Rejection Probability at which the First Pass escalates. */
-  threshold: number;
-  /** Why the classifier produced no assessment, when it did not. */
-  failure: string | null;
-}
 
 /** The classifier a First Pass uses, or why none can be used. */
 export type ResolvedClassifierModel =
@@ -93,10 +82,9 @@ function categoryCriteria(categories: readonly RiskCategory[]): Record<string, s
   return Object.fromEntries([
     ...categories.map((name) => [
       name,
-      riskCategoryDefinitions[name].replace(
-        "the user's Security Policy below",
-        "the user's `securityPolicy`",
-      ),
+      name === "security_policy"
+        ? securityPolicyDefinition("the user's `securityPolicy`")
+        : riskCategoryDefinitions[name],
     ]),
     [
       noCategory,
@@ -170,6 +158,9 @@ export function classifierState(
   };
 }
 
+/** How far a distribution's probabilities may sum from 1, for rounding. */
+const distributionTolerance = 0.01;
+
 /** One `choice` answer: the chosen option and the probability of each option. */
 interface Distribution<TOption extends string> {
   choice: TOption;
@@ -188,12 +179,19 @@ function distribution<TOption extends string>(
   if (answer?.type !== "choice" || choice === undefined)
     throw new Error(`the Guardian classifier gave no valid ${question} answer`);
   const probabilities: Record<string, number> = {};
+  let total = 0;
   for (const option of options) {
-    const probability = answer.probabilities[option] ?? 0;
-    if (!Number.isFinite(probability) || probability < 0 || probability > 1)
-      throw new Error(`the Guardian classifier gave an invalid ${question} probability`);
+    const probability = answer.probabilities[option];
+    if (probability === undefined || !Number.isFinite(probability) || probability < 0)
+      throw new Error(
+        `the Guardian classifier gave no valid ${question} probability for ${option}`,
+      );
     probabilities[option] = probability;
+    total += probability;
   }
+  // A distribution missing mass would understate the Rejection Probability.
+  if (Math.abs(total - 1) > distributionTolerance)
+    throw new Error(`the Guardian classifier's ${question} probabilities sum to ${total}, not 1`);
   return { choice, probabilities };
 }
 
@@ -213,8 +211,7 @@ export function rejectionProbability(
 export interface ReadClassification {
   assessment: Assessment;
   probabilities: ClassificationProbabilities;
-  /** The Rejection Probability. */
-  rejection: number;
+  rejectionProbability: number;
 }
 
 /** A classifier's answers read as an assessment; throws when an answer is invalid. */
@@ -241,7 +238,7 @@ export function readClassification(
       authorization: authorization.probabilities,
       riskCategory: category.probabilities,
     },
-    rejection: rejectionProbability(risk.probabilities, authorization.probabilities),
+    rejectionProbability: rejectionProbability(risk.probabilities, authorization.probabilities),
   };
 }
 
@@ -258,6 +255,20 @@ export function classifierTrigger(
   if (decide(assessment.risk, assessment.authorization) === "rejected") return "rejected";
   const rejection = review.classification?.rejectionProbability ?? 1;
   return rejection >= threshold ? "uncertain" : undefined;
+}
+
+/** A classifier First Pass that produced no assessment, which escalates. */
+export function classifierFailure(
+  failure: string,
+  threshold: number,
+  metrics: ReviewMetrics,
+): ReviewResult {
+  return {
+    kind: "failed",
+    failure,
+    ...metrics,
+    classification: { rejectionProbability: null, threshold, failure },
+  };
 }
 
 /** Deadline of a classifier First Pass; one that fails escalates rather than failing the review. */
@@ -297,16 +308,7 @@ export async function runClassifierPass(input: ClassifierPassInput): Promise<Rev
     cost: result.usage && Number.isFinite(result.usage.cost.total) ? result.usage.cost.total : null,
   };
   if (result.usage) metrics.promptTokens = result.usage.input;
-  const failed = (failure: string): ReviewResult => ({
-    kind: "failed",
-    failure,
-    ...metrics,
-    classification: {
-      rejectionProbability: null,
-      threshold: input.threshold,
-      failure,
-    },
-  });
+  const failed = (failure: string) => classifierFailure(failure, input.threshold, metrics);
   if (input.signal?.aborted) return { kind: "aborted", ...metrics };
   if (timeout.aborted)
     return failed(`the Guardian classifier timed out after ${classifierTimeoutMs / 1_000}s`);
@@ -323,7 +325,7 @@ export async function runClassifierPass(input: ClassifierPassInput): Promise<Rev
       ...metrics,
       classification: {
         probabilities: read.probabilities,
-        rejectionProbability: read.rejection,
+        rejectionProbability: read.rejectionProbability,
         threshold: input.threshold,
         failure: null,
       },

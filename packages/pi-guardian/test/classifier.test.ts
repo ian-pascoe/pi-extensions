@@ -84,6 +84,11 @@ describe("Classifier First Pass", () => {
     expect(harness.reviews.map((review) => [review.model, review.escalation])).toEqual([
       ["guardian-test/reviewer", true],
     ]);
+    // The Escalation Pass is told why it runs, but not what the classifier answered.
+    const request = JSON.stringify(harness.reviews[0]?.messages);
+    expect(request).toContain("could not tell whether to block it");
+    expect(request).not.toContain("would block it");
+    expect(request).not.toMatch(/probabilit/i);
     expect(harness.executed).toEqual(["deploy:prod"]);
     expect(entry).toMatchObject({
       result: "allowed",
@@ -163,6 +168,11 @@ describe("Classifier First Pass", () => {
   it.each([
     ["a provider error", [new Error("overloaded")], /request failed: overloaded/],
     ["an invalid answer", [{}], /gave no valid risk_level answer/],
+    [
+      "a distribution missing probability mass",
+      [classified({ low: 0.5 }, { high: 1 })],
+      /risk_level probabilities sum to 0.5, not 1/,
+    ],
   ])("escalates after %s, and the Escalation Pass decides", async (_case, replies, failure) => {
     const { harness, entry } = await deployOnce(replies, [assessment("low", "high", "Routine.")]);
     expect(harness.executed).toEqual(["deploy:prod"]);

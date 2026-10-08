@@ -52,6 +52,12 @@ export const escalationTriggerSchema = Type.Union([
   Type.Literal("uncategorized"),
   Type.Literal("failed"),
 ]);
+/**
+ * Why a First Pass escalated: its assessment would be rejected, or, for a classifier's, its
+ * Rejection Probability reached the threshold, it rated `high` or `critical` risk without a Risk
+ * Category, or it failed.
+ */
+export type EscalationTrigger = Static<typeof escalationTriggerSchema>;
 
 /**
  * The Escalation Pass of a review whose First Pass escalated. The entry's own assessment fields
@@ -83,12 +89,17 @@ export type EscalationRecord = Static<typeof escalationRecordSchema>;
 
 /** A classifier First Pass: its answer distributions, Rejection Probability, and threshold. */
 export const classificationRecordSchema = Type.Object({
+  /** The answers' distributions; absent when the classifier failed. */
   probabilities: Type.Optional(classificationProbabilitiesSchema),
+  /** The Rejection Probability; `null` when the classifier failed. */
   rejectionProbability: nullableNumber,
+  /** The Rejection Probability at which the First Pass escalates. */
   threshold: Type.Number(),
+  /** Why the classifier produced no assessment, when it did not. */
   failure: nullableString,
 });
-export type ClassificationRecord = Static<typeof classificationRecordSchema>;
+/** What a classifier First Pass produced besides its assessment. */
+export type Classification = Static<typeof classificationRecordSchema>;
 
 export const reviewEntrySchema = Type.Object({
   version: Type.Literal(1),

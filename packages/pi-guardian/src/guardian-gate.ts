@@ -25,11 +25,13 @@ import {
   recordedOverrides,
   reviewEntryType,
   type AuditResult,
+  type EscalationTrigger,
   type EscalationRecord,
   type ReviewEntry,
 } from "./guardian-audit.js";
 import { tokenFactor } from "./guardian-calibration.js";
 import {
+  classifierFailure,
   classifierQuestions,
   classifierState,
   classifierTrigger,
@@ -454,7 +456,7 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
         const first = await classifierPass(ctx, config, classifier, inputs, signal);
         const trigger = classifierTrigger(first, config.escalationThreshold);
         if (!trigger) return first;
-        return withEscalation(first, trigger, await escalate(ctx, config, inputs, signal));
+        return withEscalation(first, trigger, await escalate(ctx, config, inputs, trigger, signal));
       }
       const resolved = resolveGuardianModel(config.model, ctx.modelRegistry, ctx.model);
       if (!resolved.ok) return { ...failed(resolved.failure), model: resolved.model };
@@ -478,7 +480,7 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
       return withEscalation(
         measured,
         "rejected",
-        await escalate(ctx, config, inputs, signal, request),
+        await escalate(ctx, config, inputs, "rejected", signal, request),
       );
     } finally {
       reviewing.delete(key);
@@ -537,15 +539,13 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
     inputs: ReviewInputs,
     signal: AbortSignal | undefined,
   ): Promise<ReviewResult> {
-    const unusable = (failure: string, model: string): ReviewResult => ({
-      ...failed(failure),
-      model,
-      classification: {
-        rejectionProbability: null,
-        threshold: config.escalationThreshold,
-        failure,
-      },
-    });
+    const unusable = (failure: string, model: string) =>
+      classifierFailure(failure, config.escalationThreshold, {
+        model,
+        durationMs: 0,
+        usage: null,
+        cost: null,
+      });
     const resolved = resolveClassifierModel(setting, ctx.modelRegistry);
     if (!resolved.ok) return unusable(resolved.failure, setting);
     const name = modelName(resolved.model);
@@ -593,6 +593,7 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
     ctx: ExtensionContext,
     config: GuardianConfig,
     inputs: ReviewInputs,
+    trigger: EscalationTrigger,
     signal: AbortSignal | undefined,
     firstRequest?: ModelRequest,
   ): Promise<ReviewResult> {
@@ -603,7 +604,7 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
     );
     if (!resolved.ok) return { ...failed(resolved.failure), model: resolved.model };
     const name = modelName(resolved.model);
-    const instruction = escalationInstruction(inputs.categories);
+    const instruction = escalationInstruction(inputs.categories, trigger);
     const request =
       firstRequest ?? modelRequest(ctx, config, resolved.model, inputs, textTokens(instruction));
     if ("failure" in request) return { ...failed(request.failure), model: name };

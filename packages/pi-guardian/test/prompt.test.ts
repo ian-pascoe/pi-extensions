@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { riskCategories, validRiskCategories } from "../src/guardian-assessment.js";
 import { escalationInstruction, guardianSystemPrompt } from "../src/guardian-prompt.js";
@@ -115,5 +116,19 @@ describe("Guardian policy", () => {
 
   it("limits User Overrides to the exact call they name", () => {
     expect(prompt).toContain("A User Override authorizes only the one call it names");
+  });
+
+  it("keeps the language model's request bytes as before the classifier First Pass", () => {
+    // SHA-256 of the prompts as built before the policy was split into reusable sections.
+    const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+    expect(sha256(guardianSystemPrompt("", false, validRiskCategories(false)))).toBe(
+      "644abd88904520f0e8559ef048d99d554a411166f104395860ba87e053ed7268",
+    );
+    expect(sha256(guardianSystemPrompt("x", true, validRiskCategories(true)))).toBe(
+      "7a6b57b24fbc6abbacfa674a1a84e35fbe1f132531b090108b6d154bb3a49760",
+    );
+    expect(sha256(escalationInstruction(validRiskCategories(true)))).toBe(
+      "10270538e413b45fa4a0d6f61837865d97509c3be4b9978b69aa4b76a864779a",
+    );
   });
 });
