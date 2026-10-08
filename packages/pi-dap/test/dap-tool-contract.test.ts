@@ -256,7 +256,7 @@ describe("DAP tool family", () => {
       }),
     );
     expect(fields).toEqual({
-      dap_launch: [["profile", "program", "args", "cwd"], []],
+      dap_launch: [["profile", "program", "args", "cwd", "launch_arguments"], []],
       dap_set_breakpoints: [
         ["file_path", "breakpoints"],
         ["file_path", "breakpoints"],

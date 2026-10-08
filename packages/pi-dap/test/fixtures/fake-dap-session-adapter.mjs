@@ -86,7 +86,10 @@ function handleRequest(request) {
         send({
           type: "request",
           command: "startDebugging",
-          arguments: { configuration: {} },
+          arguments: {
+            request: "launch",
+            configuration: { type: "pwa-node", name: "child [1]", __pendingTargetId: "child-1" },
+          },
         });
       } else if (Array.isArray(launchArguments.runInTerminalArgs)) {
         reverseRequestSequence = nextSequence;
@@ -149,6 +152,17 @@ function handleRequest(request) {
           event("output", { output: "uncategorized\n" });
         }
         event("output", { category: "stdout", output: "launched\n" });
+        if (launchArguments.startDebuggingChild === true) {
+          // A worker the Debuggee started; the launch carries on whatever the reply.
+          send({
+            type: "request",
+            command: "startDebugging",
+            arguments: {
+              request: "launch",
+              configuration: { type: "pwa-node", name: "[worker 1]", __pendingTargetId: "w-1" },
+            },
+          });
+        }
         if (launchArguments.stopOnEntry !== false) setTimeout(() => stopped("entry"), 5);
       }
       return;

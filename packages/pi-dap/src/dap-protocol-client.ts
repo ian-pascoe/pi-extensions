@@ -914,20 +914,34 @@ export class DapProtocolClient {
   /** Attempt DAP terminate/disconnect, then stop the owned Linux process group within shutdownMs. */
   async shutdown(): Promise<void> {
     if (this.shutdownPromise !== undefined) return this.shutdownPromise;
-    const shutdown = this.performShutdown();
+    const shutdown = this.performShutdown([
+      ["terminate", {}],
+      ["disconnect", { terminateDebuggee: true }],
+    ]);
     this.shutdownPromise = shutdown;
     return shutdown;
   }
 
-  private async performShutdown(): Promise<void> {
+  /**
+   * Close a target channel without terminating its Debuggee: send `disconnect` with
+   * `terminateDebuggee: false`, which makes the adapter detach and resume the target, then end the
+   * socket. Unlike {@link shutdown}, it never sends `terminate`.
+   */
+  async detach(): Promise<void> {
+    if (this.shutdownPromise !== undefined) return this.shutdownPromise;
+    const detach = this.performShutdown([["disconnect", { terminateDebuggee: false }]]);
+    this.shutdownPromise = detach;
+    return detach;
+  }
+
+  private async performShutdown(
+    commands: readonly (readonly [string, Record<string, boolean>])[],
+  ): Promise<void> {
     if (this.shuttingDown) return;
     const wasAvailable = this.failure === undefined;
     const deadline = Date.now() + this.options.timeouts.shutdownMs;
     if (wasAvailable) {
-      for (const [command, argumentsValue] of [
-        ["terminate", {}],
-        ["disconnect", { terminateDebuggee: true }],
-      ] as const) {
+      for (const [command, argumentsValue] of commands) {
         const remaining = deadline - Date.now();
         if (remaining <= 0) break;
         try {
