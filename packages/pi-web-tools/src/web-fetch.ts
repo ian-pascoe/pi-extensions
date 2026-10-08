@@ -525,13 +525,13 @@ export function createWebFetchTool(
     },
     parameters: WEB_FETCH_PARAMETERS,
     outputSchema: WebFetchOutputSchema,
-    renderCall: (parameters, theme, context) =>
-      renderWebFetchToolCall(parameters, theme, context.expanded),
+    renderCall: (parameters, theme, context) => renderWebFetchToolCall(parameters, theme, context),
     renderResult: (result, renderOptions, theme, context) =>
       renderWebFetchToolResult(
         result,
         renderOptions,
         theme,
+        context,
         context.isError,
         Value.Check(WebFetchDetailsSchema, result.details) ? result.details : undefined,
       ),
