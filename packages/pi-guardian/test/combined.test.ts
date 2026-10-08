@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, it, onTestFinished, vi } from "vitest";
+import { afterAll, beforeAll, expect, it, onTestFinished, vi } from "vitest";
 import {
   createAssistantMessageEventStream,
   fauxAssistantMessage,
@@ -27,6 +27,70 @@ interface CombinedReview {
   blocks: string[];
 }
 
+const fixture = fileURLToPath(new URL("./fixtures/combined-extension.ts", import.meta.url));
+const guardian = fileURLToPath(new URL("../src/index.ts", import.meta.url));
+const minimalSubagents = fileURLToPath(
+  new URL("../../pi-minimal-subagents/src/index.ts", import.meta.url),
+);
+
+/**
+ * The workspace every test's sessions share: its working directory and agent directory. Pi's
+ * loader keeps loaded extension modules for one working directory, so after the first load every
+ * root session and Child Agent here reuses them, as sessions sharing one Pi process do. Each test
+ * keeps its sessions in its own directory, and Guardian's setup commands change only the session.
+ */
+let workspace: string;
+
+/** Cwd-bound services for a root session that runs the fixture, Minimal Subagents, and Guardian. */
+async function createServices() {
+  const modelRuntime = await ModelRuntime.create({
+    credentials: new InMemoryCredentialStore(),
+    modelsStore: new InMemoryModelsStore(),
+    modelsPath: null,
+    refreshOnCreate: false,
+  });
+  return createAgentSessionServices({
+    cwd: workspace,
+    agentDir: workspace,
+    modelRuntime,
+    settingsManager: SettingsManager.create(workspace, workspace),
+    resourceLoaderOptions: {
+      noExtensions: true,
+      noSkills: true,
+      noContextFiles: true,
+      noThemes: true,
+      noPromptTemplates: true,
+      additionalExtensionPaths: [fixture, minimalSubagents, guardian],
+    },
+  });
+}
+
+beforeAll(async () => {
+  workspace = await mkdtemp(join(tmpdir(), "pi-guardian-combined-"));
+  vi.stubEnv("PI_CODING_AGENT_DIR", workspace);
+  // Child Agents load the extensions listed in the agent directory's settings.
+  await writeFile(
+    join(workspace, "settings.json"),
+    JSON.stringify({
+      extensions: [fixture, guardian],
+      minimalSubagents: { enabled: true },
+      guardian: { enabled: true, model: "guardian-combined/reviewer" },
+      compaction: { enabled: false },
+      retry: { enabled: false },
+    }),
+  );
+  // Load the extensions once, before any test. The first load in a process transpiles their
+  // module graphs through jiti, whose disk cache starts empty on CI, where `pnpm verify`'s
+  // contention has stretched it past 20 s; every later session reuses the loaded modules.
+  const { resourceLoader } = await createServices();
+  expect(resourceLoader.getExtensions().errors).toEqual([]);
+}, 120_000);
+
+afterAll(async () => {
+  vi.unstubAllEnvs();
+  await rm(workspace, { recursive: true, force: true });
+});
+
 /**
  * A real root session running Minimal Subagents and Guardian, whose agent delegates deploying x
  * to a Child Agent and waits; the Child Agent then deploys x. Every review allows its call, the
@@ -38,25 +102,7 @@ async function delegateDeploy(
   /** Then send the Child Agent "Also deploy y." with `agent_message` and wait again. */
   followUp = false,
 ) {
-  const directory = await mkdtemp(join(tmpdir(), "pi-guardian-combined-"));
-  onTestFinished(() => rm(directory, { recursive: true, force: true }));
-  vi.stubEnv("PI_CODING_AGENT_DIR", directory);
-  onTestFinished(() => {
-    vi.unstubAllEnvs();
-  });
-  const fixture = fileURLToPath(new URL("./fixtures/combined-extension.ts", import.meta.url));
-  const guardian = fileURLToPath(new URL("../src/index.ts", import.meta.url));
-  // Child Agents load the extensions listed in the agent directory's settings.
-  await writeFile(
-    join(directory, "settings.json"),
-    JSON.stringify({
-      extensions: [fixture, guardian],
-      minimalSubagents: { enabled: true },
-      guardian: { enabled: true, model: "guardian-combined/reviewer" },
-      compaction: { enabled: false },
-      retry: { enabled: false },
-    }),
-  );
+  const sessions = await mkdtemp(join(workspace, "sessions-"));
   const reviews: CombinedReview[] = [];
   const childResults: string[] = [];
   let mainCalls = 0;
@@ -134,36 +180,13 @@ async function delegateDeploy(
       return stream;
     },
   };
-  const modelRuntime = await ModelRuntime.create({
-    credentials: new InMemoryCredentialStore(),
-    modelsStore: new InMemoryModelsStore(),
-    modelsPath: null,
-    refreshOnCreate: false,
-  });
-  const services = await createAgentSessionServices({
-    cwd: directory,
-    agentDir: directory,
-    modelRuntime,
-    settingsManager: SettingsManager.create(directory, directory),
-    resourceLoaderOptions: {
-      noExtensions: true,
-      noSkills: true,
-      noContextFiles: true,
-      noThemes: true,
-      noPromptTemplates: true,
-      additionalExtensionPaths: [
-        fixture,
-        fileURLToPath(new URL("../../pi-minimal-subagents/src/index.ts", import.meta.url)),
-        guardian,
-      ],
-    },
-  });
-  const model = modelRuntime.getModel("guardian-combined", "model");
+  const services = await createServices();
+  const model = services.modelRuntime.getModel("guardian-combined", "model");
   if (!model) throw new Error("Missing offline model");
   const created = await createAgentSessionFromServices({
     services,
     model,
-    sessionManager: SessionManager.create(directory, join(directory, "sessions")),
+    sessionManager: SessionManager.create(workspace, sessions),
   });
   const runtime = new AgentSessionRuntime(created.session, services, async () => {
     throw new Error("No replacement");
