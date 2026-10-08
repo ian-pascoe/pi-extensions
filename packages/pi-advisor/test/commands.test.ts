@@ -38,6 +38,8 @@ describe("Advisor commands through the native SDK", () => {
       "set seedBudgetTokens",
       "set reviewEvery",
       "set maxSessionTokens",
+      "set maxToolResultChars",
+      "set anthropicLongCache",
     ]);
     expect(await values("inherit c")).toEqual(["inherit catchUpThreshold"]);
     expect(await values("set  allowedT")).toEqual(["set  allowedTools"]);
@@ -486,7 +488,23 @@ describe("Advisor commands through the native SDK", () => {
     expect(status()).toMatchObject({
       data: { settings: { maxSessionTokens: 150_000 }, sources: { maxSessionTokens: "session" } },
     });
+    await session.prompt("/advisor set maxToolResultChars 2000");
+    expect(status()).toMatchObject({
+      data: {
+        settings: { maxToolResultChars: 2_000 },
+        sources: { maxToolResultChars: "session" },
+      },
+    });
+    await session.prompt("/advisor set anthropicLongCache true");
+    expect(status()).toMatchObject({
+      data: { settings: { anthropicLongCache: true }, sources: { anthropicLongCache: "session" } },
+    });
+    await session.prompt("/advisor inherit anthropicLongCache");
+    expect(status()).toMatchObject({ data: { settings: { anthropicLongCache: false } } });
     for (const [key, value] of [
+      ["maxToolResultChars", "0"],
+      ["maxToolResultChars", '"off"'],
+      ["anthropicLongCache", '"1h"'],
       ["reviewEvery", "0"],
       ["reviewEvery", "2.5"],
       ["reviewEvery", '"task"'],

@@ -1,8 +1,10 @@
 import { isDeepStrictEqual } from "node:util";
+import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import * as piAi from "@earendil-works/pi-ai";
 import type { Context } from "@earendil-works/pi-ai";
 import * as piSdk from "@earendil-works/pi-coding-agent";
 import type { AgentSession, AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
+import { acceptNullForOptionalArguments } from "@ian-pascoe/pi-utils/null-optional-arguments";
 import { calibratedFactor } from "@ian-pascoe/pi-utils/token-calibration";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -27,6 +29,7 @@ import {
   messageOrigins,
   projectEvidence,
   selectContextSeed,
+  type ToolResultCap,
   type ContextSeed,
 } from "./advisor-evidence.js";
 import { seedBudget, sessionTokenLimit, type AdvisorConfig } from "./advisor-settings.js";
@@ -124,6 +127,8 @@ interface Consultation extends OperationBase {
   kind: "consultation";
 }
 type AdvisorOperation = Review | Consultation;
+/** Pi's built-in read tools; `bash` is deliberately absent. */
+const builtInReadTools: ReadonlySet<string> = new Set(["read", "grep", "find", "ls"]);
 const maintenanceTools = new Set(["advisor_report", ...contextManagementTools]);
 /** Native compaction guidance for the Advisor's summary of its own private history. */
 const compactionInstructions =
@@ -350,11 +355,13 @@ export class AdvisorObserver {
         this.unsafeEnding = true;
       this.completed++;
       // `request` waits for agent_end; a failed tool call is reviewed at once under any cadence.
+      // Under `turn`, a turn that only read joins the backlog for the next Review to cover.
       const cadence = this.config.reviewEvery;
       const every = cadence === "turn" ? 1 : cadence === "request" ? Infinity : cadence;
       if (
         event.toolResults.some((result) => result.isError) ||
-        this.completed - Math.max(this.dueThrough, this.reviewed) >= every
+        (!(cadence === "turn" && this.onlyRead(event)) &&
+          this.completed - Math.max(this.dueThrough, this.reviewed) >= every)
       )
         this.markDue();
       this.changed();
@@ -495,6 +502,25 @@ export class AdvisorObserver {
       this.sameObservation(review)
     );
   }
+  /**
+   * Whether a completed turn called tools and every call was read-only: one of Pi's built-in read
+   * tools, or a tool whose definition carries `readOnlyHint: true`. `bash` never qualifies, and
+   * neither does a turn that ended abnormally or called a tool that is not registered.
+   */
+  private onlyRead(event: Extract<AgentEvent, { type: "turn_end" }>): boolean {
+    if (event.message.role !== "assistant" || event.message.stopReason !== "toolUse") return false;
+    const calls = event.message.content.filter((block) => block.type === "toolCall");
+    return (
+      calls.length > 0 &&
+      calls.every(({ name }) => {
+        const annotations = this.observed.getToolDefinition(name)?.annotations;
+        return builtInReadTools.has(name)
+          ? annotations?.readOnlyHint !== false
+          : annotations?.readOnlyHint === true;
+      })
+    );
+  }
+
   /** A Review is due for every turn completed so far; it covers all unreviewed turns. */
   private markDue(): void {
     this.dueThrough = this.completed;
@@ -612,11 +638,33 @@ export class AdvisorObserver {
     );
   }
 
+  /**
+   * The cap on each tool result's text in Review Evidence: the head and tail, with a marker that
+   * points granted tools at the full result in the observed session file. The same cap measures
+   * what fits, fits the seed, and projects incremental updates, so the calibrated estimate is of
+   * the capped evidence the Advisor receives. Pure in the setting and session file, so repeated
+   * projections of the same messages are byte-identical.
+   */
+  private toolResultCap(): ToolResultCap {
+    const file = this.observed.sessionManager.getSessionFile();
+    const where = file
+      ? `the full result is in the observed session file ${file}`
+      : "the full result is not available to this Advisor";
+    return {
+      limit: this.config.maxToolResultChars,
+      marker: (omitted) => `[… ${omitted} characters omitted from this tool result; ${where}]`,
+    };
+  }
+
   /** Whether the evidence not yet supplied fits the Context Seed budget, in reported tokens. */
   private fits(runtime: AgentSessionRuntime, snapshot: Context): boolean {
     const supplied = this.supplied?.messages.length ?? 0;
     return (
-      evidenceTokens(projectEvidence(snapshot.messages.slice(supplied))) *
+      evidenceTokens(
+        projectEvidence(snapshot.messages.slice(supplied), {
+          toolResultCap: this.toolResultCap(),
+        }),
+      ) *
         this.tokenFactor(runtime) <=
       seedBudget(this.config.seedBudgetTokens, runtime.session.model?.contextWindow)
     );
@@ -727,7 +775,7 @@ export class AdvisorObserver {
       });
       const sessionOptions: AdvisorSessionOptions = {
         config: this.config,
-        adviceTool,
+        adviceTool: acceptNullForOptionalArguments(adviceTool),
         signal: operation.cancellation.signal,
         controlExtension: (pi) => {
           pi.on("tool_call", (event, ctx) => {
@@ -783,6 +831,7 @@ export class AdvisorObserver {
     if (stable && this.supplied) {
       const { messages, images } = projectEvidence(
         snapshot.messages.slice(this.supplied.messages.length),
+        { toolResultCap: this.toolResultCap() },
       );
       for (const ref of evidenceRefs(messages)) this.suppliedRefs.add(ref);
       return { note: "", images, json: JSON.stringify({ messages, ...extras }) };
@@ -793,6 +842,7 @@ export class AdvisorObserver {
     const seed = selectContextSeed(snapshot, {
       budgetTokens: estimateBudget - Math.ceil(JSON.stringify(extras).length / 4),
       origins: snapshot.origins,
+      toolResultCap: this.toolResultCap(),
     });
     const { observedSetup, messages, images } = seed;
     for (const ref of evidenceRefs(messages)) this.suppliedRefs.add(ref);
@@ -1115,6 +1165,8 @@ export class AdvisorObserver {
       this.deferred.push(finding);
       this.withheld.add(finding);
     }
+    // Turns that only read start no Review, so a withheld finding makes the backlog due itself.
+    if (this.deferred.length) this.dueThrough = Math.max(this.dueThrough, this.completed);
     this.changed();
   }
 

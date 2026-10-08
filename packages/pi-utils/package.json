@@ -33,6 +33,8 @@
     "./locked-file-update": "./src/locked-file-update.ts",
     "./layered-settings": "./src/layered-settings.ts",
     "./evidence": "./src/evidence.ts",
+    "./null-optional-arguments": "./src/null-optional-arguments.ts",
+    "./tool-testing": "./src/tool-testing.ts",
     "./token-calibration": "./src/token-calibration.ts",
     "./settings-menu": "./src/settings-menu.ts",
     "./settings-command": "./src/settings-command.ts",
@@ -62,6 +64,14 @@
       "./evidence": {
         "types": "./dist/evidence.d.ts",
         "import": "./dist/evidence.js"
+      },
+      "./null-optional-arguments": {
+        "types": "./dist/null-optional-arguments.d.ts",
+        "import": "./dist/null-optional-arguments.js"
+      },
+      "./tool-testing": {
+        "types": "./dist/tool-testing.d.ts",
+        "import": "./dist/tool-testing.js"
       },
       "./token-calibration": {
         "types": "./dist/token-calibration.d.ts",

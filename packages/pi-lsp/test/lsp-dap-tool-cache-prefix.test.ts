@@ -30,6 +30,7 @@ import {
   type CreateAgentSessionOptions,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
+import { withoutPreparedArguments } from "@ian-pascoe/pi-utils/tool-testing";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, expect, test } from "vitest";
@@ -76,6 +77,8 @@ interface ToolCacheOptions {
   readonly defaultTools?: readonly string[];
   /** Keep Pi's default system prompt, whose "Available tools" list shows prompt snippets. */
   readonly defaultSystemPrompt?: boolean;
+  /** Register the tools without `prepareArguments`, as before they accepted null for optionals. */
+  readonly withoutPreparedArguments?: boolean;
   /** Pi's `codemode.mode`; default "on". */
   readonly codemodeMode?: "on" | "only";
 }
@@ -121,13 +124,16 @@ async function createToolCacheFixture(
         builtin: true,
         replaceable: true,
       })),
-      ...toolNames.map((name) => ({
-        name: `pi-${name}-cache-prefix-test`,
-        factory:
+      ...toolNames.map((name) => {
+        const factory =
           name === "lsp"
             ? createPiLspExtension({ getAgentDirectory: () => agentDir })
-            : createPiDapExtension(() => agentDir),
-      })),
+            : createPiDapExtension(() => agentDir);
+        return {
+          name: `pi-${name}-cache-prefix-test`,
+          factory: options.withoutPreparedArguments ? withoutPreparedArguments(factory) : factory,
+        };
+      }),
       (pi) =>
         pi.registerProvider("deepseek", {
           api: "openai-completions",
@@ -612,3 +618,35 @@ test("a codemode script receives the structured result of an LSP tool", async ()
   expect(text).toContain('"truncated":false');
   expect(text).toContain('"kind":"object"');
 });
+
+/**
+ * Accepting null for optional parameters adds only `prepareArguments`, which Pi never sends to the
+ * provider: with and without it, every turn hands the provider byte-identical ordered tool
+ * definitions (including the codemode catalog of the long-tail LSP tools), system prompt, and
+ * history, across turns and `/reload`.
+ */
+test.each([{ builtins: [] }, { builtins: ["codemode", "tool_search"] }] as const)(
+  "declares the same ordered tools with and without null handling (builtins: $builtins)",
+  async ({ builtins }) => {
+    const run = async (stripped: boolean) => {
+      const fixture = await createToolCacheFixture(["lsp", "dap"], {
+        builtins,
+        withoutPreparedArguments: stripped,
+      });
+      const turns = await runTurnsAcrossReload(fixture);
+      expectStablePrefix(turns);
+      const directory = fixture.session.sessionManager.getCwd();
+      return JSON.stringify(
+        turns.map(({ systemPrompt, tools, messages }) => ({
+          systemPrompt,
+          tools,
+          messages: messages.map((message) => ({ ...message, timestamp: undefined })),
+        })),
+      ).replaceAll(directory, "<dir>");
+    };
+    const before = await run(true);
+    const after = await run(false);
+    expect(after).toContain('"name":"lsp_document_symbols"');
+    expect(after).toBe(before);
+  },
+);

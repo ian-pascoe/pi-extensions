@@ -2,6 +2,7 @@ import type { ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { collapseLspWhitespace, lspDisplayPath, lspDisplayPosition } from "./lsp-location-text.js";
+import type { DependentDiagnosticsReport } from "./lsp-dependent-diagnostics.js";
 import { LSP_APPLY_RESULT_TOOL_NAMES, MutationManifestSchema } from "./lsp-tool-contract.js";
 
 const NativeMutationInputSchema = Type.Object(
@@ -52,6 +53,8 @@ export const PostEditLspDiagnosticSchema = Type.Object(
     character: Type.Integer({ minimum: 1 }),
     severity: Type.Number(),
     message: Type.String(),
+    /** Set on an error an edit caused in a dependent file rather than in a changed file. */
+    dependent: Type.Optional(Type.Literal(true)),
   },
   { additionalProperties: false },
 );
@@ -306,10 +309,42 @@ export function formatPostEditDiagnostics(
   return `\n\nLSP diagnostics\n${lines.join("\n")}`;
 }
 
+/** Heading of the section naming the new errors an edit caused in dependent files. */
+const DEPENDENT_HEADING = "LSP diagnostics in dependent files (new errors only)";
+
+/**
+ * Render the new errors an edit caused in dependent files under their own heading, followed by the
+ * count of dependent files left unchecked. Empty when there is nothing to report.
+ */
+export function formatDependentDiagnostics(
+  report: DependentDiagnosticsReport,
+  cwd: string,
+): string {
+  const errors = report.outcomes
+    .filter((outcome) => outcome.kind === "diagnostic")
+    .toSorted((left, right) => compareOutcomes(left, right, cwd))
+    .map((outcome) => formatOutcome(outcome, cwd));
+  const unchecked = report.scanTimedOut
+    ? ["dependent files not checked: the scan ran out of time"]
+    : report.omittedFiles > 0
+      ? [
+          `${report.omittedFiles} dependent ${report.omittedFiles === 1 ? "file" : "files"} not checked`,
+        ]
+      : [];
+  const lines = [...errors, ...unchecked];
+  return lines.length === 0 ? "" : `\n\n${DEPENDENT_HEADING}\n${lines.join("\n")}`;
+}
+
 /** Options for Post-edit Diagnostics feedback. */
 export interface PostEditDiagnosticsOptions {
   /** Include hint-severity findings; they are omitted and counted by default. */
   readonly includeHints?: boolean;
+  /** Check dependent files of the changed paths for errors the edit caused. */
+  readonly dependentDiagnostics?:
+    | ((
+        paths: readonly PostEditDiagnosticPath[],
+      ) => Promise<DependentDiagnosticsReport | undefined>)
+    | undefined;
 }
 
 const HINT_SEVERITY = 4;
@@ -369,16 +404,17 @@ export async function appendPostEditDiagnostics(
     })),
     ...filtered,
   ];
-  if (outcomes.length === 0) return undefined;
+  const dependents = await options.dependentDiagnostics?.(extracted.paths);
+  const dependentText = dependents === undefined ? "" : formatDependentDiagnostics(dependents, cwd);
+  if (outcomes.length === 0 && dependentText === "") return undefined;
+  const mainText =
+    outcomes.length === 0 ? "" : formatPostEditDiagnostics(outcomes, cwd, omittedHints);
   const patch: PostEditDiagnosticsResultPatch = {
-    content: [
-      ...event.content,
-      { type: "text", text: formatPostEditDiagnostics(outcomes, cwd, omittedHints) },
-    ],
+    content: [...event.content, { type: "text", text: `${mainText}${dependentText}` }],
     details: event.details,
     structuredContent: event.structuredContent,
     isError: event.isError,
-    outcomes,
+    outcomes: [...outcomes, ...(dependentText === "" ? [] : (dependents?.outcomes ?? []))],
   };
   return event.usage === undefined ? patch : { ...patch, usage: event.usage };
 }

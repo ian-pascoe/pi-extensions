@@ -1,9 +1,10 @@
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-  SessionBeforeCompactEvent,
+import {
+  defineTool,
+  type ExtensionAPI,
+  type ExtensionContext,
+  type SessionBeforeCompactEvent,
 } from "@earendil-works/pi-coding-agent";
 import { captureCheckpointAdapter, type CheckpointAdapter } from "./checkpoint-adapter.js";
 import { registerContextTools } from "./context-tools.js";
@@ -31,6 +32,7 @@ import {
 } from "./context-window.js";
 
 import { hasLegacyContextSettings } from "./context-settings.js";
+import { acceptNullForOptionalArguments } from "@ian-pascoe/pi-utils/null-optional-arguments";
 import { expandMessageOnClick, noticeText } from "@ian-pascoe/pi-utils/ui";
 
 function errorMessage(cause: unknown): string {
@@ -324,7 +326,7 @@ export default function contextManagement(pi: ExtensionAPI): void {
       event.systemPrompt +
       "\nContext Management: keep named Notes with context_notes. Original selected-branch History is available through context_history. Before Rollover, update Notes then call context_rollover alone with an explicit continuation Handoff. Read full Notes only when needed; inherited references may be unavailable locally.",
   }));
-  pi.registerTool<typeof RolloverParameters, ContextToolDetails>({
+  const rolloverTool = defineTool<typeof RolloverParameters, ContextToolDetails>({
     name: "context_rollover",
     label: "Context Rollover",
     description:
@@ -399,6 +401,7 @@ export default function contextManagement(pi: ExtensionAPI): void {
       };
     },
   });
+  pi.registerTool(acceptNullForOptionalArguments(rolloverTool));
   pi.on("turn_end", async (_event, ctx) => {
     const request = pending;
     pending = undefined;

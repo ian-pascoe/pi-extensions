@@ -64,12 +64,18 @@ const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max
 const cycleValues = {
   enabled: ["inherit", "on", "off"],
   includeSubagents: ["inherit", "on", "off"],
+  anthropicLongCache: ["inherit", "on", "off"],
   thinkingLevel: ["inherit", ...thinkingLevels],
 } as const satisfies Record<string, readonly string[]>;
 type CycleKey = keyof typeof cycleValues;
 
 function isCycleKey(key: keyof AdvisorOptions): key is CycleKey {
-  return key === "enabled" || key === "includeSubagents" || key === "thinkingLevel";
+  return (
+    key === "enabled" ||
+    key === "includeSubagents" ||
+    key === "anthropicLongCache" ||
+    key === "thinkingLevel"
+  );
 }
 
 /** A cycled option's value as shown and cycled; undefined when absent. */
@@ -97,6 +103,10 @@ const descriptions = {
     "When Reviews run: every turn, every N turns, or once per request; a tool error reviews at once",
   maxSessionTokens:
     "Advisor Session size that triggers native compaction; auto is half the Advisor model's context window, at most 100k",
+  maxToolResultChars:
+    "Longest tool-result text kept whole in Review Evidence, in characters; longer results keep their head and tail",
+  anthropicLongCache:
+    "Ask Anthropic for 1h prompt caching on Advisor requests; cache writes cost 2× instead of 1.25×",
 } satisfies Record<keyof AdvisorOptions, string>;
 const inheritRow = "\u0000inherit";
 const inputHints = {
@@ -109,6 +119,7 @@ const inputHints = {
   seedBudgetTokens: "a token count, auto, or inherit",
   reviewEvery: "turn, request, a number of turns, or inherit",
   maxSessionTokens: "a token count, auto, or inherit",
+  maxToolResultChars: "a number of characters, or inherit",
 } as const;
 
 /** Convert one typed or selected menu value into a validated change. */
@@ -124,6 +135,7 @@ function parseAdvisorMenuValue(
     switch (key) {
       case "enabled":
       case "includeSubagents":
+      case "anthropicLongCache":
         return { [key]: value === "on" ? true : value === "off" ? false : value };
       case "catchUpThreshold":
         return { catchUpThreshold: value === "off" ? value : Number(value) };
@@ -141,6 +153,7 @@ function parseAdvisorMenuValue(
       case "maxCorrectiveTurns":
       case "maxFindingsPerReview":
       case "maxNitsPerRequest":
+      case "maxToolResultChars":
         return { [key]: Number(value) };
       default:
         return { [key]: value };
@@ -249,6 +262,7 @@ export class AdvisorSettingsMenu extends SettingsMenu {
     switch (key) {
       case "enabled":
       case "includeSubagents":
+      case "anthropicLongCache":
       case "thinkingLevel":
         // The row shows and cycles this scope's own value, so every state is reachable.
         return {
