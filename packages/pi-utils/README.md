@@ -20,6 +20,7 @@ The Pi packages and `typebox` are optional peers; Pi's extension loader supplies
 | ------------------------------ | -------------------------------------------------------------------------------- |
 | `./pi-agent-session-discovery` | Nothing; the caller passes `AgentSession` from `@earendil-works/pi-coding-agent` |
 | `./evidence`                   | `@earendil-works/pi-coding-agent` (`convertToLlm`, `estimateTokens`)             |
+| `./token-calibration`          | Nothing                                                                          |
 | `./layered-settings`           | `typebox`                                                                        |
 | `./settings-menu`              | `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui`                   |
 | `./settings-command`           | Nothing; its declarations reference `@earendil-works/pi-tui` types               |
@@ -49,6 +50,10 @@ Lower-level pieces are exported for consumers with their own validation or write
 ## Settings command parsing
 
 `@ian-pascoe/pi-utils/settings-command` parses a `/command [on|off|status|inherit [key]|set <key> <JSON>] [--global|--project]` line. `parseSettingsCommand(input, spec)` returns `menu`, `status`, `set`, or `inherit` actions with the scope (`session` unless a flag names another). The `spec` supplies `usage`, `optionKey` and `parseOptions` (the validation, typically from `defineLayeredSettings`), `toggle(enabled)` (the key and patch for `on` and `off`), and optionally `parseExtra(text, scope)` for the command's own actions, tried first. `completeSettingsCommandArguments(prefix, spec)` completes the words, option keys after `set ` and `inherit `, optional `extra(prefix)` values, and the scope flags once the command parses at the `session` scope.
+
+## Token calibration
+
+`@ian-pascoe/pi-utils/token-calibration` corrects Pi's chars/4 token estimate with what a model's provider reports, since JSON-heavy evidence tokenizes about 1.3–1.9× denser. `tokenFactor(samples, fallback?)` folds `{ estimated, reported }` samples in order into one factor per model; `calibratedFactor(current, estimated, reported)` is one step. The factor starts at `fallback` (default `fallbackTokenFactor`, 1.5), moves in steps of 0.25 between 1 and 3, and changes only when a sample's ratio leaves a hysteresis band, so a stable model keeps its evidence window and prompt cache; samples under 2,000 estimated tokens or without reported tokens are ignored. Callers choose where samples live: Guardian derives them from session entries, Advisor keeps them per observer. It loads no Pi package.
 
 ## Evidence projection
 

@@ -1,1 +1,3 @@
+# Git passes 1 as the third argument for branch checkouts and `git worktree add`, and 0 for file checkouts.
+[ "$3" = "1" ] || exit 0
 scripts/sync-reference-repos.sh

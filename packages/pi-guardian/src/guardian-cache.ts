@@ -19,10 +19,16 @@ export type PayloadHook = NonNullable<SimpleStreamOptions["onPayload"]>;
 /** Anthropic reads the cache only at a breakpoint or up to this many blocks before one. */
 export const anthropicLookbackBlocks = 20;
 
+/** Anthropic and Bedrock allow at most this many cache breakpoints in one request. */
+export const maxCacheBreakpoints = 4;
+
 const CacheMarker = Type.Object({ type: Type.String(), ttl: Type.Optional(Type.String()) });
+const Cacheable = Type.Object({ cache_control: Type.Optional(CacheMarker) });
 
 /** The parts of an Anthropic Messages payload a breakpoint touches. */
 const AnthropicPayload = Type.Object({
+  system: Type.Optional(Type.Array(Cacheable)),
+  tools: Type.Optional(Type.Array(Cacheable)),
   messages: Type.Array(
     Type.Object({
       role: Type.String(),
@@ -34,8 +40,12 @@ const AnthropicPayload = Type.Object({
   ),
 });
 
+const BedrockCacheable = Type.Object({ cachePoint: Type.Optional(CacheMarker) });
+
 /** The parts of a Bedrock Converse payload a breakpoint touches. */
 const BedrockPayload = Type.Object({
+  system: Type.Optional(Type.Array(BedrockCacheable)),
+  toolConfig: Type.Optional(Type.Object({ tools: Type.Optional(Type.Array(BedrockCacheable)) })),
   messages: Type.Array(
     Type.Object({
       role: Type.String(),
@@ -51,11 +61,21 @@ type BedrockPayload = Static<typeof BedrockPayload>;
 
 /** Anthropic Messages: copy the tail's `cache_control` onto the last evidence block. */
 function markAnthropic(payload: AnthropicPayload, evidenceBlocks: number): boolean {
+  const blocks = payload.messages.flatMap((message) =>
+    Array.isArray(message.content) ? message.content : [],
+  );
+  const marked = blocks.filter((block) => block.cache_control);
+  const existing =
+    marked.length +
+    (payload.system ?? []).filter((block) => block.cache_control).length +
+    (payload.tools ?? []).filter((block) => block.cache_control).length;
+  // The adapter's tail marker is the last one in the messages, wherever the adapter put it: a
+  // model with managed effort has empty system messages after the user message. Without any,
+  // the adapter has caching off (`cacheRetention: "none"`).
+  const tail = marked.at(-1)?.cache_control;
+  if (!tail || existing >= maxCacheBreakpoints) return false;
   const content = payload.messages.find((message) => message.role === "user")?.content;
-  const tailContent = payload.messages.at(-1)?.content;
-  const tail = Array.isArray(tailContent) ? tailContent.at(-1)?.cache_control : undefined;
-  // Without a tail marker the adapter has caching off (`cacheRetention: "none"`).
-  if (!tail || !Array.isArray(content) || evidenceBlocks >= content.length) return false;
+  if (!Array.isArray(content) || evidenceBlocks >= content.length) return false;
   const block = content[evidenceBlocks - 1];
   if (block?.type !== "text") return false;
   block.cache_control = { ...tail };
@@ -64,10 +84,20 @@ function markAnthropic(payload: AnthropicPayload, evidenceBlocks: number): boole
 
 /** Bedrock Converse: insert a copy of the tail's `cachePoint` after the last evidence block. */
 function markBedrock(payload: BedrockPayload, evidenceBlocks: number): boolean {
-  const content = payload.messages.find((message) => message.role === "user")?.content;
-  const tail = payload.messages.at(-1)?.content.at(-1)?.cachePoint;
+  const points = payload.messages.flatMap((message) =>
+    message.content.filter((block) => block.cachePoint),
+  );
+  const existing =
+    points.length +
+    (payload.system ?? []).filter((block) => block.cachePoint).length +
+    (payload.toolConfig?.tools ?? []).filter((block) => block.cachePoint).length;
   // Without a tail cache point the adapter has caching off, or the model does not support it.
-  if (!tail || !content || evidenceBlocks >= content.length) return false;
+  const tail = points.at(-1)?.cachePoint;
+  if (!tail || existing >= maxCacheBreakpoints) return false;
+  const content = payload.messages.find((message) => message.role === "user")?.content;
+  if (!content || evidenceBlocks >= content.length) return false;
+  // The adapter drops whitespace-only text blocks, so `evidenceBlocks` indexes the sent content
+  // only because every evidence block holds text; the guard below keeps it from marking a stray.
   if (content[evidenceBlocks - 1]?.text === undefined) return false;
   content.splice(evidenceBlocks, 0, { cachePoint: { ...tail } });
   return true;
@@ -79,8 +109,9 @@ function markBedrock(payload: BedrockPayload, evidenceBlocks: number): boolean {
  * adapter put on the request's tail, so it does nothing where caching is off, and it touches only
  * `anthropic-messages` and `bedrock-converse-stream` payloads, in place.
  *
- * The breakpoint uses the third of Anthropic's four slots, beside the system prompt's and the
- * tail's. Anthropic finds an earlier entry by looking back at most {@link anthropicLookbackBlocks}
+ * The breakpoint is one more of the four a request may hold, beside the system prompt's and the
+ * tail's, so it is skipped when the request already holds four (a Claude subscription login
+ * marks two system blocks). Anthropic finds an earlier entry by looking back at most {@link anthropicLookbackBlocks}
  * blocks from a breakpoint, so a review whose evidence grew by more than that writes anew.
  */
 export function evidenceCacheBreakpoint(evidenceBlocks: number): PayloadHook {
@@ -91,5 +122,23 @@ export function evidenceCacheBreakpoint(evidenceBlocks: number): PayloadHook {
     if (model.api === "bedrock-converse-stream" && Value.Check(BedrockPayload, payload))
       return markBedrock(payload, evidenceBlocks) ? payload : undefined;
     return undefined;
+  };
+}
+
+/**
+ * Run payload hooks in order, each seeing the previous one's result. Returns the last replacement
+ * a hook made, or `undefined` when none replaced the payload.
+ */
+export function composePayloadHooks(...hooks: readonly PayloadHook[]): PayloadHook {
+  return async (payload, model) => {
+    let current = payload;
+    let replaced = false;
+    for (const hook of hooks) {
+      const next = await hook(current, model);
+      if (next === undefined) continue;
+      current = next;
+      replaced = true;
+    }
+    return replaced ? current : undefined;
   };
 }

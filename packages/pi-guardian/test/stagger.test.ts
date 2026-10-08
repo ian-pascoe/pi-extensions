@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import {
   assessment,
+  classified,
   createGuardianHarness,
+  DeferredClassifierReply,
   GatedReply,
   reply,
   toolCalls,
@@ -197,5 +199,51 @@ describe("staggered sibling reviews", () => {
     await prompt;
     expect(harness.executed).toEqual(["deploy:a", "deploy:b"]);
     expect(harness.reviews).toHaveLength(2);
+  });
+
+  it("releases siblings when the first review returns before any request", async () => {
+    const harness = await createGuardianHarness({
+      guardianSettings: { model: "guardian-test/missing", reviewTimeoutMs: 5_000 },
+    });
+    harness.responses.push(deploys("a", "b"), reply("Ok."));
+    await harness.session.prompt("Deploy a and b.");
+    // No Guardian model resolves, so no request is ever made; neither review waits for one.
+    expect(harness.reviews).toHaveLength(0);
+    expect(harness.executed).toEqual([]);
+    expect(harness.entries("pi-guardian-review")).toEqual([
+      expect.objectContaining({ toolCallId: "call-a", result: "failed" }),
+      expect.objectContaining({ toolCallId: "call-b", result: "failed" }),
+    ]);
+  });
+
+  it("starts a classifier batch's siblings before the classifier pass resolves", async () => {
+    const harness = await createGuardianHarness({
+      guardianSettings: {
+        classifierModel: "guardian-test/judge",
+        model: reviewer.model,
+        reviewTimeoutMs: 5_000,
+      },
+    });
+    let started = 0;
+    let release: () => void = () => {};
+    const bothStarted = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const answers = classified({ low: 0.95, medium: 0.05 }, { high: 0.9, medium: 0.1 });
+    // Each pass resolves only once both have started: the second must not wait for the first.
+    const pass = async () => {
+      if (++started === 2) release();
+      await bothStarted;
+      return answers;
+    };
+    harness.classifierReplies.push(
+      new DeferredClassifierReply(pass),
+      new DeferredClassifierReply(pass),
+    );
+    harness.responses.push(deploys("a", "b"), reply("Ok."));
+    const prompt = harness.session.prompt("Deploy a and b.");
+    await prompt;
+    expect(harness.classifications).toHaveLength(2);
+    expect(harness.executed.toSorted()).toEqual(["deploy:a", "deploy:b"]);
   });
 });

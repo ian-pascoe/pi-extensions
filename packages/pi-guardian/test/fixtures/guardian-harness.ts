@@ -107,7 +107,12 @@ export class GatedReply {
 }
 
 /** A scripted classifier reply: answers by question, or a provider failure. */
-export type ClassifierReply = Record<string, ClassifierAnswer> | Error;
+export type ClassifierReply = Record<string, ClassifierAnswer> | Error | DeferredClassifierReply;
+
+/** A classifier reply produced later, for example once a sibling's request has started. */
+export class DeferredClassifierReply {
+  constructor(readonly run: () => Promise<Record<string, ClassifierAnswer>>) {}
+}
 
 /** A captured classifier request, as the provider received it. */
 export interface CapturedClassification {
@@ -163,7 +168,7 @@ export interface HarnessOptions {
   /**
    * Build each Guardian request with Pi's real provider adapter for the model's API and capture
    * the body it would send (see `CapturedReview.wire`); the reply is still scripted. Also adds the
-   * reviewer models `guardian-anthropic/reviewer` and `guardian-bedrock/reviewer`.
+   * reviewer models `guardian-anthropic/claude-haiku-4-5`, `guardian-anthropic/claude-haiku-5-5` (managed effort), and `guardian-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0`.
    */
   wirePayloads?: boolean;
 }
@@ -442,6 +447,21 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
                       contextWindow: 200_000,
                       maxTokens: 2_048,
                     },
+                    // Managed effort: Pi's adapter appends empty system messages to the request.
+                    ...(api === "anthropic-messages"
+                      ? [
+                          {
+                            id: "claude-haiku-5-5",
+                            name: "managed effort reviewer",
+                            reasoning: false,
+                            input: ["text" as const],
+                            cost: offlineCost,
+                            contextWindow: 200_000,
+                            maxTokens: 2_048,
+                            compat: { supportsMidConvoEffort: true, forceAdaptiveThinking: true },
+                          },
+                        ]
+                      : []),
                   ],
                   streamSimple: reviewerStream,
                 });
@@ -496,9 +516,11 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
                 try {
                   if (scripted === undefined) throw new Error("No scripted classifier reply");
                   if (scripted instanceof Error) throw scripted;
+                  const answers =
+                    scripted instanceof DeferredClassifierReply ? await scripted.run() : scripted;
                   return {
                     ...result,
-                    answers: scripted,
+                    answers,
                     usage: {
                       input: 400,
                       output: 0,

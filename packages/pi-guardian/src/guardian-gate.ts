@@ -29,7 +29,7 @@ import {
   type EscalationRecord,
   type ReviewEntry,
 } from "./guardian-audit.js";
-import { tokenFactor } from "./guardian-calibration.js";
+import { tokenFactor } from "@ian-pascoe/pi-utils/token-calibration";
 import {
   classifierFailure,
   classifierQuestions,
@@ -857,6 +857,9 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
         const started = firstStarted;
         start = async () => {
           await untilReleased(started, signal);
+          // Aborted while waiting: no request is worth sending.
+          if (signal.aborted)
+            return { kind: "aborted", model: null, durationMs: 0, usage: null, cost: null };
           return prefetchSlot(() => review(ctx, config, call, policy.detail, blocks, signal));
         };
       }
