@@ -1042,6 +1042,8 @@ it("preserves exact ordered model tools, system prompt and unaffected history fo
         model: model.id,
         provider: model.provider,
         api: model.api,
+        // Pin the wall-clock duration the event stream would otherwise stamp from performance.now().
+        durationMs: 0,
       };
       if (privateRole) {
         message.content = [
