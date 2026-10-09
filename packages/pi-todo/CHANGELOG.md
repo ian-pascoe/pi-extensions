@@ -1,5 +1,16 @@
 # @ian-pascoe/pi-todo
 
+## 0.6.1
+
+### Patch Changes
+
+- 58a2ce1: Accept `null` for an optional tool parameter as if it were omitted, through the shared `pi-utils` helper; tool schemas the model sees are unchanged.
+- 014026b: Skip the Todo List Snapshot when a tool group's last successful `todo` result (`list`, batch `add`, or batch `update`) already carries the complete resulting list.
+- Updated dependencies [7ab488c]
+- Updated dependencies [eed4468]
+- Updated dependencies [58a2ce1]
+  - @ian-pascoe/pi-utils@0.6.0
+
 ## 0.6.0
 
 ### Minor Changes

@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-termctrl",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "private": false,
   "description": "Interactive Terminals, Background jobs, and a /ps panel for Pi.",
   "keywords": [
@@ -38,7 +38,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@ian-pascoe/pi-utils": "^0.5.0",
+    "@ian-pascoe/pi-utils": "^0.6.0",
     "@kitlangton/terminal-control": "^1.2.1"
   },
   "peerDependencies": {

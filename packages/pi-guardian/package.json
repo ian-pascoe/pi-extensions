@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-guardian",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": false,
   "description": "Model-reviewed gating of Pi agent tool calls before they run.",
   "keywords": [
@@ -37,7 +37,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@ian-pascoe/pi-utils": "^0.5.0"
+    "@ian-pascoe/pi-utils": "^0.6.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=1.1.0",

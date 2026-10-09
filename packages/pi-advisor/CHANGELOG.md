@@ -1,5 +1,25 @@
 # @ian-pascoe/pi-advisor
 
+## 0.8.0
+
+### Minor Changes
+
+- df74468: Ask for longer prompt-cache retention on Advisor requests only, so a Review after an idle gap no longer re-reads the whole Advisor Session uncached. OpenAI Advisor requests now send `prompt_cache_retention: "24h"` (free). The new `anthropicLongCache` setting (default `false`, also a row in the `/advisor` menu) asks Anthropic for the 1h cache TTL, whose writes cost 2× instead of 1.25×. Retention is a per-request stream option on the Advisor Session, never the process-wide `PI_CACHE_RETENTION`, so the observed agent's requests are unchanged. Codex Advisor sessions are unchanged: Pi's Codex adapter has no retention field. A new test builds the real Codex request body for consecutive Reviews and proves their settings and input prefix are identical; the earlier second-Review miss on Codex is documented in the design doc.
+- 7ab488c: Cap each observed tool result's text in Advisor's Review Evidence, in the Context Seed and in incremental updates, to its head and tail around an omission marker that points at the observed session file. The cap is the new `maxToolResultChars` setting (default 4,000 characters); the Tool-Call Reference and error status are kept, user and assistant text and reasoning are never capped, and the Context Seed fit and token calibration measure the capped evidence. `@ian-pascoe/pi-utils/evidence` gains an opt-in `toolResultCap` projection option (and `capText`); Guardian does not use it and is unchanged.
+- 4d1e94b: When `thinkingLevel` is not configured, the Advisor now uses a fixed `high` thinking level instead of inheriting the observed agent's. Explicit `thinkingLevel` settings and global/project/session layering are unchanged, and an observed thinking-level change no longer discards the Advisor Session.
+- 109c3c9: Under the default `reviewEvery: "turn"` cadence, a turn whose tool calls are all read-only (Pi's `read`, `grep`, `find`, and `ls`, or tools annotated `readOnlyHint: true`) now joins the Review Backlog without starting a Review. The next other turn, an errored tool result, or request completion reviews the backlog, so Reviews no longer re-read the Advisor Session for pure exploration. `bash` never counts as read-only. The trade-off is that findings about exploration arrive with the next Review.
+
+### Patch Changes
+
+- 455ce54: An Advisor with its own `model` no longer discards its Advisor Session, or an in-flight Review, when the observed agent changes model. The observed model is tracked only when the Advisor inherits it.
+- 98abd59: Lower the `auto` ceilings to 100k reported tokens for `maxSessionTokens` and 50k for `seedBudgetTokens` (were 200k and 100k), keeping the seed within half the session and the window-relative scaling below them. Every Review re-reads the whole Advisor Session, and those cache reads were the largest Advisor cost; the lower cap trades more frequent compaction and less verbatim recall of older evidence for cheaper Reviews. Only models with windows above 200k are affected; set explicit values to restore the old sizes.
+- eed4468: Measure `seedBudgetTokens` and the incremental-evidence check in the Advisor model's reported tokens rather than Pi's chars/4 estimate, which undercounts Review Evidence by about 1.7–1.9× on Claude models. A seed fitted to an estimated 100k reached about 175k real tokens and pushed the Advisor Session past `maxSessionTokens` at once, forcing an uncached compaction. Advisor now scales the estimate by a per-model factor learned from its own Reviews and Consultations (the input tokens a prompt added against Pi's estimate of it), starting from a conservative factor of 2. A first seed is therefore smaller until the model reports usage.
+- 58a2ce1: Accept `null` for an optional tool parameter as if it were omitted, through the shared `pi-utils` helper; tool schemas the model sees are unchanged.
+- Updated dependencies [7ab488c]
+- Updated dependencies [eed4468]
+- Updated dependencies [58a2ce1]
+  - @ian-pascoe/pi-utils@0.6.0
+
 ## 0.7.0
 
 ### Minor Changes

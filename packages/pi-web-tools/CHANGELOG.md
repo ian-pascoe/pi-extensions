@@ -1,5 +1,15 @@
 # @ian-pascoe/pi-web-tools
 
+## 0.6.1
+
+### Patch Changes
+
+- 58a2ce1: Accept `null` for an optional tool parameter as if it were omitted, through the shared `pi-utils` helper; tool schemas the model sees are unchanged.
+- Updated dependencies [7ab488c]
+- Updated dependencies [eed4468]
+- Updated dependencies [58a2ce1]
+  - @ian-pascoe/pi-utils@0.6.0
+
 ## 0.6.0
 
 ### Minor Changes

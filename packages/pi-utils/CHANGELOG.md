@@ -1,5 +1,13 @@
 # @ian-pascoe/pi-utils
 
+## 0.6.0
+
+### Minor Changes
+
+- 7ab488c: Cap each observed tool result's text in Advisor's Review Evidence, in the Context Seed and in incremental updates, to its head and tail around an omission marker that points at the observed session file. The cap is the new `maxToolResultChars` setting (default 4,000 characters); the Tool-Call Reference and error status are kept, user and assistant text and reasoning are never capped, and the Context Seed fit and token calibration measure the capped evidence. `@ian-pascoe/pi-utils/evidence` gains an opt-in `toolResultCap` projection option (and `capText`); Guardian does not use it and is unchanged.
+- eed4468: Add `@ian-pascoe/pi-utils/token-calibration`: `tokenFactor`, `calibratedFactor`, `fallbackTokenFactor`, and the `TokenSample` type, moved from Guardian. They learn a per-model multiple of Pi's chars/4 token estimate from the tokens a provider reports. `tokenFactor` also takes the caller's own fallback factor.
+- 58a2ce1: Add `acceptNullForOptionalArguments` and `omitNullOptionalArguments` (`@ian-pascoe/pi-utils/null-optional-arguments`), which make a tool treat `null` for an optional parameter like omitting it by normalizing it in `prepareArguments`, and the `@ian-pascoe/pi-utils/tool-testing` helpers that prove it.
+
 ## 0.5.0
 
 ### Minor Changes

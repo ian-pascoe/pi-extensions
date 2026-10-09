@@ -1,5 +1,20 @@
 # @ian-pascoe/pi-dap
 
+## 0.8.0
+
+### Minor Changes
+
+- ca658d3: Stop a `vscode-js-debug` Debuggee that starts a worker thread or child process (such as a test runner's forks) from hanging `dap_launch` until the execution timeout. Pi DAP still refuses the child session, but now lets the child run without a debugger and names it in the next `dap_launch`, `dap_continue`, stepping, `dap_pause`, or `dap_status` result (`rejected_child_sessions`), saying that child debugging is unsupported and breakpoints in it will not bind. `dap_launch` also takes `launch_arguments`, adapter launch arguments merged over the Launch Profile's for one launch, for example `autoAttachChildProcesses: false`.
+
+### Patch Changes
+
+- 58a2ce1: Accept `null` for an optional tool parameter as if it were omitted, through the shared `pi-utils` helper; tool schemas the model sees are unchanged.
+- f9b48f2: Report the Debuggee `exit_code` for a Node Debug Session through `vscode-js-debug` (which sends no `exited` event): from its root-channel exit report for the default console, or from the process Pi runs for a terminal `console`, and leave it unknown when the adapter does not report one. Also drop a file from `desired_breakpoints` when its breakpoints are set to `[]`.
+- Updated dependencies [7ab488c]
+- Updated dependencies [eed4468]
+- Updated dependencies [58a2ce1]
+  - @ian-pascoe/pi-utils@0.6.0
+
 ## 0.7.0
 
 ### Minor Changes
