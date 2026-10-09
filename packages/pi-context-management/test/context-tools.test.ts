@@ -389,12 +389,43 @@ describe("Context Notes tools", () => {
   test("agent can write, append, and read exact ranges of named Markdown Notes", async () => {
     const f = harness();
     await f.run("context_notes", { action: "write", name: "task", content: "# Task\nBlue" });
-    await f.run("context_notes", { action: "append", name: "task", content: " widget" });
+    await f.run("context_notes", { action: "append", name: "task", content: "widget" });
     expect(
       await f.run("context_notes", { action: "read", name: "task", offset: 7, limit: 4 }),
     ).toContain('"content":"Blue"');
     expect(await f.run("context_notes", { action: "list" })).toContain('"name":"task"');
     expect(f.tools.get("context_notes")?.executionMode).toBe("sequential");
+  });
+  test("append separates the appended text from a Note without a trailing newline", async () => {
+    const f = harness();
+    const read = (name: string) => f.structured("context_notes", { action: "read", name });
+    await f.run("context_notes", { action: "write", name: "nl", content: "line1" });
+    await f.run("context_notes", { action: "append", name: "nl", content: "line2" });
+    expect(await read("nl")).toMatchObject({ content: "line1\nline2" });
+    await f.run("context_notes", { action: "append", name: "nl", content: "" });
+    expect(await read("nl")).toMatchObject({ content: "line1\nline2" });
+
+    await f.run("context_notes", { action: "write", name: "ended", content: "a\n" });
+    await f.run("context_notes", { action: "append", name: "ended", content: "b" });
+    expect(await read("ended")).toMatchObject({ content: "a\nb" });
+
+    await f.run("context_notes", { action: "write", name: "empty", content: "" });
+    await f.run("context_notes", { action: "append", name: "empty", content: "x" });
+    expect(await read("empty")).toMatchObject({ content: "x" });
+
+    await f.run("context_notes", { action: "append", name: "fresh", content: "only" });
+    expect(await read("fresh")).toMatchObject({ content: "only" });
+  });
+  test("append counts the inserted separator against the Note size limit", async () => {
+    const f = harness();
+    await f.run("context_notes", { action: "write", name: "big", content: "a".repeat(32_000) });
+    await expect(
+      f.run("context_notes", { action: "append", name: "big", content: "b".repeat(32_000) }),
+    ).rejects.toThrow("Note exceeds 64000 UTF-16 content units");
+    await f.run("context_notes", { action: "append", name: "big", content: "b".repeat(31_999) });
+    expect(await f.structured("context_notes", { action: "list" })).toMatchObject({
+      notes: [{ name: "big", characters: 64_000 }],
+    });
   });
 });
 
@@ -634,7 +665,7 @@ describe("structured results for codemode scripts", () => {
         content: "# Task\nBlue",
       }),
     ).toEqual({ action: "write", name: "task", saved: true });
-    await f.structured("context_notes", { action: "append", name: "task", content: " widget" });
+    await f.structured("context_notes", { action: "append", name: "task", content: "widget" });
     expect(await f.structured("context_notes", { action: "list" })).toMatchObject({
       notes: [{ name: "task", characters: 18 }],
       total: 1,
