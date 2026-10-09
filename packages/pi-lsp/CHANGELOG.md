@@ -1,5 +1,15 @@
 # @ian-pascoe/pi-lsp
 
+## 0.13.0
+
+### Minor Changes
+
+- d92c376: Add a `workspaceRequestMs` LSP timeout (default 15 s) for workspace-wide requests, report only the real failure when a capable server fails, explain empty hover results, and qualify the shared guideline's preview tools as "where available".
+
+### Patch Changes
+
+- 1f592c8: `lsp_workspace_diagnostics` reports `unsupported` for a server that answers only document pulls whenever its push cache covers no open file, instead of an empty `fresh` result that read as a clean workspace.
+
 ## 0.12.0
 
 ### Minor Changes

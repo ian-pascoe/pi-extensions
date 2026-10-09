@@ -1,5 +1,15 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.18.0
+
+### Minor Changes
+
+- 8f260eb: Coordinator Tools now give the model compact text instead of pretty-printed JSON. `subagent_status` lists each tool set once and previews long fields, with a new `verbose` option for the full detail; `subagent_wait` reports one token/cost total; and a `subagent_cancel` that found nothing running says so. Codemode scripts still receive the complete record in `structuredContent`.
+
+### Patch Changes
+
+- d92c376: A default `subagent_wait` now tells the parent a handed result will arrive as a separate message, instead of suggesting a reread, when it is not yet in the conversation.
+
 ## 0.17.1
 
 ### Patch Changes

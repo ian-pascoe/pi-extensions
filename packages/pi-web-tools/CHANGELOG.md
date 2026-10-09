@@ -1,5 +1,13 @@
 # @ian-pascoe/pi-web-tools
 
+## 0.6.2
+
+### Patch Changes
+
+- 69aac3c: Web Fetch removes inline `<script>`, `<style>`, and `<template>` elements before splitting HTML for Markdown conversion, so a large embedded payload (such as a hydration script) no longer pushes the content around it into the plain-text fallback and drops its links.
+- d92c376: Web Search now shares `contextMaxCharacters` across Exa results so every result keeps its Title and URL instead of one long result cutting off the rest.
+- d92c376: Web Search drops Exa metadata lines whose value is `N/A`, and drops a result's body when its share of the budget is too small to read instead of leaving a stub such as `Hi`.
+
 ## 0.6.1
 
 ### Patch Changes

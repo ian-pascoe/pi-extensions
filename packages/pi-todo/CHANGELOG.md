@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-todo
 
+## 0.6.2
+
+### Patch Changes
+
+- d92c376: Todo calls made inside a `codemode` script no longer add a duplicate Todo List Snapshot when the script's output already shows the final list.
+
 ## 0.6.1
 
 ### Patch Changes
