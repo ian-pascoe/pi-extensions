@@ -567,6 +567,23 @@ describe("LspServerClient", () => {
     });
   });
 
+  test("returns cached pushes for open documents from a push-only server", async () => {
+    const directory = await createTemporaryDirectory();
+    const filePath = resolve(directory, "push-only.ts");
+    await writeFile(filePath, "export const value = true;\n");
+    const client = await startFakeServer(directory, {
+      environment: { FAKE_DIAGNOSTICS: "one", FAKE_NO_PULL: "1" },
+    });
+
+    const document = await client.synchronizeDocument(filePath, "typescript");
+    await client.request("fake/state", {});
+    await expect(client.workspaceDiagnostics()).resolves.toMatchObject({
+      status: "fresh",
+      source: "push_cache",
+      diagnosticsByUri: new Map([[document.uri, [expect.objectContaining({ source: "fake" })]]]),
+    });
+  });
+
   test("omits versioned cached pushes for unsynchronized documents", async () => {
     const directory = await createTemporaryDirectory();
     const client = await startFakeServer(directory, {
@@ -626,6 +643,20 @@ describe("LspServerClient", () => {
 
     const documentDiagnostics = await client.documentDiagnostics(filePath, "typescript");
     expect(documentDiagnostics.diagnostics).toHaveLength(1);
+    await expect(client.workspaceDiagnostics()).resolves.toEqual({ status: "unsupported" });
+  });
+
+  test("reports no workspace diagnostics from a document-pull server whose pushes cover no open document", async () => {
+    const directory = await createTemporaryDirectory();
+    const filePath = resolve(directory, "document-pull-closed.ts");
+    await writeFile(filePath, "export const value = true;\n");
+    const client = await startFakeServer(directory, {
+      environment: { FAKE_DIAGNOSTICS: "one", FAKE_NO_WORKSPACE_PULL: "1", FAKE_PUSH: "none" },
+    });
+
+    const documentDiagnostics = await client.documentDiagnostics(filePath, "typescript");
+    expect(documentDiagnostics.diagnostics).toHaveLength(1);
+    await client.request("fake/publishDiagnostics", { uri: "file:///not-synchronized.ts" });
     await expect(client.workspaceDiagnostics()).resolves.toEqual({ status: "unsupported" });
   });
 

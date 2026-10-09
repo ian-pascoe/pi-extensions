@@ -148,7 +148,8 @@ export type LspDocumentDiagnosticResult =
 /**
  * Workspace diagnostics grouped by URI, with cached push fallback only when pull is unsupported.
  * `unsupported` means the server publishes no workspace diagnostics: it answers only document
- * pulls and has pushed nothing, so an empty push cache would misreport "no diagnostics".
+ * pulls and its push cache covers no open document, so an empty push cache would misreport "no
+ * diagnostics".
  */
 export type LspWorkspaceDiagnosticResult =
   | {
@@ -796,31 +797,28 @@ export class LspServerClient {
 
   /**
    * Pull workspace diagnostics when supported, otherwise return cached push diagnostics only. A
-   * document-pull server that has never pushed is reported as `unsupported`.
+   * document-pull server whose push cache covers no open document is reported as `unsupported`,
+   * so an empty cache never reads as a clean workspace.
    */
   async workspaceDiagnostics(signal?: AbortSignal): Promise<LspWorkspaceDiagnosticResult> {
     const registration = this.workspacePullRegistration();
     if (registration === undefined) {
-      if (this.documentPullRegistration() !== undefined && this.diagnosticsRevision === 0) {
+      const diagnosticsByUri = new Map(
+        [...this.pushDiagnostics]
+          .filter(([uri, state]) => {
+            // Only documents open in this session are covered; a server's clear for a closed
+            // or evicted document must not read as a checked, clean file.
+            const open = this.openDocuments.get(uri);
+            return (
+              open !== undefined && (state.version === undefined || state.version === open.version)
+            );
+          })
+          .map(([uri, state]) => [uri, state.diagnostics]),
+      );
+      if (this.documentPullRegistration() !== undefined && diagnosticsByUri.size === 0) {
         return { status: "unsupported" };
       }
-      return {
-        status: "fresh",
-        source: "push_cache",
-        diagnosticsByUri: new Map(
-          [...this.pushDiagnostics]
-            .filter(([uri, state]) => {
-              // Only documents open in this session are covered; a server's clear for a closed
-              // or evicted document must not read as a checked, clean file.
-              const open = this.openDocuments.get(uri);
-              return (
-                open !== undefined &&
-                (state.version === undefined || state.version === open.version)
-              );
-            })
-            .map(([uri, state]) => [uri, state.diagnostics]),
-        ),
-      };
+      return { status: "fresh", source: "push_cache", diagnosticsByUri };
     }
 
     try {

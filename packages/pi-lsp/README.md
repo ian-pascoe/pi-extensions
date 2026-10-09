@@ -355,8 +355,8 @@ have not started shows with `all: true`, in the structured result as in the text
 
 `lsp_workspace_diagnostics` uses the server's workspace diagnostics pull when it has one, and
 otherwise the diagnostics it has pushed for files opened in this session. A server that answers only
-document pulls, such as the TypeScript server, publishes no workspace diagnostics; its value is then
-`{ status: "unsupported", message }`, pointing to `lsp_diagnostics`, rather than an empty result.
+document pulls, such as the TypeScript server, publishes no workspace diagnostics; while its push
+cache covers no file open in this session, its value is `{ status: "unsupported", message }`, pointing to `lsp_diagnostics`, rather than an empty result.
 Such a server is not omitted as incapable: without `server_id`, every matching server returns its
 own result.
 A result from pushed diagnostics carries a `message` too: it says how many files the push cache
