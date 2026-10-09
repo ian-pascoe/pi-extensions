@@ -1,5 +1,6 @@
 import type { Key } from "@kitlangton/terminal-control";
 import type {
+  ScreenPosition,
   TerminalDriver,
   TerminalExit,
   TerminalHandle,
@@ -10,6 +11,8 @@ import type {
 /** A scripted Terminal: tests set its screen, logs, idle time and exit directly. */
 export class FakeTerminal implements TerminalHandle {
   private visible = "";
+  /** The cursor termctrl reports; `null` while the program hides it. */
+  cursor: ScreenPosition | null = null;
   logLines: string[] = [];
   state: "running" | "exited" = "running";
   exit: TerminalExit | null = null;
@@ -53,7 +56,13 @@ export class FakeTerminal implements TerminalHandle {
       : this.reportsIdle
         ? Date.now() - this.lastOutputAt
         : null;
-    return { screen: this.visible, state: this.state, exit: this.exit, idleForMs };
+    return {
+      screen: this.visible,
+      cursor: this.cursor,
+      state: this.state,
+      exit: this.exit,
+      idleForMs,
+    };
   }
 
   async logs(): Promise<string> {

@@ -128,6 +128,63 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
     expect(exited.details).toMatchObject({ state: "exited", exit_code: 0 });
   });
 
+  test(
+    "sends a Screen Delta from the previous prompt row in a REPL, growing and scrolling",
+    { timeout: 30_000 },
+    async () => {
+      const tools = createTools();
+      const context = toolContext();
+      const send = (params: { text?: string; wait_for_text?: string; full_screen?: boolean }) =>
+        tools.send.execute(
+          "send",
+          { id: "t1", wait_ms: 10_000, ...params },
+          undefined,
+          undefined,
+          context,
+        );
+      const textOf = (result: { readonly content: readonly { type: string; text?: string }[] }) =>
+        result.content[0]?.text ?? "";
+      const started = await tools.start.execute(
+        "start",
+        { command: "python3 -q", wait_ms: 10_000 },
+        undefined,
+        undefined,
+        context,
+      );
+      await untilScreenShows(tools, context, started, ">>>");
+      await send({ text: "1+1\n", wait_for_text: "/^2\\n>>>/m" });
+      // Viewport rows are 12, so the later commands scroll the screen.
+      for (let index = 3; index <= 8; index++) {
+        const result = await send({ text: `${index}*1\n`, wait_for_text: `/^${index}\\n>>>/m` });
+        expect(result.details.screen_from_row).toBeGreaterThan(1);
+        expect(textOf(result)).toMatch(
+          new RegExp(`rows above unchanged\\) ---\\n>>> ${index}\\*1\\n${index}\\n>>>`, "u"),
+        );
+      }
+      const typed = await send({ text: "exi" });
+      expect(textOf(typed)).toMatch(/rows above unchanged\) ---\n>>> exi$/u);
+      expect(typed.details.cursor).toEqual({
+        row: typed.details.screen.split("\n").length,
+        column: 8,
+      });
+      const erased = await tools.send.execute(
+        "send",
+        { id: "t1", keys: ["Backspace", "Backspace", "Backspace"] },
+        undefined,
+        undefined,
+        context,
+      );
+      expect(textOf(erased)).toMatch(/rows above unchanged\) ---\n>>>$/u);
+      const cleared = await send({
+        text: 'print(chr(27) + "[2J" + chr(27) + "[H", end="")\n',
+        wait_for_text: "/^>>>$/",
+      });
+      expect(cleared.details).not.toHaveProperty("screen_from_row");
+      expect(textOf(cleared)).toContain("--- screen ---\n>>>");
+      await send({ text: "exit()\n" });
+    },
+  );
+
   test("handles an exited Terminal, cwd null and a missing cwd", { timeout: 20_000 }, async () => {
     const tools = createTools();
     const context = toolContext();

@@ -7,9 +7,17 @@ export interface TerminalExit {
   readonly signal: string | null;
 }
 
+/** A zero-based screen position: `x` counts columns from the left, `y` rows from the top. */
+export interface ScreenPosition {
+  readonly x: number;
+  readonly y: number;
+}
+
 /** One polled view of a Terminal: the visible screen plus process state. */
 export interface TerminalSnapshot {
   readonly screen: string;
+  /** The cursor on the screen, or `null` while the program hides it. */
+  readonly cursor: ScreenPosition | null;
   readonly state: "running" | "exited";
   readonly exit: TerminalExit | null;
   /** Milliseconds since the Terminal last produced output, when termctrl knows. */

@@ -50,7 +50,9 @@ test("each terminal tool and the bash replacement treat null for an optional par
     proven.set(name, expectNullOptionalArgumentsOmitted(tool));
   }
   expect(proven.get("terminal_start")).toEqual(expect.arrayContaining(["cwd"]));
-  expect(proven.get("terminal_send")).toEqual(expect.arrayContaining(["text", "keys"]));
+  expect(proven.get("terminal_send")).toEqual(
+    expect.arrayContaining(["text", "keys", "full_screen"]),
+  );
   expect(proven.get("terminal_wait")).toEqual(expect.arrayContaining(["ids"]));
 });
 

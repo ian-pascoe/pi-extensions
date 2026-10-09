@@ -19,7 +19,7 @@ import type {
 import { describeExitStatus, formatExitNotice, lastLines } from "./exit-notification.js";
 import { termctrlTemporaryDirectory } from "./termctrl-driver.js";
 import type { LineByteLimits, TerminalViewport } from "./pi-termctrl-settings.js";
-import type { TerminalExit, TerminalSnapshot } from "./terminal-driver.js";
+import type { ScreenPosition, TerminalExit, TerminalSnapshot } from "./terminal-driver.js";
 import {
   renderListCall,
   renderListResult,
@@ -100,6 +100,22 @@ const SettleReasonSchema = Type.Union(
   },
 );
 
+const CursorPositionSchema = Type.Object({
+  row: Type.Number({ description: "1-based, from the top of the screen" }),
+  column: Type.Number({ description: "1-based" }),
+});
+
+const CursorSchema = Type.Union([CursorPositionSchema, Type.Null()], {
+  description: "The cursor on the screen, or null while the program hides it",
+});
+
+const ScreenFromRowSchema = Type.Optional(
+  Type.Number({
+    description:
+      "Present when the text shows a Screen Delta: the 1-based row it starts at; the rows above are unchanged since the previous result",
+  }),
+);
+
 const TerminalResultSchema = Type.Object({
   id: Type.String(),
   state: TerminalStateSchema,
@@ -107,7 +123,11 @@ const TerminalResultSchema = Type.Object({
   exit_code: Type.Optional(Type.Number({ description: "Present once the Terminal has exited" })),
   signal: Type.Optional(Type.String({ description: "Present when a signal ended the Terminal" })),
   changed: Type.Boolean({ description: "Whether the screen differs from the previous result" }),
-  screen: Type.String({ description: "The visible screen" }),
+  cursor: CursorSchema,
+  screen: Type.String({
+    description: "The whole visible screen, even when the text shows only part of it",
+  }),
+  screen_from_row: ScreenFromRowSchema,
   scrolled_off: Type.String({
     description: "Log lines that scrolled off the screen since the previous result",
   }),
@@ -152,12 +172,19 @@ const StopResultSchema = Type.Object({
       description: "Terminal only: whether the screen differs from the previous result",
     }),
   ),
+  cursor: Type.Optional(
+    Type.Union([CursorPositionSchema, Type.Null()], {
+      description:
+        "Terminal only, with screen: the cursor on the final screen, or null while the program hid it",
+    }),
+  ),
   screen: Type.Optional(
     Type.String({
       description:
-        "Terminal only: the final screen; omitted when unchanged since your previous result",
+        "Terminal only: the whole final screen; omitted when unchanged since your previous result",
     }),
   ),
+  screen_from_row: ScreenFromRowSchema,
   scrolled_off: Type.Optional(
     Type.String({
       description: "Terminal only: lines that scrolled off since the previous result",
@@ -211,6 +238,12 @@ const SendParameters = Type.Object(
       Type.String({ description: "Wait until the screen shows this text, or /regex/flags" }),
     ),
     wait_ms: WaitMsSchema,
+    full_screen: Type.Optional(
+      Type.Boolean({
+        description:
+          "Show the whole screen in this result, even when the rows above the previous cursor row are unchanged or the screen is unchanged",
+      }),
+    ),
   },
   { additionalProperties: false },
 );
@@ -369,9 +402,11 @@ const ANCHOR_LINES = 5;
 interface ScrolledOff {
   readonly lines: readonly string[];
   readonly gap: boolean;
+  /** How many rows the screen scrolled since the previous result; undefined when unknown. */
+  readonly shift: number | undefined;
 }
 
-const NOTHING_SCROLLED: ScrolledOff = { lines: [], gap: false };
+const NOTHING_SCROLLED: ScrolledOff = { lines: [], gap: false, shift: undefined };
 
 /**
  * Find the log cursor in a fresh copy of termctrl's log, or `undefined` when its anchor is gone.
@@ -444,7 +479,8 @@ async function takeScrolledOff(entry: TerminalEntry, screen: string): Promise<Sc
   entry.logCursor = boundary;
   entry.logAnchor =
     boundary > 0 ? lines.slice(Math.max(0, boundary - ANCHOR_LINES), boundary) : lines.slice(0, 1);
-  return { lines: scrolled, gap: located === undefined };
+  const shift = located === undefined || boundary < located ? undefined : boundary - located;
+  return { lines: scrolled, gap: located === undefined, shift };
 }
 
 const GAP_NOTICE =
@@ -638,16 +674,97 @@ async function truncateOutput(
   return { ...fitted, fullOutputPath: path, notice: `[${summary} Full output: ${path}]` };
 }
 
+function splitRows(screen: string): string[] {
+  return screen === "" ? [] : screen.split("\n");
+}
+
 /**
  * The rows of `screen` that the agent received, aligned with `screen`: rows cut from the top of a
  * screen too large for the result, or shortened to fit it, are `undefined`.
  */
 function shownRows(screen: string, shown: string): (string | undefined)[] {
-  const rows = screen === "" ? [] : screen.split("\n");
+  const rows = splitRows(screen);
   if (shown === screen) return rows;
-  const kept = shown === "" ? [] : shown.split("\n");
+  const kept = splitRows(shown);
   const cut = rows.length - kept.length;
   return rows.map((row, index) => (kept[index - cut] === row ? row : undefined));
+}
+
+/**
+ * Where a Screen Delta of `rows` starts, or 0 when the result must show the whole screen. The
+ * delta starts at the previous result's cursor row, moved up by the `shift` rows the screen
+ * scrolled since. It is used only when every row above that cursor row still on the screen is
+ * unchanged, the agent received the whole previous screen, and the delta leaves out at least one
+ * row and shows at least one. Rows past the end of a screen are blank, as its text trims them.
+ */
+function screenDeltaStart(
+  entry: TerminalEntry,
+  rows: readonly string[],
+  shift: number | undefined,
+): number {
+  const cursorRow = entry.lastCursor?.y;
+  if (entry.lastScreen === undefined || cursorRow === undefined || shift === undefined) return 0;
+  const start = cursorRow - shift;
+  if (start <= 0 || start >= rows.length || entry.seenRows.includes(undefined)) return 0;
+  const previous = splitRows(entry.lastScreen);
+  for (let row = shift; row < cursorRow; row++) {
+    if ((previous[row] ?? "") !== (rows[row - shift] ?? "")) return 0;
+  }
+  return start;
+}
+
+/** The part of a screen a result shows. */
+interface ScreenView {
+  /** The rows the text shows, joined. */
+  readonly text: string;
+  /** Zero-based row the text starts at; above 0 for a Screen Delta. */
+  readonly startRow: number;
+  /** The text shows no rows, as the screen is unchanged since the previous result. */
+  readonly omitted: boolean;
+}
+
+/**
+ * Choose what a result shows of `screen`: nothing when it is unchanged since the previous result,
+ * a Screen Delta when the rows above the previous cursor row are unchanged, otherwise the whole
+ * screen. `fullScreen` always shows the whole screen.
+ */
+function viewScreen(
+  entry: TerminalEntry,
+  screen: string,
+  shift: number | undefined,
+  fullScreen: boolean,
+): ScreenView {
+  if (fullScreen) return { text: screen, startRow: 0, omitted: false };
+  if (entry.lastScreen === screen) return { text: "", startRow: 0, omitted: true };
+  const rows = splitRows(screen);
+  const startRow = screenDeltaStart(entry, rows, shift);
+  return startRow === 0
+    ? { text: screen, startRow, omitted: false }
+    : { text: rows.slice(startRow).join("\n"), startRow, omitted: false };
+}
+
+/**
+ * Record the rows of `screen` the agent now knows: the rows above a Screen Delta it already had,
+ * then the rows the result showed. An omitted, unchanged screen leaves them as they were.
+ */
+function recordSeenRows(entry: TerminalEntry, screen: string, view: ScreenView, shown: string) {
+  if (view.omitted) return;
+  entry.seenRows = [...splitRows(screen).slice(0, view.startRow), ...shownRows(view.text, shown)];
+}
+
+function cursorField(cursor: ScreenPosition | null): TerminalResult["cursor"] {
+  return cursor === null ? null : { row: cursor.y + 1, column: cursor.x + 1 };
+}
+
+function describeCursor(cursor: TerminalResult["cursor"]): string {
+  return cursor === null ? "cursor hidden" : `cursor ${cursor.row}:${cursor.column}`;
+}
+
+/** The marker above a shown screen, naming the rows a Screen Delta shows. */
+function screenMarker(label: string, screen: string, view: ScreenView): string {
+  if (view.startRow === 0) return `--- ${label} ---`;
+  const total = splitRows(screen).length;
+  return `--- ${label} (rows ${view.startRow + 1}-${total} of ${total}; rows above unchanged) ---`;
 }
 
 /** Says that `wait_for_text` was not seen when its wait timed out. */
@@ -659,6 +776,8 @@ function unmatchedNote(reason: SettleReason, pattern: string | undefined): strin
 
 function formatTerminalText(
   result: TerminalResult,
+  view: ScreenView,
+  shown: string,
   note: string | undefined,
   notice: string | undefined,
 ): string {
@@ -666,16 +785,28 @@ function formatTerminalText(
     result.state === "running"
       ? "running"
       : describeExit({ code: result.exit_code ?? null, signal: result.signal ?? null });
+  const unchanged = result.changed ? "" : " · screen unchanged";
   const parts = [
-    `${result.id} ${exit} · settled: ${result.settle_reason}${result.changed ? "" : " · screen unchanged"}`,
+    `${result.id} ${exit} · settled: ${result.settle_reason}${unchanged} · ${describeCursor(result.cursor)}`,
   ];
   if (note !== undefined) parts.push(note);
   if (result.scrolled_off !== "") {
     parts.push(`--- scrolled off ---\n${result.scrolled_off}`);
   }
-  parts.push(`--- screen ---\n${result.screen === "" ? "(blank)" : result.screen}`);
+  if (!view.omitted) {
+    parts.push(
+      `${screenMarker("screen", result.screen, view)}\n${shown === "" ? "(blank)" : shown}`,
+    );
+  }
   const text = parts.join("\n");
   return notice === undefined ? text : `${text}\n\n${notice}`;
+}
+
+/** How a result shows a Terminal. */
+interface TerminalResultOptions {
+  readonly note?: string | undefined;
+  /** Show the whole screen even when a Screen Delta or nothing would do. */
+  readonly fullScreen?: boolean | undefined;
 }
 
 /** Build the agent's view of a Terminal after a wait, recording the exit as seen. */
@@ -684,18 +815,26 @@ async function terminalResult(
   entry: TerminalEntry,
   snapshot: TerminalSnapshot | undefined,
   settleReason: SettleReason,
-  note?: string,
+  { note, fullScreen = false }: TerminalResultOptions = {},
 ) {
   const screen = snapshot?.screen ?? entry.finalScreen ?? entry.lastScreen ?? "";
+  const cursor = snapshot === undefined ? entry.finalCursor : snapshot.cursor;
   const scrolled =
     entry.state === "running" || snapshot !== undefined
       ? await takeScrolledOff(entry, screen)
       : NOTHING_SCROLLED;
-  const output = await fitOutput(registry, entry, screen, scrolled, scrollback());
+  const view = viewScreen(entry, screen, scrolled.shift, fullScreen);
+  const output = await fitOutput(registry, entry, view.text, scrolled, scrollback());
   // The screen now starts at the log cursor; when the cursor did not move, neither do the rows.
-  if (scrolled !== NOTHING_SCROLLED) entry.seenRows = shownRows(screen, output.screen);
+  if (scrolled !== NOTHING_SCROLLED) recordSeenRows(entry, screen, view, output.screen);
   if (snapshot?.state === "exited") {
-    registry.terminalExited(entry.id, snapshot.exit ?? { code: null, signal: null }, screen, true);
+    registry.terminalExited(
+      entry.id,
+      snapshot.exit ?? { code: null, signal: null },
+      screen,
+      true,
+      cursor,
+    );
   }
   registry.markSeen(entry.id);
   const exited = entry.state === "exited";
@@ -705,14 +844,18 @@ async function terminalResult(
     settle_reason: settleReason,
     ...exitFields(exited ? entry.exit : null),
     changed: entry.lastScreen !== screen,
-    screen: output.screen,
+    cursor: cursorField(cursor),
+    screen,
     scrolled_off: output.scrolledOff,
   };
+  if (view.startRow > 0) result.screen_from_row = view.startRow + 1;
   if (output.gap) result.output_missing = true;
   if (output.fullOutputPath !== undefined) result.full_output_path = output.fullOutputPath;
   entry.lastScreen = screen;
+  entry.lastCursor = cursor;
+  const text = formatTerminalText(result, view, output.screen, note, output.notice);
   return {
-    content: [{ type: "text" as const, text: formatTerminalText(result, note, output.notice) }],
+    content: [{ type: "text" as const, text }],
     details: result,
     structuredContent: result,
   };
@@ -872,7 +1015,7 @@ export function createTerminalStartTool(runtime: TerminalToolRuntime) {
           baseline: undefined,
           signal,
         });
-        return terminalResult(runtime, entry, snapshot, reason);
+        return terminalResult(runtime, entry, snapshot, reason, { fullScreen: true });
       });
     },
   });
@@ -897,7 +1040,7 @@ export function createTerminalSendTool(runtime: TerminalToolRuntime) {
     name: "terminal_send",
     label: "terminal_send",
     description:
-      "Type text and press keys in a Terminal, then return its screen once it settles: 250 ms of quiet, a wait_for_text match, exit, or wait_ms (default 500). With neither text nor keys it polls: it waits up to wait_ms (default 30000) for new output. Results include the lines that scrolled off since your previous result; a truncated result names a file with its full output.",
+      "Type text and press keys in a Terminal, then return its screen once it settles: 250 ms of quiet, a wait_for_text match, exit, or wait_ms (default 500). With neither text nor keys it polls: it waits up to wait_ms (default 30000) for new output. Results include the lines that scrolled off since your previous result; a truncated result names a file with its full output. When the rows above the previous result's cursor row are unchanged, the screen shows only the rows from there down; an unchanged screen shows no rows; full_screen: true shows the whole screen.",
     promptSnippet: "Send input to a Terminal, or poll it, and read its screen",
     parameters: SendParameters,
     annotations: {
@@ -927,7 +1070,11 @@ export function createTerminalSendTool(runtime: TerminalToolRuntime) {
       const hasInput = (params.text ?? "") !== "" || keys.length > 0;
       return driveTerminal(runtime.registry, entry, signal, async () => {
         if (entry.state === "exited") {
-          if (!hasInput) return terminalResult(runtime, entry, undefined, "exited");
+          if (!hasInput) {
+            return terminalResult(runtime, entry, undefined, "exited", {
+              fullScreen: params.full_screen,
+            });
+          }
           // The error tells the agent about the exit, so a deferred Exit notification is redundant.
           runtime.registry.markSeen(entry.id);
           throw new InputToExitedError(entry.id, entry.exit);
@@ -939,7 +1086,7 @@ export function createTerminalSendTool(runtime: TerminalToolRuntime) {
         if (hasInput && before?.state === "exited") {
           // The exit watcher has not noticed this exit yet.
           const exit = before.exit ?? { code: null, signal: null };
-          runtime.registry.terminalExited(entry.id, exit, before.screen, true);
+          runtime.registry.terminalExited(entry.id, exit, before.screen, true, before.cursor);
           throw new InputToExitedError(entry.id, exit);
         }
         const baseline = matches === undefined ? undefined : before?.screen;
@@ -955,13 +1102,10 @@ export function createTerminalSendTool(runtime: TerminalToolRuntime) {
           baseline,
           signal,
         });
-        return terminalResult(
-          runtime,
-          entry,
-          snapshot,
-          reason,
-          unmatchedNote(reason, params.wait_for_text),
-        );
+        return terminalResult(runtime, entry, snapshot, reason, {
+          note: unmatchedNote(reason, params.wait_for_text),
+          fullScreen: params.full_screen,
+        });
       });
     },
   });
@@ -980,14 +1124,13 @@ async function finalScrolledOff(entry: TerminalEntry): Promise<ScrolledOff> {
 /** What a stop saw of a Terminal at its turn, before stopping it. */
 interface StopView {
   readonly wasRunning: boolean;
-  readonly previousScreen: string | undefined;
   readonly scrolled: ScrolledOff;
   readonly entry: TermctrlEntry;
 }
 
 /**
- * Stop a Terminal in its turn: the calls ahead have finished, so `wasRunning` and the previous
- * screen are what they left, and calls queued behind find the Terminal gone.
+ * Stop a Terminal in its turn: the calls ahead have finished, so `wasRunning` and the agent's
+ * previous result are what they left, and calls queued behind find the Terminal gone.
  */
 function stopTerminalInTurn(
   registry: TermctrlRegistry,
@@ -996,10 +1139,9 @@ function stopTerminalInTurn(
 ): Promise<StopView> {
   return driveTerminal(registry, known, signal, async () => {
     const wasRunning = known.state === "running";
-    const previousScreen = known.lastScreen;
     const scrolled = await finalScrolledOff(known);
     const entry = (await registry.stop(known.owner, known.id)) ?? known;
-    return { wasRunning, previousScreen, scrolled, entry };
+    return { wasRunning, scrolled, entry };
   });
 }
 
@@ -1009,7 +1151,7 @@ export function createTerminalStopTool({ registry, scrollback }: TerminalResultR
     name: "terminal_stop",
     label: "terminal_stop",
     description:
-      "Stop a Terminal (t1) or Background job (b1) and forget it. Running processes are killed; exited ones are removed. Returns a Terminal's final screen (omitted when unchanged since your previous result) and scrolled-off lines, or a Background job's recent output.",
+      "Stop a Terminal (t1) or Background job (b1) and forget it. Running processes are killed; exited ones are removed. Returns a Terminal's final screen (omitted when unchanged since your previous result, and only the rows from the previous cursor row down when the rows above are unchanged) and scrolled-off lines, or a Background job's recent output.",
     promptSnippet: "Stop a Terminal or Background job",
     parameters: StopParameters,
     annotations: {
@@ -1025,54 +1167,57 @@ export function createTerminalStopTool({ registry, scrollback }: TerminalResultR
       const owner = ownerOf(context);
       const known = registry.find(owner, params.id);
       if (known === undefined) throw unknownId(params.id);
-      const { wasRunning, previousScreen, scrolled, entry } =
+      const { wasRunning, scrolled, entry } =
         known.kind === "terminal"
           ? await stopTerminalInTurn(registry, known, signal)
           : {
               wasRunning: known.state === "running",
-              previousScreen: undefined,
               scrolled: NOTHING_SCROLLED,
               entry: (await registry.stop(owner, params.id)) ?? known,
             };
       const label = entry.kind === "terminal" ? "Terminal" : "Background job";
-      const header = wasRunning
-        ? `${label} ${entry.id} stopped.`
-        : `${label} ${entry.id} had already ${describeExit(entry.exit)}; removed.`;
+      const outcome = wasRunning
+        ? `${label} ${entry.id} stopped`
+        : `${label} ${entry.id} had already ${describeExit(entry.exit)}; removed`;
       const result: StopResult = {
         id: entry.id,
         kind: entry.kind === "terminal" ? "terminal" : "background_job",
         state: "exited",
         ...exitFields(entry.exit),
       };
-      const parts = [header];
+      const parts: string[] = [];
       if (entry.kind === "terminal") {
         const screen = entry.finalScreen ?? "";
-        const changed = previousScreen !== screen;
         // A screen the agent already saw is not repeated, whether the Terminal was running or exited.
-        const repeated = !changed;
-        const output = await fitOutput(
-          registry,
-          entry,
-          repeated ? "" : screen,
-          scrolled,
-          scrollback(),
-        );
-        result.changed = changed;
-        if (!repeated) result.screen = output.screen;
-        if (!repeated || output.scrolledOff !== "") result.scrolled_off = output.scrolledOff;
+        const view = viewScreen(entry, screen, scrolled.shift, false);
+        const output = await fitOutput(registry, entry, view.text, scrolled, scrollback());
+        result.changed = !view.omitted;
+        if (!view.omitted) {
+          result.cursor = cursorField(entry.finalCursor);
+          result.screen = screen;
+          if (view.startRow > 0) result.screen_from_row = view.startRow + 1;
+        }
+        if (!view.omitted || output.scrolledOff !== "") result.scrolled_off = output.scrolledOff;
         if (output.gap) result.output_missing = true;
         if (output.fullOutputPath !== undefined) result.full_output_path = output.fullOutputPath;
         if (output.scrolledOff !== "") parts.push(`--- scrolled off ---\n${output.scrolledOff}`);
-        if (repeated) parts.push("Its screen is unchanged since your last result.");
-        else
-          parts.push(`--- final screen ---\n${output.screen === "" ? "(blank)" : output.screen}`);
+        if (view.omitted) parts.push("Its screen is unchanged since your last result.");
+        else {
+          const marker = screenMarker("final screen", screen, view);
+          parts.push(`${marker}\n${output.screen === "" ? "(blank)" : output.screen}`);
+        }
         if (output.notice !== undefined) parts.push(`\n${output.notice}`);
       } else {
         result.output = entry.child.tail();
         if (result.output !== "") parts.push(`--- recent output ---\n${result.output}`);
       }
+      // A shown final screen reports its cursor in the first line, as Terminal results do.
+      const header =
+        result.cursor === undefined
+          ? `${outcome}.`
+          : `${outcome} · ${describeCursor(result.cursor)}`;
       return {
-        content: [{ type: "text" as const, text: parts.join("\n") }],
+        content: [{ type: "text" as const, text: [header, ...parts].join("\n") }],
         details: result,
         structuredContent: result,
       };

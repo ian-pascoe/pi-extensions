@@ -284,7 +284,7 @@ describe("TermctrlRegistry", () => {
     const stopping = registry.stop("root", stopped.entry.id);
     registry.jobExited(stopped.entry.id, { code: null, signal: "SIGKILL" });
     await stopping;
-    registry.terminalExited(quiet.id, { code: 0, signal: null }, "", false);
+    registry.terminalExited(quiet.id, { code: 0, signal: null }, "", false, null);
     await nextTick();
     await nextTick();
 
