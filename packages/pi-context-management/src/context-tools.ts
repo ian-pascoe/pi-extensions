@@ -467,7 +467,7 @@ export function registerContextTools(
 
 /** Starts appended text on a new line so it never runs into the Note's last line. */
 function joinAppend(existing: string, appended: string): string {
-  return existing === "" || existing.endsWith("\n")
+  return existing === "" || appended === "" || existing.endsWith("\n")
     ? existing + appended
     : `${existing}\n${appended}`;
 }

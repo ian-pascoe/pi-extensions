@@ -389,7 +389,7 @@ describe("Context Notes tools", () => {
   test("agent can write, append, and read exact ranges of named Markdown Notes", async () => {
     const f = harness();
     await f.run("context_notes", { action: "write", name: "task", content: "# Task\nBlue" });
-    await f.run("context_notes", { action: "append", name: "task", content: " widget" });
+    await f.run("context_notes", { action: "append", name: "task", content: "widget" });
     expect(
       await f.run("context_notes", { action: "read", name: "task", offset: 7, limit: 4 }),
     ).toContain('"content":"Blue"');
@@ -401,6 +401,8 @@ describe("Context Notes tools", () => {
     const read = (name: string) => f.structured("context_notes", { action: "read", name });
     await f.run("context_notes", { action: "write", name: "nl", content: "line1" });
     await f.run("context_notes", { action: "append", name: "nl", content: "line2" });
+    expect(await read("nl")).toMatchObject({ content: "line1\nline2" });
+    await f.run("context_notes", { action: "append", name: "nl", content: "" });
     expect(await read("nl")).toMatchObject({ content: "line1\nline2" });
 
     await f.run("context_notes", { action: "write", name: "ended", content: "a\n" });
@@ -663,15 +665,15 @@ describe("structured results for codemode scripts", () => {
         content: "# Task\nBlue",
       }),
     ).toEqual({ action: "write", name: "task", saved: true });
-    await f.structured("context_notes", { action: "append", name: "task", content: " widget" });
+    await f.structured("context_notes", { action: "append", name: "task", content: "widget" });
     expect(await f.structured("context_notes", { action: "list" })).toMatchObject({
-      notes: [{ name: "task", characters: 19 }],
+      notes: [{ name: "task", characters: 18 }],
       total: 1,
       next_offset: null,
     });
     expect(
       await f.structured("context_notes", { action: "read", name: "task", offset: 7, limit: 4 }),
-    ).toMatchObject({ name: "task", content: "Blue", offset: 7, total_characters: 19 });
+    ).toMatchObject({ name: "task", content: "Blue", offset: 7, total_characters: 18 });
     expect(
       await f.structured("context_notes", { action: "search", query: "Blue", name: "task" }),
     ).toMatchObject({ matches: [{ name: "task", offset: 7 }], next_offset: null });
