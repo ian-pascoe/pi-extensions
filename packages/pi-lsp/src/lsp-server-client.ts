@@ -148,7 +148,8 @@ export type LspDocumentDiagnosticResult =
 /**
  * Workspace diagnostics grouped by URI, with cached push fallback only when pull is unsupported.
  * `unsupported` means the server publishes no workspace diagnostics: it answers only document
- * pulls and has pushed nothing, so an empty push cache would misreport "no diagnostics".
+ * pulls and its push cache covers no open document, so an empty push cache would misreport "no
+ * diagnostics".
  */
 export type LspWorkspaceDiagnosticResult =
   | {
