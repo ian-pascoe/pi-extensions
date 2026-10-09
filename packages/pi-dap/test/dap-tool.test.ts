@@ -475,6 +475,37 @@ describe("DAP tools", () => {
       expect(result.structuredContent).not.toHaveProperty("desired_breakpoints");
     });
 
+    test("a stop in a Child session names it in text and structuredContent", async () => {
+      const fixture = await createToolFixture();
+      fixture.session.result = {
+        snapshot: stoppedSnapshot,
+        output: "",
+        discardedOutputBytes: 0,
+        desiredBreakpoints: [],
+        stop: { childSession: "worker.js [42]" },
+      };
+
+      const result = await dapTool(() => fixture.runtime, "continue").execute(
+        "continue",
+        {},
+        undefined,
+        undefined,
+        fixture.context,
+      );
+
+      expect(result.content).toEqual([
+        {
+          type: "text",
+          text: "stopped (breakpoint) · thread 1\nchild session: worker.js [42]",
+        },
+      ]);
+      expectDapToolOutput("continue", result);
+      expect(result.structuredContent).toMatchObject({ child_session: "worker.js [42]" });
+      await expect(textOf("next", {}, { snapshot: stoppedSnapshot })).resolves.not.toContain(
+        "child session",
+      );
+    });
+
     test("a stop without a readable top frame still reports its reason", async () => {
       await expect(textOf("next", {}, { snapshot: stoppedSnapshot })).resolves.toBe(
         "stopped (breakpoint) · thread 1",
@@ -691,7 +722,7 @@ describe("DAP tools", () => {
         [
           "running (wait timed out)",
           `Warning: ${rejectedChildSessions[0]?.message}`,
-          "To debug that code, launch it directly as the program; for child processes, launch_arguments { autoAttachChildProcesses: false } stops the adapter attaching them. Test runners such as vitest run tests in children; debugging those is tracked in #421.",
+          "To debug that code, launch it directly as the program.",
         ].join("\n"),
       );
       await expect(textOf("status", {}, { ...running })).resolves.toBe("running");
@@ -738,7 +769,7 @@ describe("DAP tools", () => {
       const manyText = await textOf("status", {}, { ...running, rejectedChildSessions: many });
       expect(manyText).toContain("Warning: refused 4\n");
       expect(manyText).not.toContain("refused 5");
-      expect(manyText).toContain("Warning: 2 more child sessions refused");
+      expect(manyText).toContain("Warning: 2 more child sessions not debugged");
     });
 
     test("stack, variables, and evaluate are one line per row and never raw JSON", async () => {

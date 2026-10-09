@@ -199,7 +199,7 @@ operation's complete data (`breakpoints`, `stack_frames` and `total_frames`,
 `scopes` or `variables`, or `evaluation`). `dap_set_breakpoints`, `dap_launch`,
 and `dap_status` also carry `desired_breakpoints`; no other tool does. The
 execution tools, `dap_pause`, and `dap_status` carry `rejected_child_sessions`
-when child sessions were refused (see Child sessions). These
+when Pi DAP could not debug a child session (see Child sessions). These
 results are not truncated to the transcript limits; the one exception is that `dap_variables`
 with `frame_id` leaves expensive scopes unexpanded. A state failure resolves to the
 current state with an `error` field instead of rejecting.
@@ -225,7 +225,7 @@ that waits and ends still `running` says `(wait timed out)`.
 
 Stack Frames, variables, and evaluations are one line per row. Adapter strings
 are flattened onto one line with `\n` escapes. Drained Debuggee output follows
-under its own heading. `structuredContent` keeps its fields' strings verbatim, and adds `stop_description`, `hit_breakpoint_ids`, and `top_frame`.
+under its own heading. `structuredContent` keeps its fields' strings verbatim, and adds `stop_description`, `hit_breakpoint_ids`, `top_frame`, and, for a stop in a child session, `child_session`.
 `dap_variables` with `frame_id` lists scopes the adapter marks expensive, such
 as js-debug's Global, by name and `variables_reference` without expanding them;
 pass that reference to expand one. In `structuredContent` such a scope has no
@@ -274,40 +274,57 @@ tool result and Result Spill retain the original bytes.
 ## Child sessions
 
 When the Debuggee starts a worker thread or a child process (a test runner's
-forks, for example), `vscode-js-debug` asks Pi DAP for a child session with
-`startDebugging`. Pi DAP does not debug child sessions, so breakpoints in them
-never bind. It refuses the request, and the next `dap_launch`, `dap_continue`,
-`dap_next`, `dap_step_in`, `dap_step_out`, `dap_pause`, or `dap_status` result
-names it once, in text and in `rejected_child_sessions` (`type`, `name`,
-`target_id`, `message`):
+workers, for example), `vscode-js-debug` asks Pi DAP to debug it as a child
+session with `startDebugging`. Pi DAP opens a channel for the child against the
+same adapter process, applies Desired Breakpoints before the child runs, and
+starts it, so breakpoints in code a child runs bind like any other. Children of
+children are debugged the same way. Launching `vitest run` stops at a breakpoint
+in code a test imports, with either the `forks` or the `threads` pool.
 
-```text
-Warning: Pi DAP refused child session pwa-node "forks.js [1383853]" (target 563c…): child debugging is unsupported, so breakpoints in it will not bind. The child runs without a debugger.
-```
+Child sessions fold into the one Debug Session (ADR-0003):
 
-The adapter holds a new child paused until a session starts it, so Pi DAP
-attaches a release channel to the child with no breakpoints, which lets the
-child run, undebugged, instead of hanging until the execution timeout. The
-channel stays attached until the child terminates or the Debug Session ends, so
-a worker the child starts later is refused and released the same way; a `stopped`
-event on it (for example a `debugger;` statement) is continued at once. No
-events, output, state, or breakpoints from a release channel reach the model.
-To debug code that runs in a child, launch that file directly as the `program`.
-For child processes, `launch_arguments: { autoAttachChildProcesses: false }`
-stops the adapter attaching them at all; worker threads have no such switch.
-Test runners such as vitest run tests in children, so their test code cannot
-be debugged yet (#421). Paths inside `launch_arguments` are passed to the
-adapter as written; only the top-level `program` and `cwd` are resolved.
+- **One stop at a time.** A stop in a child session reads like any other, with
+  a `child session:` line (`child_session` in `structuredContent`) naming it:
+
+  ```text
+  stopped (breakpoint) at math.js:3:13 in add · thread 1
+  child session: forks.js [2992814]
+  ```
+
+  `dap_stack`, `dap_variables`, `dap_evaluate`, `dap_continue`, and the step
+  tools act on the target whose stop is reported. When several targets stop at
+  once (parallel test workers, say), the others wait: the next `dap_continue`
+  or step reports a waiting stop at once instead of running on.
+
+- **Thread ids.** Each target numbers its own threads, so with
+  `vscode-js-debug` Pi DAP reports its own thread ids, which never collide
+  across targets.
+- **Breakpoints.** `dap_set_breakpoints` updates every target. A Breakpoint is
+  reported verified when any target verified it, under the id the Debuggee's own
+  target gave it; `hit_breakpoint_ids` from a child uses those same ids.
+- **`dap_pause`** pauses every target and reports the first stop.
+- **`debugger;` statements and exceptions** in a child stop like those in the
+  Debuggee.
+- **Lifetime.** A child that ends closes only its own channel. The Debug
+  Session still ends with the Debuggee, and `dap_stop` closes every channel.
+
+A child session Pi DAP cannot debug is named once in the next `dap_launch`,
+`dap_continue`, `dap_next`, `dap_step_in`, `dap_step_out`, `dap_pause`, or
+`dap_status` result, in text and in `rejected_child_sessions` (`type`, `name`,
+`target_id`, `message`); breakpoints in it never bind. To skip debugging child
+processes, pass `launch_arguments: { autoAttachChildProcesses: false }`; they
+then run without a debugger. Worker threads have no such switch. Paths inside
+`launch_arguments` are passed to the adapter as written; only the top-level
+`program` and `cwd` are resolved.
 
 ## V1 boundary
 
 V1 supports configured stdio and TCP adapters on Linux, one active Debug
 Session, source breakpoints, core execution control, stack/variables/evaluation,
 and headless `runInTerminal`. The Supported `vscode-js-debug` workflow uses one
-adapter-owned primary target channel; it is not a second model-facing Debug
-Session. Unrelated, second, or nested `startDebugging` requests are refused with
-a failure reply; Pi DAP may open a non-model-facing release channel for each
-refused child session only to start it without breakpoints (see Child sessions).
+adapter-owned primary target channel and one channel per child session, all
+folded into the one model-facing Debug Session (see Child sessions).
+`startDebugging` requests from other adapters are refused with a failure reply.
 V1 excludes attach, restart, function/data/instruction breakpoints, hit counts,
 logpoints, memory, disassembly, modules, user-requested child Debug Sessions, raw
 DAP requests, `launch.json`, WebSocket, persistence, and a directly operated

@@ -438,8 +438,14 @@ const DapStopOutputFields = {
     }),
   ),
   top_frame: Type.Optional(DapStackFrameSchema),
+  child_session: Type.Optional(
+    Type.String({
+      description:
+        "The Child session (worker thread or child process) that stopped; absent for a stop in the Debuggee itself.",
+    }),
+  ),
 };
-/** Child sessions (worker threads, child processes) Pi DAP refused since the last result. */
+/** Child sessions (worker threads, child processes) Pi DAP could not debug since the last result. */
 const DapRejectedChildSessionOutputFields = {
   rejected_child_sessions: Type.Optional(
     Type.Array(
@@ -454,7 +460,7 @@ const DapRejectedChildSessionOutputFields = {
       ),
       {
         description:
-          "Child sessions the adapter asked Pi DAP to debug, which it refuses: breakpoints in them do not bind. They run without a debugger.",
+          "Child sessions the adapter asked Pi DAP to debug that it could not debug: breakpoints in them do not bind.",
       },
     ),
   ),

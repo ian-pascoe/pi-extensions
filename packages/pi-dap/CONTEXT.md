@@ -19,8 +19,16 @@ The temporary relationship among Pi, one debug adapter, and one debuggee. It is 
 _Avoid_: Connection, run
 
 **Child session**:
-A session a debug adapter asks Pi DAP to start for part of the debuggee, such as a worker thread or child process. Pi DAP refuses it and reports the refusal in the next tool result, so breakpoints in it never bind and it runs without a debugger.
+A session a debug adapter asks Pi DAP to start for part of the debuggee, such as a worker thread or child process. With vscode-js-debug, Pi DAP debugs it inside the one debug session (ADR-0003): breakpoints bind in it, and its stops are reported like the debuggee's, naming it. A child session Pi DAP cannot debug is reported in the next tool result.
 _Avoid_: Child target, child debug session
+
+**Debug target**:
+One part of the debuggee that Pi DAP debugs over its own debug adapter channel, and that stops and resumes on its own: the debuggee's main program (the primary target) or one child session.
+_Avoid_: Child target, thread
+
+**Stop focus**:
+The debug target whose stop is reported and which inspection and stepping act on. One stop is reported at a time; other debug targets' stops wait until the focus resumes.
+_Avoid_: Current target, selected thread
 
 **Observer UI**:
 Human-facing presentation of Debug Session activity in Pi. It does not change the tool result available to the agent or provide direct debugger controls.
