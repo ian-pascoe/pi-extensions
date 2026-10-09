@@ -195,9 +195,12 @@ describe("minimal subagents coordinator tools", () => {
 
     expect(result.structuredContent).toEqual(spawned);
     expect(Value.Check(CoordinatorToolOutputSchemas.subagent, result.structuredContent)).toBe(true);
-    expect(JSON.parse(result.content[0]?.type === "text" ? result.content[0].text : "")).toEqual(
-      spawned,
-    );
+    expect(result.content).toEqual([
+      {
+        type: "text",
+        text: "Spawned child (turn child:turn-1, running) · provider/model (medium) · tools: inherited, 1 tool · delegation none",
+      },
+    ]);
     expect(result.details).toEqual({ ...spawned, agent });
   });
 
@@ -258,7 +261,7 @@ describe("minimal subagents coordinator tools", () => {
       total: 0.014416,
     };
 
-    it("rounds cost in subagent_wait text and structuredContent but keeps exact details", async () => {
+    it("reports one rounded usage total in subagent_wait text and keeps exact details", async () => {
       const options = toolOptions("root", true);
       options.recordedWait.mockResolvedValue({
         event: "turn",
@@ -279,7 +282,7 @@ describe("minimal subagents coordinator tools", () => {
 
       const text = result.content.map((part) => (part.type === "text" ? part.text : "")).join("");
       expect(text).not.toMatch(/\d\.\d{7,}/);
-      expect(JSON.parse(text).usage.cost).toEqual(roundedCost);
+      expect(text).toBe("child turn child:1 completed\nusage: 22 tokens · $0.01\n\ndone");
       expect(result.structuredContent).toMatchObject({ usage: { cost: roundedCost } });
       expect(result.details).toMatchObject({ usage: { cost: noisyUsage.cost } });
     });
@@ -330,9 +333,28 @@ describe("minimal subagents coordinator tools", () => {
 
       const text = result.content.map((part) => (part.type === "text" ? part.text : "")).join("");
       expect(text).not.toMatch(/\d\.\d{7,}/);
-      expect(result.structuredContent).toMatchObject({
-        agent: { usage: { cost: roundedCost }, latest_result: { usage: { cost: roundedCost } } },
+      expect(text).toContain("Pass verbose: true");
+      // Scripts keep the complete record the text summarizes.
+      expect(result.structuredContent).toEqual({
+        agent: {
+          ...detail,
+          usage: { ...noisyUsage, cost: roundedCost },
+          latest_result: { ...detail.latest_result, usage: { ...noisyUsage, cost: roundedCost } },
+        },
       });
+
+      const verbose = await requireTool(options, "subagent_status").execute(
+        "status-call",
+        { agent_id: "child", verbose: true },
+        undefined,
+        undefined,
+        await createToolExecutionContext(),
+      );
+      const verboseText = verbose.content
+        .map((part) => (part.type === "text" ? part.text : ""))
+        .join("");
+      expect(verboseText).toContain("usage: input 10 · output 5");
+      expect(verboseText).not.toContain("Pass verbose: true");
     });
   });
 
@@ -521,6 +543,30 @@ describe("minimal subagents coordinator tools", () => {
     expect(text).toContain(TROUBLESHOOTING_HINT);
     expect(JSON.stringify(result.structuredContent)).not.toContain(TROUBLESHOOTING_HINT);
     expect(onAttention).toHaveBeenCalledWith("Deletion partially failed for child");
+  });
+
+  it("says when subagent_cancel found no active turn", async () => {
+    const options = toolOptions("root", true);
+    const cancellation = {
+      agent_id: "child",
+      recursive: false,
+      affected_agent_ids: [],
+      cancelled_turn_ids: [],
+    };
+    vi.mocked(options.coordinator.cancel).mockResolvedValue(cancellation);
+
+    const result = await requireTool(options, "subagent_cancel").execute(
+      "cancel-call",
+      { agent_id: "child", recursive: false },
+      undefined,
+      undefined,
+      await createToolExecutionContext(),
+    );
+
+    expect(result.content).toEqual([
+      { type: "text", text: "Nothing cancelled: child had no active turn." },
+    ]);
+    expect(result.structuredContent).toEqual(cancellation);
   });
 
   it("returns complete deletion as a successful result", async () => {

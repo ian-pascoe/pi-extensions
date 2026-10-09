@@ -290,10 +290,21 @@ assistant message but omits image data. Timeout Wait Events carry only a compact
 progress snapshot. Children target only direct children; the Root Agent
 may inspect any descendant. Model-facing status reports a `child_count` but no
 nested `children` summaries. Reported `usage` always includes `cacheWrite1h`
-and `reasoning`, as `0` when the provider reports none. Tool-result text and
-`structuredContent` round every `usage.cost` field to six decimal places of USD;
+and `reasoning`, as `0` when the provider reports none. `structuredContent`
+rounds every `usage.cost` field to six decimal places of USD;
 exact values stay in session data. `subagent_cancel`
 lists in `affected_agent_ids` only agents whose active turns it cancelled.
+
+Coordinator Tools give the model compact text, not JSON: a spawn is one line
+naming the tool preset and count rather than the tool list; a settled wait is
+status, elapsed time, one token and cost total, then the output; cancel and
+delete are one line each, and a cancel that found nothing running says so.
+Targeted `subagent_status` opens with a summary line, lists active tools once,
+describes the Launch Contract grant and capability ceiling relative to them,
+and previews the task, latest output, and last three Recent Activity items;
+`verbose: true` adds the full task, output, ceiling, usage breakdown, recent
+messages, and Recent Activity. Codemode scripts receive the complete record in
+`structuredContent`, and the transcript renderer reads `details`.
 
 `session_context` defaults to `omit`: the child starts with only its system
 prompt and task, so the task should be a self-contained brief covering the goal,

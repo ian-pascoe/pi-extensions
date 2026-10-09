@@ -87,6 +87,12 @@ export function createCoordinatorToolSchemas(modelIds: readonly string[]) {
       agent_id: Type.Optional(
         canonicalAgentIdSchema("Direct child canonical agent ID; the root may name any descendant"),
       ),
+      verbose: Type.Optional(
+        Type.Boolean({
+          description:
+            "With agent_id: include the full task, latest output, capability ceiling, usage breakdown, recent messages, and all recent activity",
+        }),
+      ),
     }),
     subagent_cancel: Type.Object({
       agent_id: canonicalAgentIdSchema("Direct child canonical agent ID"),

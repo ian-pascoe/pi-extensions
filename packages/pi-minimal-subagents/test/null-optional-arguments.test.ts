@@ -52,7 +52,7 @@ test.each([
     );
     expect(proven.get("agent_message")).toEqual(["agent_id"]);
     if (allowFanoutTools) {
-      expect(proven.get("subagent_status")).toEqual(["agent_id"]);
+      expect(proven.get("subagent_status")).toEqual(["agent_id", "verbose"]);
       expect(proven.get("subagent_wait")).toEqual(
         expect.arrayContaining(["turn_id", "timeout_ms"]),
       );
