@@ -70,6 +70,10 @@ class TermctrlTerminal implements TerminalHandle {
     );
     return {
       screen: capture.text,
+      cursor:
+        capture.frame.cursor === null
+          ? null
+          : { x: capture.frame.cursor.x, y: capture.frame.cursor.y },
       state: status.state,
       exit: status.exit === null ? null : { code: status.exit.code, signal: status.exit.signal },
       idleForMs: status.idleForMs,

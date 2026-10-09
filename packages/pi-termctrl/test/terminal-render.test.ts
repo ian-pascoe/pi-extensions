@@ -60,6 +60,7 @@ function terminalDetails(overrides: Partial<TerminalResult> = {}): TerminalResul
     state: "running",
     settle_reason: "quiet",
     changed: true,
+    cursor: { row: 2, column: 4 },
     screen: "one\ntwo",
     scrolled_off: "",
     ...overrides,

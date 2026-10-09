@@ -21,6 +21,10 @@ _Avoid_: Output limit, truncation
 The lines that left a Terminal's screen since the agent's previous result, reported with that result. A line the agent already saw on a screen is not reported again unless it changed. The `termctrl.scrollback` setting limits how many a result shows, keeping the first and last; termctrl's own scrollback, the limited log they are read from, is a different thing.
 _Avoid_: Output, history
 
+**Screen Delta**:
+The screen rows from the previous result's cursor row down, sent instead of the whole screen when the rows above are unchanged.
+_Avoid_: Diff, patch
+
 **Exit notification**:
 A message telling the agent that a Terminal or Background job ended, which it had not already seen through a tool call.
 _Avoid_: Completion event, callback

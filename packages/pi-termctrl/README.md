@@ -23,13 +23,13 @@ For a local checkout, run `pi -e ./packages/pi-termctrl/src/index.ts`.
 
 ## Terminal tools
 
-| Tool             | Parameters                                                |
-| ---------------- | --------------------------------------------------------- |
-| `terminal_start` | `command`, `cwd?`, `wait_ms?`, `notify?` (default `true`) |
-| `terminal_send`  | `id`, `text?`, `keys?`, `wait_for_text?`, `wait_ms?`      |
-| `terminal_stop`  | `id`: a Terminal id (`t1`) or Background job id (`b1`)    |
-| `terminal_list`  | none                                                      |
-| `terminal_wait`  | `ids?`, `wait_ms?` (default and maximum 300000)           |
+| Tool             | Parameters                                                           |
+| ---------------- | -------------------------------------------------------------------- |
+| `terminal_start` | `command`, `cwd?`, `wait_ms?`, `notify?` (default `true`)            |
+| `terminal_send`  | `id`, `text?`, `keys?`, `wait_for_text?`, `wait_ms?`, `full_screen?` |
+| `terminal_stop`  | `id`: a Terminal id (`t1`) or Background job id (`b1`)               |
+| `terminal_list`  | none                                                                 |
+| `terminal_wait`  | `ids?`, `wait_ms?` (default and maximum 300000)                      |
 
 `terminal_start` runs `command` through the shell Pi's `bash` uses (the
 `shellPath` setting, otherwise Pi's default bash), applies `shellCommandPrefix`,
@@ -62,9 +62,26 @@ their reason too.
 Sending `text` or `keys` to an exited Terminal is an error that names its exit
 code or signal; a poll (neither `text` nor `keys`) still returns its final screen.
 
-Results contain the visible screen, the log lines that scrolled off since the
-agent's previous result, `state`, `exit_code` or `signal` once exited, and
-`changed: false` when the screen matches the previous result. A line the agent
+Results contain the visible screen, the cursor, the log lines that scrolled off
+since the agent's previous result, `state`, `exit_code` or `signal` once exited,
+and `changed: false` when the screen matches the previous result. The first line
+reports the cursor one-based as row:column, such as
+`t1 running · settled: quiet · cursor 38:5`, or `cursor hidden`; `cursor` is
+`{ row, column }` or `null`. Rows count from the top of the screen, and the
+cursor row may be below the last row shown, because trailing blank rows are
+trimmed.
+
+The text sends a **Screen Delta** when it can: when every row above the
+previous result's cursor row that is still on the screen is unchanged, it shows
+only the rows from that row down, as when a REPL prints a command's output and
+a new prompt, or the agent types at the prompt. The marker names the rows, such
+as `--- screen (rows 36-40 of 40; rows above unchanged) ---`, and
+`screen_from_row` gives the first. A clear, a redraw, a hidden cursor, or a
+previous screen cut to fit shows the whole screen. A `terminal_send` whose
+screen is unchanged shows no rows: its first line says `screen unchanged` and
+still reports the cursor. `full_screen: true` shows the whole screen in that
+result; `terminal_start` always does. Only the text shrinks: `screen` is always
+the whole screen. A line the agent
 saw on an earlier screen is not repeated when it scrolls off unchanged; a line
 rewritten in place since, such as a progress line or a prompt the agent typed
 at, arrives again in its final form. Tools that declare structured output give
@@ -102,7 +119,8 @@ another fails and lists the caller's live entries.
 
 `terminal_stop` stops a running entry (termctrl stop, then `SIGKILL` of the
 Terminal's process group if it is still alive after 3 s) and forgets it. For a
-Terminal it returns the final screen and scrolled-off lines; for a Background
+Terminal it returns the final screen, as a Screen Delta when it can, with its
+cursor, and scrolled-off lines; for a Background
 job, its recent output. When a Terminal's screen is
 unchanged since the agent's last result, the result omits the screen and reports
 `changed: false` with `state` and `exit_code` or `signal`; `scrolled_off` still

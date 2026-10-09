@@ -1,6 +1,7 @@
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import type {
+  ScreenPosition,
   TerminalDriver,
   TerminalExit,
   TerminalHandle,
@@ -71,12 +72,19 @@ export interface TerminalEntry extends EntryBase {
   readonly cwd: string;
   /** The screen captured when the Terminal exited. */
   finalScreen: string | undefined;
+  /** The cursor on `finalScreen`; `null` when it was hidden or is unknown. */
+  finalCursor: ScreenPosition | null;
   /** Number of agent tool calls running or queued to drive this Terminal; the exit watcher skips them. */
   activeCalls: number;
   /** The agent's calls to this Terminal: one runs at a time and the rest wait in arrival order. */
   readonly callQueue: { running: boolean; readonly waiting: (() => void)[] };
   /** The screen the agent last received, for `changed: false`. */
   lastScreen: string | undefined;
+  /**
+   * The cursor on `lastScreen`: `null` when it was hidden, `undefined` before the first result.
+   * Its row bounds the rows the next result can skip as unchanged.
+   */
+  lastCursor: ScreenPosition | null | undefined;
   /** Count of log lines that scrolled off before the agent's last result. */
   logCursor: number;
   /**
@@ -463,9 +471,11 @@ export class TermctrlRegistry {
         handle,
         generation: slot.generation,
         finalScreen: undefined,
+        finalCursor: null,
         activeCalls: 0,
         callQueue: { running: false, waiting: [] },
         lastScreen: undefined,
+        lastCursor: undefined,
         logCursor: 0,
         logAnchor: [],
         seenRows: [],
@@ -511,19 +521,32 @@ export class TermctrlRegistry {
     if (this.state.driver?.generation === generation) this.state.driver = undefined;
     for (const entry of this.entries()) {
       if (entry.kind === "terminal" && entry.generation === generation) {
-        this.terminalExited(entry.id, DRIVER_EXITED, entry.lastScreen ?? "", false);
+        this.terminalExited(
+          entry.id,
+          DRIVER_EXITED,
+          entry.lastScreen ?? "",
+          false,
+          entry.lastCursor ?? null,
+        );
       }
     }
   }
 
   /** Record a Terminal's exit, as seen by a tool call (`seen`) or by the exit watcher. */
-  terminalExited(id: string, exit: TerminalExit, finalScreen: string, seen: boolean): void {
+  terminalExited(
+    id: string,
+    exit: TerminalExit,
+    finalScreen: string,
+    seen: boolean,
+    finalCursor: ScreenPosition | null = null,
+  ): void {
     const entry = this.state.entries.get(id);
     if (entry?.kind !== "terminal" || entry.state === "exited") return;
     entry.state = "exited";
     entry.exit = exit;
     entry.exitedAt = Date.now();
     entry.finalScreen = finalScreen;
+    entry.finalCursor = finalCursor;
     if (seen) entry.seen = true;
     this.queueNotice(entry);
     this.syncWatcher();
@@ -567,7 +590,13 @@ export class TermctrlRegistry {
           const snapshot = await entry.handle.snapshot();
           if (entry.activeCalls > 0 || entry.state !== "running") continue;
           if (snapshot.state === "exited") {
-            this.terminalExited(entry.id, snapshot.exit ?? DRIVER_EXITED, snapshot.screen, false);
+            this.terminalExited(
+              entry.id,
+              snapshot.exit ?? DRIVER_EXITED,
+              snapshot.screen,
+              false,
+              snapshot.cursor,
+            );
           }
         } catch (cause) {
           this.reportTerminalError(
@@ -740,10 +769,12 @@ export class TermctrlRegistry {
   private async stopTerminal(entry: TerminalEntry): Promise<void> {
     const seen = entry.stopRequested === "agent";
     let screen = entry.lastScreen ?? "";
+    let cursor = entry.lastCursor ?? null;
     let exit = KILLED_EXIT;
     try {
       const snapshot = await entry.handle.snapshot();
       screen = snapshot.screen;
+      cursor = snapshot.cursor;
       if (snapshot.state === "exited" && snapshot.exit !== null) exit = snapshot.exit;
     } catch {
       // The Terminal may already be gone; keep the last screen the agent saw.
@@ -767,7 +798,7 @@ export class TermctrlRegistry {
       remainingMs -= STOP_POLL_MS;
     }
     if (outcome !== "stopped" || entry.handle.isAlive()) entry.handle.kill();
-    this.terminalExited(entry.id, exit, screen, seen);
+    this.terminalExited(entry.id, exit, screen, seen, cursor);
   }
 
   private async removeEntry(entry: TermctrlEntry): Promise<void> {

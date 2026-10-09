@@ -147,10 +147,13 @@ describe("terminal_start", () => {
       state: "running",
       settle_reason: "quiet",
       changed: true,
+      cursor: null,
       screen: ">>> ",
       scrolled_off: "",
     });
-    expect(textOf(result)).toBe("t1 running · settled: quiet\n--- screen ---\n>>> ");
+    expect(textOf(result)).toBe(
+      "t1 running · settled: quiet · cursor hidden\n--- screen ---\n>>> ",
+    );
   });
 
   test("settles after 250 ms of quiet", async () => {
@@ -531,10 +534,11 @@ describe("terminal_send", () => {
       ...rows.slice(451),
     ]);
     expect(path).toMatch(/pi-termctrl\/\d+-t1-output-\d+\.log$/u);
+    // The unchanged screen is not shown, so the result and its full output are the lines alone.
     expect(textOf(value)).toMatch(
-      /--- screen ---\n>>> \n\n\[Showing the first 50 and last 49 of 500 scrolled-off lines \(16\.0KB or 100 line limit\)\. Full output: .+-t1-output-\d+\.log\]$/u,
+      /^t1 running · settled: quiet · screen unchanged · cursor hidden\n--- scrolled off ---\nrow 0\n[^]*\nrow 499\n\n\[Showing the first 50 and last 49 of 500 scrolled-off lines \(16\.0KB or 100 line limit\)\. Full output: .+-t1-output-\d+\.log\]$/u,
     );
-    expect(await readFile(path ?? "", "utf8")).toBe(`${rows.join("\n")}\n>>> `);
+    expect(await readFile(path ?? "", "utf8")).toBe(rows.join("\n"));
   });
 
   test("keeps scrolled-off lines within the scrollback byte limit", async () => {
@@ -556,9 +560,7 @@ describe("terminal_send", () => {
     expect(lines[0]).toBe(rows[0]);
     expect(lines.at(-1)).toBe(rows[19]);
     expect(lines).toContainEqual(expect.stringMatching(/^\[… \d+ lines omitted …\]$/u));
-    expect(await readFile(value.details.full_output_path ?? "", "utf8")).toBe(
-      `${rows.join("\n")}\n$ `,
-    );
+    expect(await readFile(value.details.full_output_path ?? "", "utf8")).toBe(rows.join("\n"));
   });
 
   test("names the scrollback limits when they leave no room for the omission marker", async () => {
@@ -647,7 +649,10 @@ describe("terminal_send", () => {
       self.screen = rows.join("\n");
     });
     expect(result.details.scrolled_off).toBe("");
-    expect(result.details.screen.split("\n")).toEqual(rows.slice(500));
+    // The structured result keeps the whole screen; the text keeps its bottom.
+    expect(result.details.screen).toBe(rows.join("\n"));
+    expect(textOf(result)).toContain("--- screen ---\nrow 500\n");
+    expect(textOf(result)).not.toContain("row 499\n");
     expect(textOf(result)).toContain("[Showing lines 502-2501 of 2501");
     expect(await readFile(result.details.full_output_path ?? "", "utf8")).toBe(
       ["earlier", ...rows].join("\n"),
@@ -811,6 +816,194 @@ describe("terminal_send", () => {
     await expect(
       harness.send.execute("call", { id: "b1", text: "x" }, undefined, undefined, root),
     ).rejects.toThrow("b1 is a Background job, which accepts no input");
+  });
+});
+
+describe("Screen Delta", () => {
+  /**
+   * Draw a screen like termctrl: `rows` are the screen's text, `scrolled` the log lines above it,
+   * and the cursor is one-based `[row, column]`, or `null` when hidden.
+   */
+  function draw(
+    terminal: FakeTerminal,
+    rows: readonly string[],
+    cursor: readonly [number, number] | null,
+    scrolled: readonly string[] = [],
+  ): void {
+    terminal.logLines = [...scrolled, ...rows];
+    terminal.screen = rows.join("\n");
+    terminal.cursor = cursor === null ? null : { x: cursor[1] - 1, y: cursor[0] - 1 };
+  }
+
+  async function send(params: { text?: string; full_screen?: boolean } = { text: "x" }) {
+    const { value } = await timed(
+      harness.send.execute("call", { id: "t1", ...params }, undefined, undefined, root),
+    );
+    return value;
+  }
+
+  test("a growing REPL shows only the rows from the previous prompt row down", async () => {
+    const { result, terminal } = await startTerminal((self) => {
+      draw(self, [">>> 1+1", "2", ">>> "], [3, 5]);
+    });
+    expect(textOf(result)).toBe(
+      "t1 running · settled: quiet · cursor 3:5\n--- screen ---\n>>> 1+1\n2\n>>> ",
+    );
+    expect(result.structuredContent).toMatchObject({ cursor: { row: 3, column: 5 } });
+    expect(result.structuredContent).not.toHaveProperty("screen_from_row");
+
+    terminal.onInput = (self) => draw(self, [">>> 1+1", "2", ">>> 2+2", "4", ">>> "], [5, 5]);
+    const value = await send({ text: "2+2\n" });
+    expect(textOf(value)).toBe(
+      "t1 running · settled: quiet · cursor 5:5\n--- screen (rows 3-5 of 5; rows above unchanged) ---\n>>> 2+2\n4\n>>> ",
+    );
+    expect(value.structuredContent).toMatchObject({
+      changed: true,
+      cursor: { row: 5, column: 5 },
+      screen: ">>> 1+1\n2\n>>> 2+2\n4\n>>> ",
+      screen_from_row: 3,
+    });
+  });
+
+  test("typing at the prompt without Enter shows only the prompt row", async () => {
+    const { terminal } = await startTerminal((self) => {
+      draw(self, [">>> 1+1", "2", ">>> "], [3, 5]);
+    });
+    terminal.onInput = (self) => draw(self, [">>> 1+1", "2", ">>> exi"], [3, 8]);
+    const value = await send({ text: "exi" });
+    expect(textOf(value)).toBe(
+      "t1 running · settled: quiet · cursor 3:8\n--- screen (rows 3-3 of 3; rows above unchanged) ---\n>>> exi",
+    );
+  });
+
+  test("a scrolling REPL shows only the rows from the previous prompt row down", async () => {
+    const { terminal } = await startTerminal((self) => {
+      draw(self, ["a", "b", "c", ">>> "], [4, 5]);
+    });
+    terminal.onInput = (self) => draw(self, ["c", ">>> x", "out", ">>> "], [4, 5], ["a", "b"]);
+    const scrolled = await send({ text: "x\n" });
+    expect(textOf(scrolled)).toBe(
+      "t1 running · settled: quiet · cursor 4:5\n--- screen (rows 2-4 of 4; rows above unchanged) ---\n>>> x\nout\n>>> ",
+    );
+    expect(scrolled.structuredContent).toMatchObject({ scrolled_off: "", screen_from_row: 2 });
+
+    // Rows the agent knows from the earlier screen or the Screen Delta are not reported again.
+    terminal.onInput = (self) =>
+      draw(self, ["out", ">>> y", "out", ">>> "], [4, 5], ["a", "b", "c", ">>> x"]);
+    const again = await send({ text: "y\n" });
+    expect(again.structuredContent).toMatchObject({ scrolled_off: "", screen_from_row: 2 });
+    expect(textOf(again)).toContain("--- screen (rows 2-4 of 4; rows above unchanged) ---\n>>> y");
+  });
+
+  test("shows the whole screen when a row above the previous cursor row changed", async () => {
+    const { terminal } = await startTerminal((self) => {
+      draw(self, ["top", "b", ">>> "], [3, 5]);
+    });
+    terminal.onInput = (self) => draw(self, ["TOP", "b", ">>> x"], [3, 6]);
+    const value = await send();
+    expect(textOf(value)).toContain("--- screen ---\nTOP\nb\n>>> x");
+    expect(value.structuredContent).not.toHaveProperty("screen_from_row");
+  });
+
+  test("shows the whole screen after a clear", async () => {
+    const { terminal } = await startTerminal((self) => {
+      draw(self, ["a", "b", "$ clear"], [3, 8]);
+    });
+    terminal.onInput = (self) => draw(self, ["$ "], [1, 3]);
+    const value = await send();
+    expect(textOf(value)).toContain("--- screen ---\n$ ");
+    expect(value.structuredContent).not.toHaveProperty("screen_from_row");
+  });
+
+  test("shows the whole screen when the previous cursor was hidden", async () => {
+    const { terminal } = await startTerminal((self) => {
+      draw(self, ["a", "b", ">>> "], null);
+    });
+    terminal.onInput = (self) => draw(self, ["a", "b", ">>> x"], [3, 6]);
+    const value = await send();
+    expect(textOf(value)).toBe(
+      "t1 running · settled: quiet · cursor 3:6\n--- screen ---\na\nb\n>>> x",
+    );
+  });
+
+  test("reports a hidden cursor", async () => {
+    const { result: started } = await startTerminal((self) => {
+      draw(self, ["menu"], null);
+    });
+    expect(textOf(started)).toBe(
+      "t1 running · settled: quiet · cursor hidden\n--- screen ---\nmenu",
+    );
+    expect(started.structuredContent).toMatchObject({ cursor: null });
+  });
+
+  test("shows the whole screen when the previous cursor row scrolled off", async () => {
+    const { terminal } = await startTerminal((self) => {
+      draw(self, ["a", "b", "c"], [2, 2]);
+    });
+    terminal.onInput = (self) => draw(self, ["d", "e", "f"], [3, 2], ["a", "b", "c"]);
+    const value = await send();
+    expect(textOf(value)).toContain("--- screen ---\nd\ne\nf");
+    expect(value.structuredContent).not.toHaveProperty("screen_from_row");
+  });
+
+  test("shows the whole screen after a result that cut the screen to fit", async () => {
+    const rows = Array.from({ length: 2_500 }, (_, index) => `row ${index}`);
+    const { terminal } = await startTerminal((self) => {
+      draw(self, rows, [2_500, 7]);
+    });
+    terminal.onInput = (self) => draw(self, [...rows.slice(0, -1), "row 2499 more"], [2_500, 14]);
+    const value = await send();
+    expect(value.structuredContent).not.toHaveProperty("screen_from_row");
+    expect(textOf(value)).toContain("--- screen ---\n");
+  });
+
+  test("an unchanged screen shows no rows but still shows the cursor", async () => {
+    const { terminal } = await startTerminal((self) => {
+      draw(self, [">>> 1+1", "2", ">>> "], [3, 5]);
+    });
+    terminal.onInput = undefined;
+    const value = await send();
+    expect(textOf(value)).toBe("t1 running · settled: quiet · screen unchanged · cursor 3:5");
+    expect(value.structuredContent).toMatchObject({
+      changed: false,
+      cursor: { row: 3, column: 5 },
+      screen: ">>> 1+1\n2\n>>> ",
+    });
+    expect(value.structuredContent).not.toHaveProperty("screen_from_row");
+    expect(terminal.typed).toEqual(["x"]);
+  });
+
+  test("full_screen shows the whole screen in place of a Screen Delta or an unchanged screen", async () => {
+    const { terminal } = await startTerminal((self) => {
+      draw(self, [">>> 1+1", "2", ">>> "], [3, 5]);
+    });
+    const unchanged = await send({ text: "x", full_screen: true });
+    expect(textOf(unchanged)).toBe(
+      "t1 running · settled: quiet · screen unchanged · cursor 3:5\n--- screen ---\n>>> 1+1\n2\n>>> ",
+    );
+    terminal.onInput = (self) => draw(self, [">>> 1+1", "2", ">>> 2+2", "4", ">>> "], [5, 5]);
+    const grown = await send({ text: "2+2\n", full_screen: true });
+    expect(textOf(grown)).toContain("--- screen ---\n>>> 1+1\n2\n>>> 2+2\n4\n>>> ");
+    expect(grown.structuredContent).not.toHaveProperty("screen_from_row");
+  });
+
+  test("terminal_stop shows a Screen Delta of the final screen with its cursor", async () => {
+    const { terminal } = await startTerminal((self) => {
+      draw(self, ["$ make", "ok", "$ "], [3, 3]);
+    });
+    draw(terminal, ["$ make", "ok", "$ exit", "logout"], [4, 7]);
+    const { value } = await timed(
+      harness.stop.execute("call", { id: "t1" }, undefined, undefined, root),
+    );
+    expect(textOf(value)).toBe(
+      "Terminal t1 stopped.\n--- final screen (rows 3-4 of 4; rows above unchanged) · cursor 4:7 ---\n$ exit\nlogout",
+    );
+    expect(value.structuredContent).toMatchObject({
+      changed: true,
+      cursor: { row: 4, column: 7 },
+      screen: "$ make\nok\n$ exit\nlogout",
+      screen_from_row: 3,
+    });
   });
 });
 
@@ -1235,11 +1428,12 @@ describe("terminal_stop and terminal_list", () => {
       state: "exited",
       signal: "SIGKILL",
       changed: true,
+      cursor: null,
       screen: ">>> exit()",
       scrolled_off: "older",
     });
     expect(textOf(value)).toBe(
-      "Terminal t1 stopped.\n--- scrolled off ---\nolder\n--- final screen ---\n>>> exit()",
+      "Terminal t1 stopped.\n--- scrolled off ---\nolder\n--- final screen · cursor hidden ---\n>>> exit()",
     );
     expect(harness.runtime.registry.entries()).toEqual([]);
   });
@@ -1334,7 +1528,7 @@ describe("terminal_stop and terminal_list", () => {
       changed: true,
       screen: "bye",
     });
-    expect(textOf(value)).toContain("--- final screen ---\nbye");
+    expect(textOf(value)).toContain("--- final screen · cursor hidden ---\nbye");
   });
 
   test("a stopped Terminal's full output file lasts until its session shuts down", async () => {
