@@ -7,7 +7,7 @@ disable-model-invocation: true
 
 # Pi Command Deck
 
-1. Read [`../../README.md`](../../README.md) and [`../../CONTEXT.md`](../../CONTEXT.md) for the expected behavior and vocabulary.
+1. Read [`../../README.md`](../../README.md) and [`../../GLOSSARY.md`](../../GLOSSARY.md) for the expected behavior and vocabulary.
 2. Confirm Pi runs in interactive TUI mode; the Command Deck installs nothing in print, JSON, or RPC modes.
 3. If the Mode Rail shows no Vim Mode and a notice reported a fallback, the installed Pi changed the private editor fields the adapter needs ([ADR-0001](../../docs/adr/0001-reach-editor-internals-through-one-adapter.md)). Compare `src/editor-adapter.ts` with the installed `@earendil-works/pi-tui` `Editor`.
 4. If another extension's editor replaces the Command Deck, check extension load order: the Command Deck installs at the start of `session_start`, and later extensions must wrap the existing editor factory.

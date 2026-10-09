@@ -12,7 +12,7 @@ Create `@ian-pascoe/pi-termctrl`, a minimal alternative to `pi-interactive-shell
 
 Authorities, consulted in this order:
 
-1. [`packages/pi-termctrl/CONTEXT.md`](../../packages/pi-termctrl/CONTEXT.md) for vocabulary: Terminal, Background job, Exit notification.
+1. [`packages/pi-termctrl/GLOSSARY.md`](../../packages/pi-termctrl/GLOSSARY.md) for vocabulary: Terminal, Background job, Exit notification.
 2. [Package ADR-0001](../../packages/pi-termctrl/docs/adr/0001-terminals-live-in-the-pi-process.md) for process memory, reload survival and session ownership.
 3. [Package ADR-0002](../../packages/pi-termctrl/docs/adr/0002-replace-bash-without-a-pty.md) for the pipe-based `bash` replacement.
 4. Repository ADR-0002 for source-TypeScript publishing.
@@ -245,7 +245,7 @@ Work test-first. Each step ends **green** on its own tests before the next step 
 - Copy the package layout from `packages/pi-dap`: `package.json`, `tsconfig.json`, `LICENSE`, `src/index.ts`, `test/`.
 - Add the dependency on `@kitlangton/terminal-control`, plus only the Pi peers actually imported.
 - Add `skills/pi-termctrl/SKILL.md`. It is a short **configuration and diagnosis** skill in the pi-dap style, which `scripts/check-package-packs.mjs` requires of every extension. It doesn't teach the model how to use the tools.
-- Register the package in the root `package.json` `pi.extensions` and `pi.skills`, the root README tables, and `CONTEXT-MAP.md` (already added).
+- Register the package in the root `package.json` `pi.extensions` and `pi.skills`, the root README tables, and `GLOSSARY-MAP.md` (already added).
 - Update the fixed counts in `scripts/check-package-packs.mjs` and `scripts/check-git-install.mjs`, currently 14 manifests, and reconcile them against the checkout.
 - Run `pnpm install` to refresh the lockfile.
 
