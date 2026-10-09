@@ -379,7 +379,7 @@ function latestProgressActivity(activity: readonly RenderRecentActivity[]): Rend
 }
 
 /** Format a turn's cost for summary rows; sub-cent costs keep enough precision to be non-zero. */
-function formatSubagentCost(usage: Usage | undefined): string | undefined {
+export function formatSubagentCost(usage: Usage | undefined): string | undefined {
   const total = usage?.cost.total;
   if (total === undefined || !(total > 0)) return undefined;
   return `$${total.toFixed(total < 0.01 ? 4 : 2)}`;

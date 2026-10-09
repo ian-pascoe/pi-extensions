@@ -17,6 +17,14 @@ import { withTroubleshootingHint } from "./troubleshooting-skill.js";
 import type { MinimalSubagentsModelRole } from "./minimal-subagents-config.js";
 import { roundMinimalSubagentsUsageCosts } from "./minimal-subagents-usage.js";
 import {
+  formatAgentMessageResultText,
+  formatCancelResultText,
+  formatDeleteResultText,
+  formatSpawnResultText,
+  formatStatusResultText,
+  formatWaitResultText,
+} from "./minimal-subagents-result-text.js";
+import {
   renderCoordinatorToolCall,
   renderCoordinatorToolResult,
   type CoordinatorToolName,
@@ -41,7 +49,6 @@ import type {
   DeleteResult,
   SpawnResult,
   StatusResult,
-  WaitDeliveredTurnResult,
   WaitResult,
 } from "./minimal-subagents-types.js";
 
@@ -203,53 +210,40 @@ function createCoordinatorToolRendering(
  * Serialize a tool result with every nested `usage` cost rounded for presentation. Exact values
  * stay in `details`, the Registry, and session data, which never pass through here.
  */
-function stringifyWithRoundedUsageCosts(
-  result: CoordinatorToolResultDetails,
-  space?: number,
-): string {
+function stringifyWithRoundedUsageCosts(result: CoordinatorToolResultDetails): string {
   // `JSON.stringify` types replacer values as `any`; a usage is recognized by key and `cost` object.
-  return JSON.stringify(
-    result,
-    (key, value) =>
-      key === "usage" && value?.cost ? roundMinimalSubagentsUsageCosts(value) : value,
-    space,
+  return JSON.stringify(result, (key, value) =>
+    key === "usage" && value?.cost ? roundMinimalSubagentsUsageCosts(value) : value,
   );
 }
 
-function structuredToolResult<TDetails extends CoordinatorToolResultDetails>(
-  result: TDetails,
-): AgentToolResult<TDetails> {
-  // Presentation only: `details` keeps the exact values the session persists.
-  const json = stringifyWithRoundedUsageCosts(result, 2);
-  const truncated = truncateHead(json, {
+/** Model-facing text, truncated like Pi's built-in tool output. */
+function textContent(text: string): AgentToolResult<unknown>["content"] {
+  const truncated = truncateHead(text, {
     maxBytes: DEFAULT_MAX_BYTES,
     maxLines: DEFAULT_MAX_LINES,
   });
-  return {
-    content: [{ type: "text" as const, text: truncated.content }],
-    details: result,
-    structuredContent: JSON.parse(json),
-  };
+  return [{ type: "text" as const, text: truncated.content }];
 }
 
 /**
- * One line saying an already-delivered result is not repeated and how to reread it, or that a
- * handed result is still to arrive as a separate message, followed by
- * any Coordination Messages the wait drained, which the parent has not seen yet.
+ * The model reads compact `text`; codemode scripts and the transcript renderer keep the complete
+ * record in `structuredContent` (costs rounded) and `details` (exact).
  */
-function alreadyDeliveredContent(
-  result: WaitDeliveredTurnResult,
-): AgentToolResult<WaitResult>["content"] {
-  const subject = `Result of ${result.agent_id} turn ${result.turn_id} (${result.status})`;
-  const notice = result.delivery_pending
-    ? `${subject} was handed to you automatically and arrives as a separate message; no reread is needed.`
-    : `${subject} was already delivered automatically; call subagent_wait with turn_id "${result.turn_id}" to reread it.`;
-  if (!result.messages) return [{ type: "text", text: notice }];
-  const messages = truncateHead(JSON.stringify({ messages: result.messages }, null, 2), {
-    maxBytes: DEFAULT_MAX_BYTES,
-    maxLines: DEFAULT_MAX_LINES,
-  });
-  return [{ type: "text", text: `${notice}\n${messages.content}` }];
+function structuredToolResult<TDetails extends CoordinatorToolResultDetails>(
+  result: TDetails,
+  text: string,
+): AgentToolResult<TDetails> {
+  return {
+    content: textContent(text),
+    details: result,
+    structuredContent: JSON.parse(stringifyWithRoundedUsageCosts(result)),
+  };
+}
+
+/** One wait result as model-facing text. */
+function waitResultText(result: WaitResult): AgentToolResult<WaitResult>["content"] {
+  return textContent(formatWaitResultText(result));
 }
 
 /**
@@ -259,24 +253,17 @@ function alreadyDeliveredContent(
 function failedStructuredToolResult<TDetails extends CoordinatorToolResultDetails>(
   prefix: string,
   result: TDetails,
+  resultText: string,
   options: { troubleshootingHint: boolean },
 ): AgentToolResult<TDetails> & { isError: true } {
-  const success = structuredToolResult(result);
-  const text = `${prefix}:\n${textOf(success)}`;
+  const text = `${prefix}:\n${resultText}`;
   return {
-    ...success,
-    content: [
-      {
-        type: "text" as const,
-        text: options.troubleshootingHint ? withTroubleshootingHint(text) : text,
-      },
-    ],
+    ...structuredToolResult(
+      result,
+      options.troubleshootingHint ? withTroubleshootingHint(text) : text,
+    ),
     isError: true,
   };
-}
-
-function textOf(result: AgentToolResult<unknown>): string {
-  return result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
 }
 
 function callerSourceTurnId(
@@ -324,7 +311,10 @@ export function createCoordinatorToolDefinitions(
         const status = options.coordinator.inspectStatus(result.agent_id);
         const details: SpawnResultDetails = { ...result };
         if ("agent" in status) details.agent = status.agent;
-        return { ...structuredToolResult(result), details };
+        return {
+          ...structuredToolResult(result, formatSpawnResultText(result, parameters.tools)),
+          details,
+        };
       });
     },
     ...createCoordinatorToolRendering(options, "subagent"),
@@ -353,12 +343,13 @@ export function createCoordinatorToolDefinitions(
           },
           callerSourceTurnId(options.coordinator, options.callerId, toolCallId),
         );
+        const text = formatAgentMessageResultText(result);
         return result.disposition === "failed"
-          ? failedStructuredToolResult("Minimal subagents message delivery failed", result, {
+          ? failedStructuredToolResult("Minimal subagents message delivery failed", result, text, {
               // The coordinator already appends the hint to `error`.
               troubleshootingHint: false,
             })
-          : structuredToolResult(result);
+          : structuredToolResult(result, text);
       });
     },
     ...createCoordinatorToolRendering(options, "agent_message"),
@@ -413,10 +404,7 @@ export function createCoordinatorToolDefinitions(
             source_turn_id: result.turn_id,
           };
           return {
-            content:
-              "already_delivered" in result
-                ? alreadyDeliveredContent(result)
-                : structuredToolResult(result).content,
+            content: waitResultText(result),
             details,
             structuredContent: JSON.parse(stringifyWithRoundedUsageCosts(details)),
           };
@@ -432,7 +420,7 @@ export function createCoordinatorToolDefinitions(
     name: "subagent_status",
     label: "Subagent Status",
     description:
-      "List direct children when agent_id is omitted, or inspect one direct child's launch contract, result, usage, dependencies, and bounded recent activity including message text and reasoning. The root may inspect any descendant.",
+      "List direct children when agent_id is omitted, or inspect one direct child's launch contract, result, usage, dependencies, and bounded recent activity including message text and reasoning. Without verbose, the task, latest output, and recent activity are short previews. The root may inspect any descendant.",
     promptSnippet: "Inspect direct child state",
     parameters: options.schemas.subagent_status,
     annotations: {
@@ -442,9 +430,13 @@ export function createCoordinatorToolDefinitions(
       openWorldHint: false,
     },
     async execute(_toolCallId, parameters) {
-      return runCoordinatorToolActivity(options, () =>
-        structuredToolResult(options.coordinator.status(options.callerId, parameters.agent_id)),
-      );
+      return runCoordinatorToolActivity(options, () => {
+        const result = options.coordinator.status(options.callerId, parameters.agent_id);
+        return structuredToolResult(
+          result,
+          formatStatusResultText(result, parameters.verbose ?? false),
+        );
+      });
     },
     ...createCoordinatorToolRendering(options, "subagent_status"),
   });
@@ -463,15 +455,14 @@ export function createCoordinatorToolDefinitions(
       openWorldHint: false,
     },
     async execute(_toolCallId, parameters) {
-      return runCoordinatorToolActivity(options, async () =>
-        structuredToolResult(
-          await options.coordinator.cancel(
-            options.callerId,
-            parameters.agent_id,
-            parameters.recursive ?? true,
-          ),
-        ),
-      );
+      return runCoordinatorToolActivity(options, async () => {
+        const result = await options.coordinator.cancel(
+          options.callerId,
+          parameters.agent_id,
+          parameters.recursive ?? true,
+        );
+        return structuredToolResult(result, formatCancelResultText(result));
+      });
     },
     ...createCoordinatorToolRendering(options, "subagent_cancel"),
   });
@@ -496,13 +487,17 @@ export function createCoordinatorToolDefinitions(
           parameters.agent_id,
           parameters.recursive ?? true,
         );
+        const text = formatDeleteResultText(result);
         if (result.failures.length > 0) {
           options.onAttention?.(`Deletion partially failed for ${parameters.agent_id}`);
-          return failedStructuredToolResult("Minimal subagents deletion partially failed", result, {
-            troubleshootingHint: true,
-          });
+          return failedStructuredToolResult(
+            "Minimal subagents deletion partially failed",
+            result,
+            text,
+            { troubleshootingHint: true },
+          );
         }
-        return structuredToolResult(result);
+        return structuredToolResult(result, text);
       });
     },
     ...createCoordinatorToolRendering(options, "subagent_delete"),
