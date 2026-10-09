@@ -1197,6 +1197,37 @@ describe("Web Search", () => {
         expect(Array.from(text).length - Array.from(marker).length).toBeLessThanOrEqual(260);
       });
 
+      test("drops a body whose share is too small to read rather than leaving a stub", async () => {
+        const complete = [1, 2, 3, 4, 5].map((index) => exaBlock(index, 5_000)).join("\n\n");
+        const { text } = await search("exa", complete, { query: "q", contextMaxCharacters: 600 });
+        const marker = text.slice(text.lastIndexOf("\n\n["));
+        expect(text.slice(0, -marker.length)).toBe([1, 2, 3, 4, 5].map(headers).join("\n\n"));
+        expect(marker).toContain("results 1, 2, 3, 4, 5 shortened");
+      });
+
+      test("omits metadata lines whose value is N/A", async () => {
+        const block = (index: number) =>
+          [
+            `Title: Result ${index}`,
+            `URL: https://example.com/${index}`,
+            "Published: N/A",
+            "Author: N/A",
+            "Published Date: 2025-01-01",
+            "Highlights:",
+            "Author: N/A is body text here",
+          ].join("\n");
+        const { text } = await search("exa", [block(1), block(2)].join("\n\n"), { query: "q" });
+        const expected = (index: number) =>
+          [
+            `Title: Result ${index}`,
+            `URL: https://example.com/${index}`,
+            "Published Date: 2025-01-01",
+            "Highlights:",
+            "Author: N/A is body text here",
+          ].join("\n");
+        expect(text).toBe([expected(1), expected(2)].join("\n\n"));
+      });
+
       test("cuts body lines that merely look like metadata", async () => {
         const body = `Summary text: ${"s".repeat(8_000)}`;
         const complete = [exaBlock(1, 10).replace(/Highlights:\n.*$/, body), exaBlock(2, 10)].join(

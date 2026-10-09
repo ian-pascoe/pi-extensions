@@ -534,6 +534,13 @@ const EXA_RESULT_SEPARATOR = "\n\n";
 const EXA_HEADER_LINE = /^(?:Title|URL|Published Date|Published|Author|Image|Favicon|ID|Score): /;
 /** The lines a model needs to choose a URL for `web_fetch`. */
 const EXA_ESSENTIAL_LINE = /^(?:Title|URL): /;
+/** A metadata line Exa fills with `N/A`; it tells the model nothing and only spends budget. */
+const EXA_EMPTY_HEADER_LINE = /^[^:]+: N\/A$/;
+/**
+ * Below this many code points a body share shows only a stub such as `Hi` (from `Highlights:`), so
+ * the body is dropped and the result keeps just its header.
+ */
+const MIN_USEFUL_BODY_CHARACTERS = 80;
 
 /** One Exa result: all metadata lines, just Title and URL, and the body that follows the metadata. */
 type ExaResult = {
@@ -551,13 +558,18 @@ function splitExaResults(text: string): ExaResult[] | undefined {
     let count = 0;
     while (count < lines.length && EXA_HEADER_LINE.test(lines[count] ?? "")) count++;
     const headerLines = lines.slice(0, count);
-    const header = headerLines.join("\n");
     return {
-      header,
+      header: headerLines
+        .filter((line) => EXA_ESSENTIAL_LINE.test(line) || !EXA_EMPTY_HEADER_LINE.test(line))
+        .join("\n"),
       essentialHeader: headerLines.filter((line) => EXA_ESSENTIAL_LINE.test(line)).join("\n"),
-      body: block.slice(header.length),
+      body: block.slice(headerLines.join("\n").length),
     };
   });
+}
+
+function joinExaResults(results: readonly ExaResult[]): string {
+  return results.map(({ header, body }) => header + body).join(EXA_RESULT_SEPARATOR);
 }
 
 /**
@@ -596,16 +608,14 @@ function shareBodyBudget(lengths: readonly number[], budget: number): number[] {
 /**
  * Split `limit` code points across an Exa result list so every result keeps its header lines and a
  * fair share of its body. When the full headers do not fit, only each Title and URL line is kept.
- * Returns undefined when the text is not such a list or even those lines do not fit, so the caller
- * falls back to one plain cut.
+ * A body whose share is too small to read is dropped. Returns undefined when even the Title and URL
+ * lines do not fit, so the caller falls back to one plain cut.
  */
 function shareSearchBudget(
-  text: string,
+  results: readonly ExaResult[],
   limit: number,
   explicit: number | undefined,
 ): string | undefined {
-  const results = splitExaResults(text);
-  if (results === undefined) return undefined;
   const separators = EXA_RESULT_SEPARATOR.length * (results.length - 1);
   const fixedLength = (headers: readonly string[]) =>
     headers.reduce((sum, header) => sum + Array.from(header).length, separators);
@@ -624,8 +634,10 @@ function shareSearchBudget(
   const cut: number[] = [];
   const kept = headers.map((header, index) => {
     const body = bodies[index] ?? [];
-    const share = shares[index] ?? 0;
-    if (body.length > share) cut.push(index + 1);
+    const fullShare = shares[index] ?? 0;
+    if (body.length <= fullShare) return header + body.join("");
+    cut.push(index + 1);
+    const share = fullShare < MIN_USEFUL_BODY_CHARACTERS ? 0 : fullShare;
     return header + body.slice(0, share).join("");
   });
   const label = cut.length === 1 ? "result" : "results";
@@ -638,12 +650,14 @@ function shareSearchBudget(
  * Cut provider text at `contextMaxCharacters` code points (default 6,000), then mark the cut. An
  * Exa result list shares that budget so each result keeps its Title and URL; other text is cut once.
  */
-function limitSearchText(text: string, parameters: WebSearchParameters): string {
+function limitSearchText(providerText: string, parameters: WebSearchParameters): string {
   const explicit = parameters.contextMaxCharacters;
   const limit = explicit ?? WEB_SEARCH_DEFAULT_CONTEXT_MAX_CHARACTERS;
+  const results = splitExaResults(providerText);
+  const text = results === undefined ? providerText : joinExaResults(results);
   const kept = truncateCodePoints(text, limit);
   if (kept === text) return text;
-  const shared = shareSearchBudget(text, limit, explicit);
+  const shared = results === undefined ? undefined : shareSearchBudget(results, limit, explicit);
   if (shared !== undefined) return shared;
   return `${kept}\n\n[Search results cut at ${limit} characters${moreHint(explicit)}]`;
 }
