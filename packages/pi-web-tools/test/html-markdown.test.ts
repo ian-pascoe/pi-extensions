@@ -156,5 +156,8 @@ describe("convertHtmlInChunks", () => {
     expect(convertHtmlInChunks("<p>kept</p><script>never closed", turndown, NO_TEXT, SMALL)).toBe(
       turndown("<p>kept</p><script>never closed"),
     );
+    // A browser ends this script at the second `</script>`; htmlparser2 ends it at the first.
+    const escaped = `<p>kept</p><script>var s = "<!--<script>"; </script> leaked </script><p>after</p>`;
+    expect(convertHtmlInChunks(escaped, turndown, NO_TEXT, SMALL)).toBe(turndown(escaped));
   });
 });

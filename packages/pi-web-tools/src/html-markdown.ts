@@ -18,7 +18,7 @@ import { Parser } from "htmlparser2";
  * split safely, so past `atomicBytes` it becomes the linear plain-text extraction of that piece
  * instead of Markdown. That backstop bounds the worst case; ordinary pages never reach it.
  *
- * Elements whose content never reaches the Markdown (see `OMITTED_ELEMENTS`) are cut before any of
+ * Elements whose content never reaches the Markdown (see `UNRENDERED_ELEMENTS`) are cut before any of
  * this, so a large inline script, such as a hydration payload, can neither push a piece past
  * `atomicBytes` nor cost the links around it.
  */
@@ -47,12 +47,12 @@ const DEFAULT_LIMITS: HtmlChunkLimits = {
  * content is not part of the document. `<noscript>` is not one of them; Turndown keeps its content,
  * such as the fallback `<img>` of a lazy-loaded image.
  */
-export const OMITTED_ELEMENTS = ["script", "style", "template"] as const;
+export const UNRENDERED_ELEMENTS = ["script", "style", "template"] as const;
 
-const OMITTED_ELEMENT_NAMES: ReadonlySet<string> = new Set(OMITTED_ELEMENTS);
+const UNRENDERED_ELEMENT_NAMES: ReadonlySet<string> = new Set(UNRENDERED_ELEMENTS);
 
-/** Whether `html` may hold an omitted element, so pages without one skip the extra parse. */
-const OMITTED_ELEMENT_TAG = /<(?:script|style|template)/i;
+/** Whether `html` may hold an unrendered element, so pages without one skip the extra parse. */
+const UNRENDERED_ELEMENT_TAG = new RegExp(`<(?:${UNRENDERED_ELEMENTS.join("|")})`, "i");
 
 /** Deepest container nesting that is unwrapped before the rest converts as one piece. */
 const MAX_UNWRAP_DEPTH = 32;
@@ -160,23 +160,27 @@ function topLevelNodes(html: string): TopLevelNode[] {
 }
 
 /**
- * `html` without its outermost omitted elements. Only an element closed by its own end tag is cut;
+ * `html` without its outermost unrendered elements. Only an element closed by its own end tag is cut;
  * one closed implicitly, such as a `<script>` that runs to the end of the page, is left in place.
  */
-function withoutOmittedElements(html: string): string {
-  if (!OMITTED_ELEMENT_TAG.test(html)) return html;
+function withoutUnrenderedElements(html: string): string {
+  if (!UNRENDERED_ELEMENT_TAG.test(html)) return html;
   const cuts: { start: number; end: number }[] = [];
-  // The omitted element being skipped and how many elements are open inside it, itself included.
-  let omitted: { start: number; depth: number } | undefined;
+  // The unrendered element being skipped and how many elements are open inside it, itself included.
+  let unrendered: { start: number; depth: number } | undefined;
   const parser = new Parser({
     onopentag(name) {
-      if (omitted !== undefined) omitted.depth++;
-      else if (OMITTED_ELEMENT_NAMES.has(name)) omitted = { start: parser.startIndex, depth: 1 };
+      if (unrendered !== undefined) unrendered.depth++;
+      else if (UNRENDERED_ELEMENT_NAMES.has(name))
+        unrendered = { start: parser.startIndex, depth: 1 };
     },
-    onclosetag(_name, isImplied) {
-      if (omitted === undefined || --omitted.depth > 0) return;
-      if (!isImplied) cuts.push({ start: omitted.start, end: parser.endIndex + 1 });
-      omitted = undefined;
+    onclosetag(name, isImplied) {
+      if (unrendered === undefined || --unrendered.depth > 0) return;
+      const end = parser.endIndex + 1;
+      // A browser ends a script holding `<!--<script` at a later `</script>` than htmlparser2 does.
+      const escaped = name === "script" && html.slice(unrendered.start, end).includes("<!--");
+      if (!isImplied && !escaped) cuts.push({ start: unrendered.start, end });
+      unrendered = undefined;
     },
   });
   parser.write(html);
@@ -310,7 +314,7 @@ function convertLevel(html: string, converters: Converters, depth: number): stri
 /**
  * Convert HTML to Markdown with `convert` (Turndown), splitting large input so conversion time stays
  * linear in the page size. `plainText` converts a piece that is too large to split, as described in
- * this module's header. `convert` must drop `OMITTED_ELEMENTS`, which are cut from the input first.
+ * this module's header. `convert` must drop `UNRENDERED_ELEMENTS`, which are cut from the input first.
  */
 export function convertHtmlInChunks(
   html: string,
@@ -318,5 +322,5 @@ export function convertHtmlInChunks(
   plainText: (html: string) => string,
   limits: HtmlChunkLimits = DEFAULT_LIMITS,
 ): string {
-  return convertLevel(withoutOmittedElements(html), { convert, plainText, limits }, 0);
+  return convertLevel(withoutUnrenderedElements(html), { convert, plainText, limits }, 0);
 }
