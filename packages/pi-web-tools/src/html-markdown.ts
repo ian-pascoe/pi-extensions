@@ -17,6 +17,10 @@ import { Parser } from "htmlparser2";
  * A single piece that is still huge (a giant `table`, `blockquote`, or one enormous `li`) cannot be
  * split safely, so past `atomicBytes` it becomes the linear plain-text extraction of that piece
  * instead of Markdown. That backstop bounds the worst case; ordinary pages never reach it.
+ *
+ * Elements whose content never reaches the Markdown (see `OMITTED_ELEMENTS`) are cut before any of
+ * this, so a large inline script, such as a hydration payload, can neither push a piece past
+ * `atomicBytes` nor cost the links around it.
  */
 
 /** Size and grouping thresholds; tests lower them to exercise every path with small input. */
@@ -37,6 +41,18 @@ const DEFAULT_LIMITS: HtmlChunkLimits = {
   groupBytes: 64 * 1024,
   atomicBytes: 256 * 1024,
 };
+
+/**
+ * Elements Turndown converts to nothing: Web Fetch's Turndown removes them, and a `<template>`'s
+ * content is not part of the document. `<noscript>` is not one of them; Turndown keeps its content,
+ * such as the fallback `<img>` of a lazy-loaded image.
+ */
+export const OMITTED_ELEMENTS = ["script", "style", "template"] as const;
+
+const OMITTED_ELEMENT_NAMES: ReadonlySet<string> = new Set(OMITTED_ELEMENTS);
+
+/** Whether `html` may hold an omitted element, so pages without one skip the extra parse. */
+const OMITTED_ELEMENT_TAG = /<(?:script|style|template)/i;
 
 /** Deepest container nesting that is unwrapped before the rest converts as one piece. */
 const MAX_UNWRAP_DEPTH = 32;
@@ -141,6 +157,38 @@ function topLevelNodes(html: string): TopLevelNode[] {
   parser.write(html);
   parser.end();
   return nodes;
+}
+
+/**
+ * `html` without its outermost omitted elements. Only an element closed by its own end tag is cut;
+ * one closed implicitly, such as a `<script>` that runs to the end of the page, is left in place.
+ */
+function withoutOmittedElements(html: string): string {
+  if (!OMITTED_ELEMENT_TAG.test(html)) return html;
+  const cuts: { start: number; end: number }[] = [];
+  // The omitted element being skipped and how many elements are open inside it, itself included.
+  let omitted: { start: number; depth: number } | undefined;
+  const parser = new Parser({
+    onopentag(name) {
+      if (omitted !== undefined) omitted.depth++;
+      else if (OMITTED_ELEMENT_NAMES.has(name)) omitted = { start: parser.startIndex, depth: 1 };
+    },
+    onclosetag(_name, isImplied) {
+      if (omitted === undefined || --omitted.depth > 0) return;
+      if (!isImplied) cuts.push({ start: omitted.start, end: parser.endIndex + 1 });
+      omitted = undefined;
+    },
+  });
+  parser.write(html);
+  parser.end();
+  if (cuts.length === 0) return html;
+  let result = "";
+  let position = 0;
+  for (const cut of cuts) {
+    result += html.slice(position, cut.start);
+    position = cut.end;
+  }
+  return result + html.slice(position);
 }
 
 type Converters = {
@@ -262,7 +310,7 @@ function convertLevel(html: string, converters: Converters, depth: number): stri
 /**
  * Convert HTML to Markdown with `convert` (Turndown), splitting large input so conversion time stays
  * linear in the page size. `plainText` converts a piece that is too large to split, as described in
- * this module's header.
+ * this module's header. `convert` must drop `OMITTED_ELEMENTS`, which are cut from the input first.
  */
 export function convertHtmlInChunks(
   html: string,
@@ -270,5 +318,5 @@ export function convertHtmlInChunks(
   plainText: (html: string) => string,
   limits: HtmlChunkLimits = DEFAULT_LIMITS,
 ): string {
-  return convertLevel(html, { convert, plainText, limits }, 0);
+  return convertLevel(withoutOmittedElements(html), { convert, plainText, limits }, 0);
 }

@@ -118,4 +118,43 @@ describe("convertHtmlInChunks", () => {
     );
     expect(output).toMatch(/^before\n\nPLAIN\(\d+\)\n\nafter$/);
   });
+
+  test("drops scripts, styles, and templates before splitting, so their bytes never force plain text", () => {
+    // A custom element is not a container, so its contents form one piece, as in a hydrated app.
+    const visible = [
+      `<p>See <a href="/raw">Raw</a>.</p>`,
+      blocks(8),
+      `<p>Then <a href="/next">Next</a>.</p>`,
+    ];
+    const hidden = [
+      `<script type="application/json">${"x".repeat(5000)}</script>`,
+      `<style>${".y{}".repeat(1000)}</style><template>${"<b>t</b>".repeat(500)}</template>`,
+    ];
+    const html = `<main><react-app>${visible[0]}${hidden[0]}${visible[1]}${hidden[1]}${visible[2]}</react-app></main>`;
+    const output = convertHtmlInChunks(html, turndown, NO_TEXT, { ...SMALL, atomicBytes: 1000 });
+    expect(output).toBe(turndown(visible.join("")));
+    expect(output).toContain("[Raw](/raw)");
+  });
+
+  test("still falls back to plain text when the visible content alone is too large", () => {
+    const paragraphs = Array.from({ length: 100 }, (_, index) => `<p>visible ${index}</p>`).join(
+      "",
+    );
+    const output = convertHtmlInChunks(
+      `<react-app>${paragraphs}<script>${"x".repeat(5000)}</script></react-app>`,
+      turndown,
+      (html) => (html.includes("<script") ? "SCRIPT KEPT" : "PLAIN"),
+      { ...SMALL, atomicBytes: 1000 },
+    );
+    expect(output).toBe("PLAIN");
+  });
+
+  test("keeps an unclosed script and noscript content, which it cannot cut safely", () => {
+    expectSameAsOneConversion(
+      `<p>a <noscript><a href="/x">fallback</a></noscript></p>${blocks(60)}`,
+    );
+    expect(convertHtmlInChunks("<p>kept</p><script>never closed", turndown, NO_TEXT, SMALL)).toBe(
+      turndown("<p>kept</p><script>never closed"),
+    );
+  });
 });
