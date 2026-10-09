@@ -5,7 +5,7 @@ import TurndownService from "turndown";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { extractMainContent, type HtmlMainContent } from "./html-main-content.js";
-import { convertHtmlInChunks } from "./html-markdown.js";
+import { convertHtmlInChunks, UNRENDERED_ELEMENTS } from "./html-markdown.js";
 import { reindentJson } from "./json-reindent.js";
 import {
   cancelResponse,
@@ -390,7 +390,7 @@ function newTurndown(): TurndownService {
     codeBlockStyle: "fenced",
     emDelimiter: "*",
   });
-  turndown.remove(["script", "style", "meta", "link"]);
+  turndown.remove([...UNRENDERED_ELEMENTS, "meta", "link"]);
   return turndown;
 }
 

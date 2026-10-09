@@ -1272,6 +1272,24 @@ describe("Web Fetch main content", () => {
     expect(scriptedOutput).toContain("After");
   });
 
+  test("keeps Markdown links beside an inline script larger than the plain-text backstop", async () => {
+    // Like a hydrated app page: the main content embeds a JSON payload larger than 256 KiB.
+    const page = (payload: string) => `<html><head><title>Repo</title></head><body>
+<nav>${"NavAlpha ".repeat(200)}</nav><main><react-app><h1>OPTIONS.md</h1>
+<p><a href="https://example.com/raw/OPTIONS.md">Raw</a> <a href="/blame">Blame</a></p>${payload}
+<p>Body text.</p></react-app></main></body></html>`;
+    const payload = `<script type="application/json">${JSON.stringify({ blob: "x".repeat(300 * 1024) })}</script>`;
+    for (const format of ["markdown", "text"] as const) {
+      // Script bytes change neither the content nor the chrome-removal note.
+      expect(await fetchHtmlPage(page(payload), format)).toBe(
+        await fetchHtmlPage(page(""), format),
+      );
+    }
+    const markdown = await fetchHtmlPage(page(payload), "markdown");
+    expect(markdown).toContain("[Raw](https://example.com/raw/OPTIONS.md)");
+    expect(markdown).toContain("*Site chrome outside the main content was removed (");
+  });
+
   test("tolerates a stray end tag, multibyte text before <main>, and an encoded <title>", async () => {
     const html = `<html><head><title>Tom &amp; Jerry &lt;Show&gt;</title></head><body>
 <nav>ナビゲーション 🚀</nav></div><p>日本語の前文 🚀</p>
