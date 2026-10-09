@@ -104,6 +104,7 @@ async function createJsDebugSession(
   script: string,
   profileArguments: Readonly<Record<string, string>> = {},
   shutdownMs = 500,
+  executionMs = 5_000,
 ): Promise<DapSession> {
   const cwd = await mkdtemp(join(tmpdir(), "pi-dap-session-js-debug-"));
   temporaryDirectories.push(cwd);
@@ -128,7 +129,7 @@ async function createJsDebugSession(
         { id: "node", adapterId: "node", arguments: { type: "pwa-node", ...profileArguments } },
       ],
     ]),
-    timeouts: { executionMs: 5_000, requestMs: 2_000, shutdownMs, startupMs: 5_000 },
+    timeouts: { executionMs, requestMs: 2_000, shutdownMs, startupMs: 5_000 },
     warnings: [],
   };
   return new DapSession({ cwd, settings, sessionFiles: files });
@@ -197,6 +198,64 @@ describe("DapSession exit code from vscode-js-debug's two channels", () => {
       terminationReason: "stopped by request",
     });
     expect(Object.hasOwn(result.snapshot, "exitCode")).toBe(false);
+  });
+});
+
+describe("DapSession with vscode-js-debug Child sessions", () => {
+  test("reports simultaneous child stops one at a time, each routed to its own target", async () => {
+    const session = await createJsDebugSession("children");
+    await session.setBreakpoints({ filePath: "/src/shared.js", breakpoints: [{ line: 3 }] });
+
+    const first = await session.launch();
+    const firstName = first.stop?.childSession;
+    expect(first.snapshot).toMatchObject({ state: "stopped", stopReason: "breakpoint" });
+    expect(["worker-a", "worker-b"]).toContain(firstName);
+    // The child's own Breakpoint id is reported as the primary target's id for that Breakpoint.
+    expect(first.stop?.hitBreakpointIds).toEqual([1]);
+    expect(first.stop?.topFrame?.name).toBe(firstName);
+    expect((await session.stack()).stackFrames?.at(0)?.name).toBe(firstName);
+    expect((await session.evaluate({ expression: "where" })).evaluation?.result).toBe(firstName);
+    // Verified where any target verified it, under the id the primary target gave it.
+    expect(
+      (await session.setBreakpoints({ filePath: "/src/shared.js", breakpoints: [{ line: 3 }] }))
+        .breakpoints,
+    ).toEqual([expect.objectContaining({ id: 1, verified: true })]);
+
+    // The other child stopped meanwhile: continuing reports its stop without waiting.
+    const second = await session.continue();
+    const secondName = second.stop?.childSession;
+    expect(second.snapshot).toMatchObject({ state: "stopped", stopReason: "breakpoint" });
+    expect(secondName).toBe(firstName === "worker-a" ? "worker-b" : "worker-a");
+    expect(second.stop?.hitBreakpointIds).toEqual([1]);
+    expect((await session.evaluate({ expression: "where" })).evaluation?.result).toBe(secondName);
+    // Both children call their thread 1; Pi's thread ids keep them apart.
+    expect(second.snapshot).toHaveProperty("threadId");
+    expect(first.snapshot).not.toMatchObject({
+      threadId: "threadId" in second.snapshot ? second.snapshot.threadId : undefined,
+    });
+
+    const finished = await session.continue();
+    expect(finished.snapshot).toMatchObject({ state: "terminated", exitCode: 0 });
+    expect(finished.rejectedChildSessions).toBeUndefined();
+    await session.shutdown();
+  });
+
+  test("pause stops the primary target and every Child session, reporting one stop at a time", async () => {
+    const session = await createJsDebugSession("child-running", {}, 500, 300);
+    expect((await session.launch()).snapshot.state).toBe("running");
+
+    const stops = [await session.pause(), await session.continue()];
+
+    expect(stops.map(({ snapshot }) => snapshot)).toEqual([
+      expect.objectContaining({ state: "stopped", stopReason: "pause" }),
+      expect.objectContaining({ state: "stopped", stopReason: "pause" }),
+    ]);
+    expect(stops.map(({ stop }) => stop?.childSession ?? "primary").sort()).toEqual([
+      "primary",
+      "worker-a",
+    ]);
+    expect((await session.continue()).snapshot.state).toBe("running");
+    await session.shutdown();
   });
 });
 
@@ -558,7 +617,7 @@ describe("DapSession", () => {
     expect(childSession.session.status().rejectedChildSessions).toBeUndefined();
   });
 
-  test("names a refused child session in the launch result and keeps the Debug Session usable", async () => {
+  test("names a child session it cannot debug in the launch result and keeps the Debug Session usable", async () => {
     const { session } = await createSession({ startDebuggingChild: true, stopOnEntry: true });
 
     const launched = await session.launch();
@@ -569,7 +628,7 @@ describe("DapSession", () => {
         name: "[worker 1]",
         targetId: "w-1",
         message: expect.stringMatching(
-          /child session pwa-node "\[worker 1\]" \(target w-1\).*child debugging is unsupported.*breakpoints in it will not bind/u,
+          /child session pwa-node "\[worker 1\]" \(target w-1\): .*vscode-js-debug targets only.*Breakpoints in it will not bind/u,
         ),
       },
     ]);

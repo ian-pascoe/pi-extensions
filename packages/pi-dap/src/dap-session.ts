@@ -203,7 +203,7 @@ export interface DapLaunchInput {
 
 /**
  * A child session the adapter asked Pi DAP to debug, such as a worker thread or child process of
- * the Debuggee. Pi DAP refuses it, so breakpoints in the child never bind.
+ * the Debuggee, that Pi DAP could not debug, so breakpoints in the child never bind.
  */
 export interface DapRejectedChildSession {
   readonly type?: string;
@@ -300,6 +300,8 @@ export interface DapStopDetails {
   readonly hitBreakpointIds?: readonly number[];
   /** Top Stack Frame, present when the operation waited for a stop and the frame could be read. */
   readonly topFrame?: DebugProtocol.StackFrame;
+  /** The adapter's name for the Child session that stopped; absent for a stop in the Debuggee itself. */
+  readonly childSession?: string;
 }
 
 /** Successful Debug Session operation including unread Debuggee output. */
@@ -309,7 +311,7 @@ export interface DapSessionResult {
   readonly output: string;
   readonly discardedOutputBytes: number;
   readonly desiredBreakpoints: readonly DapDesiredBreakpointFile[];
-  /** Child sessions refused since the last result that reported them; set only when there are some. */
+  /** Child sessions Pi DAP could not debug since the last result that reported them; set only when there are some. */
   readonly rejectedChildSessions?: readonly DapRejectedChildSession[];
   readonly breakpoints?: readonly DebugProtocol.Breakpoint[];
   readonly stackFrames?: readonly DebugProtocol.StackFrame[];
@@ -330,29 +332,65 @@ export interface DapSessionOptions {
   readonly onUnexpectedFailure?: (error: Error) => void;
 }
 
+/** A stop a debuggable target reported that no operation has resumed yet. */
+interface DapTargetStop {
+  readonly reason: string;
+  readonly description: string | undefined;
+  /** The target's own Breakpoint ids, translated to the reported ids when the stop is reported. */
+  readonly hitBreakpointIds: readonly number[] | undefined;
+}
+
+/**
+ * One channel Pi DAP debugs: the primary target (vscode-js-debug's primary target channel, or the
+ * root channel of any other adapter) or a Child session's target channel.
+ */
+interface DapDebugTarget {
+  readonly client: DapProtocolClient;
+  /** The adapter's name for a Child session; absent for the primary target. */
+  readonly childSessionName: string | undefined;
+  /**
+   * Adapter thread id to Pi thread id. Each vscode-js-debug target numbers its own threads, so Pi
+   * assigns ids that cannot collide; absent where Pi reports the adapter's thread ids unchanged.
+   */
+  readonly piThreadIds: Map<number, number> | undefined;
+  /** The target's Breakpoint ids, each mapped to its Desired Breakpoint's key. */
+  readonly breakpointKeys: Map<number, string>;
+  /** Whether the target has initialized and accepts Breakpoints. */
+  ready: boolean;
+  /** Adapter thread id of the target's last stop or thread lookup. */
+  threadId: number | undefined;
+  /** Unresumed stop; queued while another target's stop is the one reported. */
+  stop: DapTargetStop | undefined;
+}
+
 interface ActiveDapSession {
   readonly adapter: DapAdapterDefinition;
   readonly profile: DapLaunchProfile;
   /** Effective launch arguments: the Launch Profile's, merged with this launch's overrides. */
   readonly launchArguments: DapLaunchProfile["arguments"];
   readonly rootClient: DapProtocolClient;
-  client: DapProtocolClient;
+  /** The root channel as a target; the primary target unless vscode-js-debug opens its own. */
+  readonly rootTarget: DapDebugTarget;
+  primary: DapDebugTarget;
+  /** The target whose stop is reported and which inspection and stepping operations use. */
+  focus: DapDebugTarget;
+  /** Child sessions being debugged, from attach until they terminate or the session ends. */
+  readonly children: Set<DapDebugTarget>;
+  /** Pi thread id to its target and adapter thread id, for targets that map thread ids. */
+  readonly threads: Map<number, { readonly target: DapDebugTarget; readonly threadId: number }>;
+  nextThreadId: number;
+  /** Desired Breakpoint key to the id reported for it: the primary target's, else the first child's. */
+  readonly reportedBreakpointIds: Map<string, number>;
   targetClient?: DapProtocolClient;
   targetChannelStarted: boolean;
   readonly debuggeeProcesses: Set<ChildProcessWithoutNullStreams>;
-  /** Short-lived channels that released refused child sessions; closed with the Debug Session. */
-  readonly childReleaseChannels: Set<DapProtocolClient>;
   readonly unsubscribeEvents: Set<() => void>;
   capabilities: Static<typeof DapCapabilitiesSchema>;
   phase: "launching" | "running" | "stopped";
-  stopReason: string | undefined;
-  stopDescription: string | undefined;
-  hitBreakpointIds: readonly number[] | undefined;
   /** Top Stack Frame of the current stop, once an operation has read it. */
   topFrame: DebugProtocol.StackFrame | undefined;
   /** Counts stopped events, so a frame read for an earlier stop is never attached to a later one. */
   stopSequence: number;
-  threadId: number | undefined;
   exitCode: number | undefined;
   /** Whether the primary target channel has reported `terminated`. */
   targetTerminated: boolean;
@@ -449,6 +487,27 @@ function jsDebugExitCode(body: Static<typeof DapOutputEventBodySchema>): number 
   return match?.[1] === undefined ? undefined : Number(match[1]);
 }
 
+function debugTarget(
+  client: DapProtocolClient,
+  childSessionName: string | undefined,
+  mapsThreadIds: boolean,
+): DapDebugTarget {
+  return {
+    client,
+    childSessionName,
+    piThreadIds: mapsThreadIds ? new Map() : undefined,
+    breakpointKeys: new Map(),
+    ready: false,
+    threadId: undefined,
+    stop: undefined,
+  };
+}
+
+/** Identifies a Desired Breakpoint by file and position, the same on every target. */
+function breakpointKey(filePath: string, index: number): string {
+  return `${filePath}\0${String(index)}`;
+}
+
 function supportsJsDebugPrimaryTarget(
   adapter: DapAdapterDefinition,
   launchArguments: DapLaunchProfile["arguments"],
@@ -506,7 +565,7 @@ export class DapSession {
   private readonly output = new RetainedDapOutput();
   private readonly desiredBreakpoints = new Map<string, readonly DapDesiredBreakpoint[]>();
   private readonly executionWaiters = new Set<() => void>();
-  /** Child sessions refused during the current launch and not yet reported in a result. */
+  /** Child sessions Pi DAP could not debug during the current launch and not yet reported in a result. */
   private readonly rejectedChildSessions: DapRejectedChildSession[] = [];
   private state: InternalDapSessionState = { kind: "idle" };
   private shutdownPromise: Promise<void> | undefined;
@@ -565,24 +624,26 @@ export class DapSession {
           if (active !== undefined) this.handleAdapterFailure(active, error);
         },
       });
+      const rootTarget = debugTarget(client, undefined, false);
       const startedActive: ActiveDapSession = {
         adapter,
         profile,
         launchArguments,
         rootClient: client,
-        client,
+        rootTarget,
+        primary: rootTarget,
+        focus: rootTarget,
+        children: new Set(),
+        threads: new Map(),
+        nextThreadId: 1,
+        reportedBreakpointIds: new Map(),
         debuggeeProcesses,
         targetChannelStarted: false,
-        childReleaseChannels: new Set(),
         unsubscribeEvents: new Set(),
         capabilities: {},
         phase: "launching",
-        stopReason: undefined,
-        stopDescription: undefined,
-        hitBreakpointIds: undefined,
         topFrame: undefined,
         stopSequence: 0,
-        threadId: undefined,
         exitCode: undefined,
         targetTerminated: false,
         rootTerminated: false,
@@ -593,7 +654,7 @@ export class DapSession {
       this.state = { kind: "active", active: startedActive };
       this.publishSnapshot();
       startedActive.unsubscribeEvents.add(
-        client.onEvent((event) => this.handleDapEvent(startedActive, event, "root")),
+        client.onEvent((event) => this.handleDapEvent(startedActive, event, "root", rootTarget)),
       );
 
       const initialized: Promise<DapLaunchResponseOutcome> = client
@@ -638,7 +699,8 @@ export class DapSession {
         );
       const initializedOutcome = await initialized;
       if (initializedOutcome.kind === "failure") throw initializedOutcome.error;
-      await this.applyDesiredBreakpoints(active, signal);
+      rootTarget.ready = true;
+      await this.applyDesiredBreakpoints(active, active.primary, signal);
       if (active.capabilities.supportsConfigurationDoneRequest === true) {
         await client.request("configurationDone", {}, dapRequestOptions(signal));
       }
@@ -689,9 +751,26 @@ export class DapSession {
       this.retainBreakpoints(filePath, breakpoints);
       return this.result();
     }
-    const body = await this.sendBreakpoints(active, filePath, breakpoints, signal);
+    const children = [...active.children].filter((child) => child.ready);
+    const [primary, ...childBodies] = await Promise.all([
+      this.sendBreakpoints(active, active.primary, filePath, breakpoints, signal),
+      // Best effort: a child session can end while the request is in flight.
+      ...children.map((child) =>
+        this.sendBreakpoints(active, child, filePath, breakpoints, signal).catch(() => undefined),
+      ),
+    ]);
     this.retainBreakpoints(filePath, breakpoints);
-    return this.result({ breakpoints: body.breakpoints });
+    // Code a child session loads is unknown to the primary target: verified where any target is.
+    const reported = primary.breakpoints.map((breakpoint, index) => {
+      const verified = breakpoint.verified
+        ? breakpoint
+        : (childBodies.find((body) => body?.breakpoints[index]?.verified === true)?.breakpoints[
+            index
+          ] ?? breakpoint);
+      const id = active.reportedBreakpointIds.get(breakpointKey(filePath, index));
+      return id === undefined ? verified : { ...verified, id };
+    });
+    return this.result({ breakpoints: reported });
   }
 
   /** An empty list clears the file, so it drops out of Desired Breakpoints instead of lingering. */
@@ -728,10 +807,13 @@ export class DapSession {
   /** Retrieve a page of Stack Frames from the stopped thread. */
   async stack(input: DapStackInput = {}, signal?: AbortSignal): Promise<DapSessionResult> {
     const active = this.requireActivePhase("stopped", "stack");
-    const threadId = input.threadId ?? (await this.resolveThreadId(active, signal));
+    const threadId =
+      input.threadId === undefined
+        ? await this.resolveThreadId(active.focus, signal)
+        : this.adapterThreadId(active, input.threadId);
     const body = parseDapBody(
       DapStackTraceBodySchema,
-      await active.client.request(
+      await active.focus.client.request(
         "stackTrace",
         { threadId, startFrame: input.start ?? 0, levels: input.count ?? 20 },
         dapRequestOptions(signal),
@@ -761,7 +843,11 @@ export class DapSession {
     }
     const scopes = parseDapBody(
       DapScopesBodySchema,
-      await active.client.request("scopes", { frameId: input.frameId }, dapRequestOptions(signal)),
+      await active.focus.client.request(
+        "scopes",
+        { frameId: input.frameId },
+        dapRequestOptions(signal),
+      ),
       "scopes",
     ).scopes;
     // Expensive scopes (such as js-debug's Global) can hold thousands of rows; list, don't expand.
@@ -788,9 +874,9 @@ export class DapSession {
     if (frameId === undefined) {
       const stackResult = parseDapBody(
         DapStackTraceBodySchema,
-        await active.client.request(
+        await active.focus.client.request(
           "stackTrace",
-          { threadId: await this.resolveThreadId(active, signal), startFrame: 0, levels: 1 },
+          { threadId: await this.resolveThreadId(active.focus, signal), startFrame: 0, levels: 1 },
           dapRequestOptions(signal),
         ),
         "stackTrace",
@@ -802,7 +888,7 @@ export class DapSession {
     }
     const evaluation = parseDapBody(
       DapEvaluateBodySchema,
-      await active.client.request(
+      await active.focus.client.request(
         "evaluate",
         { expression: input.expression, frameId, context: "repl" },
         dapRequestOptions(signal),
@@ -865,22 +951,25 @@ export class DapSession {
 
   private async applyDesiredBreakpoints(
     active: ActiveDapSession,
+    target: DapDebugTarget,
     signal: AbortSignal | undefined,
   ): Promise<void> {
     for (const [filePath, breakpoints] of this.desiredBreakpoints) {
-      await this.sendBreakpoints(active, filePath, breakpoints, signal);
+      await this.sendBreakpoints(active, target, filePath, breakpoints, signal);
     }
   }
 
+  /** Send one file's Breakpoints to one target and record the ids it gave them. */
   private async sendBreakpoints(
     active: ActiveDapSession,
+    target: DapDebugTarget,
     filePath: string,
     breakpoints: readonly DapDesiredBreakpoint[],
     signal: AbortSignal | undefined,
   ): Promise<Static<typeof DapSetBreakpointsBodySchema>> {
     const response = parseDapBody(
       DapSetBreakpointsBodySchema,
-      await active.client.request(
+      await target.client.request(
         "setBreakpoints",
         {
           source: { name: filePath.split(/[\\/]/).at(-1), path: filePath },
@@ -892,27 +981,66 @@ export class DapSession {
       ),
       "setBreakpoints",
     );
+    const filePrefix = breakpointKey(filePath, 0).slice(0, -1);
+    for (const [id, key] of target.breakpointKeys) {
+      if (key.startsWith(filePrefix)) target.breakpointKeys.delete(id);
+    }
+    const isPrimary = target === active.primary;
+    if (isPrimary) {
+      for (const key of active.reportedBreakpointIds.keys()) {
+        if (key.startsWith(filePrefix)) active.reportedBreakpointIds.delete(key);
+      }
+    }
+    response.breakpoints.forEach(({ id }, index) => {
+      if (id === undefined) return;
+      const key = breakpointKey(filePath, index);
+      target.breakpointKeys.set(id, key);
+      if (isPrimary || !active.reportedBreakpointIds.has(key)) {
+        active.reportedBreakpointIds.set(key, id);
+      }
+    });
     return response;
   }
 
+  /** Resume or step the target whose stop is reported, or pause every target. */
   private async executeLifecycleRequest(
     command: "continue" | "next" | "stepIn" | "stepOut" | "pause",
     signal: AbortSignal | undefined,
   ): Promise<DapSessionResult> {
     const active = this.requireActivePhase(command === "pause" ? "running" : "stopped", command);
-    const threadId = await this.resolveThreadId(active, signal);
-    if (command !== "pause") this.transitionActiveToRunning(active);
+    const target = active.focus;
+    const threadId = command === "pause" ? undefined : await this.resolveThreadId(target, signal);
+    if (command !== "pause") {
+      target.stop = undefined;
+      this.transitionActiveToRunning(active);
+    }
     const wait = this.waitForExecutionTransition(signal);
     try {
-      await active.client.request(command, { threadId }, dapRequestOptions(signal));
+      if (threadId === undefined) await this.pauseTargets(active, signal);
+      else await target.client.request(command, { threadId }, dapRequestOptions(signal));
     } catch (cause) {
       wait.cancel();
       if (isProtocolCancellation(cause)) return this.result();
       throw cause;
     }
+    // Another target stopped while this one was stopped: its stop is reported next, right away.
+    this.focusQueuedStop(active);
     await wait.promise;
     await active.cleanupPromise;
     return this.stoppedResult(active);
+  }
+
+  /** Pause the primary target and, best effort, every Child session; the first stop is reported. */
+  private async pauseTargets(active: ActiveDapSession, signal: AbortSignal | undefined) {
+    const pause = async (target: DapDebugTarget) => {
+      const threadId = await this.resolveThreadId(target, signal);
+      await target.client.request("pause", { threadId }, dapRequestOptions(signal));
+    };
+    const children = [...active.children].filter((child) => child.ready);
+    await Promise.all([
+      pause(active.primary),
+      ...children.map((child) => pause(child).catch(() => undefined)),
+    ]);
   }
 
   /** Result that, when the Debuggee is stopped, says where and why without a separate stack call. */
@@ -932,7 +1060,7 @@ export class DapSession {
     return this.result({ ...this.stopPayload(), ...this.drainRejectedChildSessions() });
   }
 
-  /** Unreported child session refusals, once, like unread Debuggee output. */
+  /** Unreported child sessions Pi DAP could not debug, once, like unread Debuggee output. */
   private drainRejectedChildSessions(): Pick<DapSessionResult, "rejectedChildSessions"> {
     if (this.rejectedChildSessions.length === 0) return {};
     return { rejectedChildSessions: this.rejectedChildSessions.splice(0) };
@@ -945,12 +1073,13 @@ export class DapSession {
   private async readTopFrame(
     active: ActiveDapSession,
   ): Promise<DebugProtocol.StackFrame | undefined> {
+    const target = active.focus;
     try {
       const body = parseDapBody(
         DapStackTraceBodySchema,
-        await active.client.request(
+        await target.client.request(
           "stackTrace",
-          { threadId: await this.resolveThreadId(active, undefined), startFrame: 0, levels: 1 },
+          { threadId: await this.resolveThreadId(target, undefined), startFrame: 0, levels: 1 },
           dapRequestOptions(undefined),
         ),
         "stackTrace",
@@ -964,29 +1093,65 @@ export class DapSession {
   private stopPayload(): Pick<DapSessionResult, "stop"> {
     const active = this.currentActive();
     if (active === undefined || active.phase !== "stopped") return {};
+    const { focus } = active;
     const stop: Mutable<DapStopDetails> = {};
-    if (active.stopDescription !== undefined) stop.description = active.stopDescription;
-    if (active.hitBreakpointIds !== undefined) stop.hitBreakpointIds = active.hitBreakpointIds;
+    if (focus.stop?.description !== undefined) stop.description = focus.stop.description;
+    if (focus.stop?.hitBreakpointIds !== undefined) {
+      stop.hitBreakpointIds = focus.stop.hitBreakpointIds.map((id) => {
+        const key = focus.breakpointKeys.get(id);
+        return key === undefined ? id : (active.reportedBreakpointIds.get(key) ?? id);
+      });
+    }
     if (active.topFrame !== undefined) stop.topFrame = active.topFrame;
+    if (focus.childSessionName !== undefined) stop.childSession = focus.childSessionName;
     return { stop };
   }
 
+  /** The adapter thread id of the target's stop, else of its first thread. */
   private async resolveThreadId(
-    active: ActiveDapSession,
+    target: DapDebugTarget,
     signal: AbortSignal | undefined,
   ): Promise<number> {
-    if (active.threadId !== undefined) return active.threadId;
+    if (target.threadId !== undefined) return target.threadId;
     const body = parseDapBody(
       DapThreadsBodySchema,
-      await active.client.request("threads", {}, dapRequestOptions(signal)),
+      await target.client.request("threads", {}, dapRequestOptions(signal)),
       "threads",
     );
     const threadId = body.threads.at(0)?.id;
     if (threadId === undefined) {
       throw new DapSessionError("state", "Debuggee has no thread available for this operation");
     }
-    active.threadId = threadId;
+    target.threadId = threadId;
     return threadId;
+  }
+
+  /** The thread id Pi reports for a target's adapter thread id. */
+  private piThreadId(
+    active: ActiveDapSession,
+    target: DapDebugTarget,
+    adapterThreadId: number,
+  ): number {
+    if (target.piThreadIds === undefined) return adapterThreadId;
+    const known = target.piThreadIds.get(adapterThreadId);
+    if (known !== undefined) return known;
+    const threadId = active.nextThreadId++;
+    target.piThreadIds.set(adapterThreadId, threadId);
+    active.threads.set(threadId, { target, threadId: adapterThreadId });
+    return threadId;
+  }
+
+  /** The adapter thread id behind a reported thread id, which must belong to the stopped target. */
+  private adapterThreadId(active: ActiveDapSession, threadId: number): number {
+    if (active.focus.piThreadIds === undefined) return threadId;
+    const owner = active.threads.get(threadId);
+    if (owner === undefined || owner.target !== active.focus) {
+      throw new DapSessionError(
+        "state",
+        `stack requires a thread of the stopped target; thread ${String(threadId)} is not one`,
+      );
+    }
+    return owner.threadId;
   }
 
   private requestVariables(
@@ -996,7 +1161,7 @@ export class DapSession {
     count: number,
     signal: AbortSignal | undefined,
   ): Promise<Static<typeof DapVariablesBodySchema>> {
-    return active.client
+    return active.focus.client
       .request("variables", { variablesReference, start, count }, dapRequestOptions(signal))
       .then((body) => parseDapBody(DapVariablesBodySchema, body, "variables"));
   }
@@ -1020,9 +1185,11 @@ export class DapSession {
   private handleDapEvent(
     active: ActiveDapSession,
     event: DebugProtocol.Event,
-    channel: "root" | "target",
+    channel: "root" | "target" | "child",
+    target: DapDebugTarget,
   ): void {
     if (!this.isCurrentActive(active)) return;
+    if (channel === "child" && !active.children.has(target)) return;
     try {
       switch (event.event) {
         case "output": {
@@ -1043,24 +1210,29 @@ export class DapSession {
         }
         case "stopped": {
           const body = parseDapBody(DapStoppedEventBodySchema, event.body, "stopped event");
-          active.phase = "stopped";
-          active.stopReason = body.reason;
-          active.stopDescription = body.description;
-          active.hitBreakpointIds = body.hitBreakpointIds;
-          active.topFrame = undefined;
-          active.stopSequence++;
-          active.threadId = body.threadId;
-          this.publishSnapshot();
-          this.settleExecutionWaiters();
+          target.stop = {
+            reason: body.reason,
+            description: body.description,
+            hitBreakpointIds: body.hitBreakpointIds,
+          };
+          target.threadId = body.threadId;
+          // One stop is reported at a time; a stop in another target waits its turn.
+          if (active.phase !== "stopped" || active.focus === target) this.focusStop(active, target);
           return;
         }
         case "continued": {
           const body = parseDapBody(DapContinuedEventBodySchema, event.body, "continued event");
-          this.transitionActiveToRunning(active);
-          if (body.threadId !== undefined) active.threadId = body.threadId;
+          target.stop = undefined;
+          if (body.threadId !== undefined) target.threadId = body.threadId;
+          if (active.focus === target) {
+            this.transitionActiveToRunning(active);
+            this.focusQueuedStop(active);
+          }
           return;
         }
         case "exited":
+          // A Child session's exit is not the Debuggee's; its `terminated` ends its channel.
+          if (channel === "child") return;
           active.exitCode = parseDapBody(
             DapExitedEventBodySchema,
             event.body,
@@ -1070,6 +1242,10 @@ export class DapSession {
           return;
         case "terminated":
           if (active.stopping) return;
+          if (channel === "child") {
+            this.removeChildTarget(active, target);
+            return;
+          }
           if (channel === "root") active.rootTerminated = true;
           else active.targetTerminated = true;
           for (const settle of active.settleTermination) settle();
@@ -1083,10 +1259,44 @@ export class DapSession {
           return;
       }
     } catch (cause) {
+      // A Child session that misbehaves is dropped; the Debuggee's own session goes on.
+      if (channel === "child") {
+        this.removeChildTarget(active, target);
+        return;
+      }
       const error =
         cause instanceof Error ? cause : new Error("DAP Session: invalid Debug Adapter event");
       this.publishUnexpectedFailure(error);
       void this.finishActiveSession(active, error.message);
+    }
+  }
+
+  /** Report a target's stop: it becomes the target inspection and stepping operations use. */
+  private focusStop(active: ActiveDapSession, target: DapDebugTarget): void {
+    active.focus = target;
+    active.phase = "stopped";
+    active.topFrame = undefined;
+    active.stopSequence++;
+    this.publishSnapshot();
+    this.settleExecutionWaiters();
+  }
+
+  /** While running, report the first queued stop of any target, primary target first. */
+  private focusQueuedStop(active: ActiveDapSession): void {
+    if (!this.isCurrentActive(active) || active.phase === "stopped") return;
+    const queued = [active.primary, ...active.children].find((target) => target.stop);
+    if (queued !== undefined) this.focusStop(active, queued);
+  }
+
+  /** Forget a Child session that ended or failed, and detach its channel. */
+  private removeChildTarget(active: ActiveDapSession, target: DapDebugTarget): void {
+    if (!active.children.delete(target)) return;
+    void target.client.detach().catch(() => undefined);
+    if (active.focus !== target) return;
+    active.focus = active.primary;
+    if (active.phase === "stopped") {
+      this.transitionActiveToRunning(active);
+      this.focusQueuedStop(active);
     }
   }
 
@@ -1147,7 +1357,7 @@ export class DapSession {
       ) {
         return this.startJsDebugPrimaryTarget(active, request.arguments, signal);
       }
-      return this.refuseChildSession(active, request);
+      return this.debugChildSession(active, request);
     }
     if (request.command !== "runInTerminal") {
       return { success: false, message: `Pi DAP: unsupported reverse request ${request.command}` };
@@ -1159,13 +1369,14 @@ export class DapSession {
   }
 
   /**
-   * Refuse a `startDebugging` request for a child session (worker thread, child process, or nested
-   * target): Pi DAP keeps one model-facing Debug Session (ADR-0001). The child is not left paused:
-   * vscode-js-debug holds it until a client session attaches and starts it, so a short-lived
-   * channel attaches, lets the adapter start it with no breakpoints, and detaches. The request is
-   * still answered with a failure, and the refusal is reported in the next operation result.
+   * Debug a Child session (a worker thread, a child process, or a child's own child) that
+   * vscode-js-debug asks for on its parent's channel: open a target channel for it against the same
+   * adapter process, apply Desired Breakpoints, and start it. Its stops are reported one at a time
+   * with the primary target's (ADR-0003). A Child session Pi DAP cannot debug is reported in the
+   * next operation result; a channel that attached and then failed is detached, which lets the
+   * adapter run the child without a debugger.
    */
-  private async refuseChildSession(
+  private async debugChildSession(
     active: ActiveDapSession | undefined,
     request: DebugProtocol.Request,
   ): Promise<DapReverseRequestResult> {
@@ -1174,62 +1385,71 @@ export class DapSession {
       : undefined;
     const configuration = child?.configuration;
     const description = childSessionDescription(configuration);
-    const message = `Pi DAP refused child session ${description}: child debugging is unsupported, so breakpoints in it will not bind. The child runs without a debugger.`;
-    if (active === undefined) return { success: false, message };
-    const targetId = configuration?.__pendingTargetId;
-    this.rejectedChildSessions.push(rejectedChildSession(message, configuration));
-    if (
-      targetId !== undefined &&
-      supportsJsDebugPrimaryTarget(active.adapter, active.launchArguments)
-    ) {
-      await this.releaseChildSession(active, child?.request ?? "launch", configuration);
+    if (active === undefined) {
+      return {
+        success: false,
+        message: `Pi DAP refused child session ${description}: no Debug Session is active.`,
+      };
     }
+    let failure: string;
+    if (
+      configuration?.__pendingTargetId === undefined ||
+      !supportsJsDebugPrimaryTarget(active.adapter, active.launchArguments)
+    ) {
+      failure = "Pi DAP debugs child sessions of vscode-js-debug targets only";
+    } else {
+      try {
+        await this.attachChildTarget(
+          active,
+          child?.request ?? "launch",
+          configuration,
+          configuration.name ?? description,
+        );
+        return { success: true };
+      } catch (cause) {
+        failure = cause instanceof Error ? cause.message : String(cause);
+      }
+    }
+    const message = `Pi DAP could not debug child session ${description}: ${failure}. Breakpoints in it will not bind.`;
+    this.rejectedChildSessions.push(rejectedChildSession(message, configuration));
     return { success: false, message };
   }
 
   /**
-   * Best effort: a child that could not be released is still reported as refused. The release
-   * channel stays attached, with no breakpoints, until the child terminates or the Debug Session
-   * ends: a worker the child starts later is held by js-debug until a session claims it, and that
-   * session's `startDebugging` arrives on this channel, to be refused and released the same way.
+   * The channel joins the Child sessions before it starts, so its stops, its own children, and its
+   * `terminated` are handled like any target's; it leaves them when it terminates or fails.
    */
-  private async releaseChildSession(
+  private async attachChildTarget(
     active: ActiveDapSession,
     request: string,
     configuration: Static<typeof StartDebuggingChildArgumentsSchema>["configuration"],
+    name: string,
   ): Promise<void> {
-    let channel: DapProtocolClient | undefined;
-    const close = () => {
-      if (channel === undefined) return;
-      const closing = channel;
-      active.childReleaseChannels.delete(closing);
-      void closing.detach().catch(() => undefined);
-    };
+    const { startupMs, requestMs } = this.options.settings.timeouts;
+    let attached: DapDebugTarget | undefined;
+    const client = await active.rootClient.connectTargetChannel({
+      onReverseRequest: (nested) =>
+        this.handleReverseRequest(nested, active.debuggeeProcesses, () => active, undefined),
+      onFailure: () => {
+        if (attached !== undefined) this.removeChildTarget(active, attached);
+      },
+    });
+    if (!this.isCurrentActive(active) || active.stopping) {
+      await client.detach().catch(() => undefined);
+      throw new Error("the Debug Session ended");
+    }
+    const target = debugTarget(client, name, true);
+    attached = target;
+    active.children.add(target);
+    active.unsubscribeEvents.add(
+      client.onEvent((event) => this.handleDapEvent(active, event, "child", target)),
+    );
     try {
-      channel = await active.rootClient.connectTargetChannel({
-        onReverseRequest: (nested) =>
-          this.handleReverseRequest(nested, active.debuggeeProcesses, () => active, undefined),
-        onFailure: () => {
-          if (channel !== undefined) active.childReleaseChannels.delete(channel);
-        },
-      });
-      const releaseChannel = channel;
-      active.childReleaseChannels.add(releaseChannel);
-      releaseChannel.onEvent((event) => {
-        if (event.event === "terminated") close();
-        // A `debugger;` statement or exception must not park a child nobody is debugging.
-        if (event.event !== "stopped") return;
-        const body: unknown = event.body;
-        const threadId = Value.Check(DapStoppedEventBodySchema, body) ? body.threadId : undefined;
-        void releaseChannel
-          .request("continue", { threadId: threadId ?? 0 }, { timeoutMs: requestMs })
-          .catch(() => undefined);
-      });
-      const { startupMs, requestMs } = this.options.settings.timeouts;
-      const initialized = releaseChannel.waitForEvent("initialized", { timeoutMs: startupMs });
+      const initialized = client.waitForEvent("initialized", { timeoutMs: startupMs });
+      initialized.catch(() => undefined);
       const capabilities = parseDapBody(
         DapCapabilitiesSchema,
-        await releaseChannel.request(
+        await client.request(
           "initialize",
           {
             adapterID: "pwa-node",
@@ -1246,20 +1466,22 @@ export class DapSession {
         ),
         "initialize child js-debug target",
       );
-      const launchResponse = releaseChannel.request(
+      const launchResponse = client.request(
         request,
         { ...configuration },
         { timeoutMs: requestMs },
       );
       launchResponse.catch(() => undefined);
       await initialized;
+      target.ready = true;
+      await this.applyDesiredBreakpoints(active, target, undefined);
       if (capabilities.supportsConfigurationDoneRequest === true) {
-        await releaseChannel.request("configurationDone", {}, { timeoutMs: requestMs });
+        await client.request("configurationDone", {}, { timeoutMs: requestMs });
       }
       await launchResponse;
-    } catch {
-      // The refusal is already recorded; an unreleased child shows up as an execution timeout.
-      close();
+    } catch (cause) {
+      this.removeChildTarget(active, target);
+      throw cause;
     }
   }
 
@@ -1275,10 +1497,12 @@ export class DapSession {
         this.handleReverseRequest(request, active.debuggeeProcesses, () => active, signal),
       onFailure: (error) => this.handleAdapterFailure(active, error),
     });
+    const primary = debugTarget(targetClient, undefined, true);
     active.targetClient = targetClient;
-    active.client = targetClient;
+    active.primary = primary;
+    active.focus = primary;
     active.unsubscribeEvents.add(
-      targetClient.onEvent((event) => this.handleDapEvent(active, event, "target")),
+      targetClient.onEvent((event) => this.handleDapEvent(active, event, "target", primary)),
     );
 
     const initialized = targetClient.waitForEvent(
@@ -1298,7 +1522,8 @@ export class DapSession {
           locale: "en-US",
           pathFormat: "path",
           supportsRunInTerminalRequest: true,
-          supportsStartDebuggingRequest: false,
+          // vscode-js-debug asks for the primary target's Child sessions on this channel.
+          supportsStartDebuggingRequest: true,
         },
         dapRequestOptions(signal, this.options.settings.timeouts.startupMs),
       ),
@@ -1311,7 +1536,8 @@ export class DapSession {
     );
     await initialized;
     active.capabilities = capabilities;
-    await this.applyDesiredBreakpoints(active, signal);
+    primary.ready = true;
+    await this.applyDesiredBreakpoints(active, primary, signal);
     if (capabilities.supportsConfigurationDoneRequest === true) {
       await targetClient.request("configurationDone", {}, dapRequestOptions(signal));
     }
@@ -1403,7 +1629,7 @@ export class DapSession {
       for (const unsubscribe of active.unsubscribeEvents) unsubscribe();
       active.unsubscribeEvents.clear();
       await Promise.all(
-        [...active.childReleaseChannels].map((channel) => channel.detach().catch(() => undefined)),
+        [...active.children].map((child) => child.client.detach().catch(() => undefined)),
       );
       try {
         await active.targetClient?.shutdown();
@@ -1441,11 +1667,8 @@ export class DapSession {
 
   private transitionActiveToRunning(active: ActiveDapSession): void {
     if (!this.isCurrentActive(active)) return;
-    const changed = active.phase !== "running" || active.stopReason !== undefined;
+    const changed = active.phase !== "running";
     active.phase = "running";
-    active.stopReason = undefined;
-    active.stopDescription = undefined;
-    active.hitBreakpointIds = undefined;
     active.topFrame = undefined;
     if (changed) this.publishSnapshot();
   }
@@ -1490,9 +1713,11 @@ export class DapSession {
         state: "stopped",
         adapterId: active.adapter.id,
         profileId: active.profile.id,
-        stopReason: active.stopReason ?? "unknown",
+        stopReason: active.focus.stop?.reason ?? "unknown",
       };
-      if (active.threadId !== undefined) snapshot.threadId = active.threadId;
+      if (active.focus.threadId !== undefined) {
+        snapshot.threadId = this.piThreadId(active, active.focus, active.focus.threadId);
+      }
       return snapshot;
     }
     return {

@@ -94,10 +94,10 @@ function stateHeadline(context: DapTextContext): string {
   }
 }
 
-/** The most refused child sessions shown in text; `structuredContent` lists them all. */
+/** The most undebugged child sessions shown in text; `structuredContent` lists them all. */
 const MAX_REJECTED_CHILD_SESSION_LINES = 5;
 
-/** One line per refused child session, so the model learns that breakpoints in it will not bind. */
+/** One line per child session Pi DAP could not debug, so the model learns its breakpoints will not bind. */
 function rejectedChildSessionLines({ result }: DapTextContext): readonly string[] {
   const rejected = result.rejectedChildSessions ?? [];
   const lines = rejected
@@ -105,13 +105,11 @@ function rejectedChildSessionLines({ result }: DapTextContext): readonly string[
     .map((child) => `Warning: ${oneLine(child.message)}`);
   if (rejected.length > MAX_REJECTED_CHILD_SESSION_LINES) {
     lines.push(
-      `Warning: ${rejected.length - MAX_REJECTED_CHILD_SESSION_LINES} more child sessions refused`,
+      `Warning: ${rejected.length - MAX_REJECTED_CHILD_SESSION_LINES} more child sessions not debugged`,
     );
   }
   if (rejected.length > 0) {
-    lines.push(
-      "To debug that code, launch it directly as the program; for child processes, launch_arguments { autoAttachChildProcesses: false } stops the adapter attaching them. Test runners such as vitest run tests in children; debugging those is tracked in #421.",
-    );
+    lines.push("To debug that code, launch it directly as the program.");
   }
   return lines;
 }
@@ -120,6 +118,7 @@ function rejectedChildSessionLines({ result }: DapTextContext): readonly string[
 const stateLines: DapTextFormatter = (context) => {
   const { stop } = context.result;
   const lines = [stateHeadline(context)];
+  if (stop?.childSession !== undefined) lines.push(`child session: ${oneLine(stop.childSession)}`);
   if (stop?.description !== undefined) lines.push(`description: ${oneLine(stop.description)}`);
   if (stop?.hitBreakpointIds !== undefined && stop.hitBreakpointIds.length > 0) {
     lines.push(`hit breakpoint ids: ${stop.hitBreakpointIds.join(", ")}`);

@@ -109,6 +109,7 @@ export const DAP_TOOL_NAMESPACE = {
     "dap_stack, dap_variables, and dap_evaluate need a stopped Debuggee. Stack Frame ids from dap_stack feed dap_variables and dap_evaluate; a non-zero variables_reference lists child values with dap_variables, and dap_variables with frame_id lists expensive scopes such as Global without expanding them.",
     "Each successful call drains unread Debuggee output. Text results are limited to 2,000 lines or 50 KB and save the complete result as a Result Spill; script results carry complete data (a frame's expensive scopes stay unexpanded).",
     "A call that fails because of the Debug Session state returns the current state with an error field instead of throwing.",
+    "With vscode-js-debug, worker threads and child processes are Child sessions of the same Debug Session. One stop is reported at a time, and dap_stack, dap_variables, dap_evaluate, dap_continue, and the step tools act on the target that stopped; when another target is already stopped, they report its stop at once. dap_pause pauses every target.",
   ].join("\n"),
 };
 
@@ -327,7 +328,7 @@ function toolResultDetails(
 type DapDesiredBreakpointsOutput = Required<Pick<DapToolOutput<"status">, "desired_breakpoints">>;
 type DapStopOutput = Pick<
   DapToolOutput<"status">,
-  "stop_description" | "hit_breakpoint_ids" | "top_frame"
+  "stop_description" | "hit_breakpoint_ids" | "top_frame" | "child_session"
 >;
 type DapRejectedChildSessionOutput = Pick<DapToolOutput<"status">, "rejected_child_sessions">;
 type DapVariableOutput = NonNullable<DapToolOutput<"variables">["variables"]>[number];
@@ -388,6 +389,7 @@ function stopOutput(result: DapSessionResult): DapStopOutput {
       ...sourceOutput(stop.topFrame.source),
     };
   }
+  if (stop?.childSession !== undefined) fields.child_session = stop.childSession;
   return fields;
 }
 
@@ -812,7 +814,7 @@ export function createDapToolDefinitions(getRuntime: () => DapToolRuntime | unde
   return [
     defineTool<typeof DapLaunchParametersSchema, DapToolRenderDetails | undefined>({
       ...dapToolCommon("launch", "DAP launch"),
-      description: `Start a Debug Session from a Launch Profile ${EXECUTION_WAIT} The profile may be omitted only when exactly one valid Launch Profile exists; program, args, and cwd replace the profile's arguments, and launch_arguments merges adapter launch arguments over the profile's arguments for this launch (program, args, and cwd still win). Child sessions (worker threads, child processes) are not debugged: breakpoints in them do not bind, and the result lists them. Fails while a Debug Session is active. ${STATE_FAILURE}`,
+      description: `Start a Debug Session from a Launch Profile ${EXECUTION_WAIT} The profile may be omitted only when exactly one valid Launch Profile exists; program, args, and cwd replace the profile's arguments, and launch_arguments merges adapter launch arguments over the profile's arguments for this launch (program, args, and cwd still win). With vscode-js-debug, Child sessions (worker threads and child processes, such as a test runner's workers) are debugged too: breakpoints bind in them, and a stop in one names it in child_session. Fails while a Debug Session is active. ${STATE_FAILURE}`,
       promptSnippet: "Debug a program through one configured Debug Session",
       exposure: "direct",
       annotations: RUNS_DEBUGGEE_CODE,

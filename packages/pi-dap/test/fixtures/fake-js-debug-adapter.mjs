@@ -1,5 +1,6 @@
-// Offline stand-in for vscode-js-debug's two TCP channels: a root channel that sends
-// `startDebugging`, and one primary target channel. FAKE_JS_DEBUG_SCRIPT picks how the Debuggee ends.
+// Offline stand-in for vscode-js-debug's TCP channels: a root channel that sends `startDebugging`,
+// one primary target channel, and, for the `children` scripts, Child session channels the primary
+// target asks for. FAKE_JS_DEBUG_SCRIPT picks how the Debuggee ends and what its children do.
 import { createServer } from "node:net";
 
 const port = Number(process.argv[2]);
@@ -8,6 +9,11 @@ let nextSequence = 1;
 let root;
 let target;
 let pendingRootLaunch;
+/** Child session names the primary target asks for, by script. */
+const childNames =
+  { children: ["worker-a", "worker-b"], "child-running": ["worker-a"] }[script] ?? [];
+const pendingChildNames = [...childNames];
+let liveChildren = childNames.length;
 
 function frame(message) {
   const payload = Buffer.from(JSON.stringify({ seq: nextSequence++, ...message }));
@@ -61,6 +67,7 @@ function endDebuggee() {
       event(root, "terminated", { restart: false });
       later(60, () => event(target, "terminated"));
       break;
+    case "children":
     case "clean":
       event(target, "terminated");
       later(30, () => event(root, "terminated", { restart: false }));
@@ -74,6 +81,29 @@ function endDebuggee() {
     case "target-only":
       event(target, "terminated");
       break;
+  }
+}
+
+/** Requests any target answers the same way, naming the target so routing is observable. */
+function targetRequest(send, message, name) {
+  switch (message.command) {
+    case "threads":
+      respond(send, message, { threads: [{ id: 1, name: "main" }] });
+      return;
+    case "stackTrace":
+      respond(send, message, {
+        stackFrames: [{ id: 1, name, line: 1, column: 1, source: { path: `/${name}.js` } }],
+      });
+      return;
+    case "evaluate":
+      respond(send, message, { result: name, variablesReference: 0 });
+      return;
+    case "pause":
+      respond(send, message);
+      event(send, "stopped", { reason: "pause", threadId: 1 });
+      return;
+    default:
+      respond(send, message);
   }
 }
 
@@ -97,23 +127,81 @@ createServer((socket) => {
             configuration: { type: "pwa-node", __pendingTargetId: "target-1" },
           },
         });
+      } else if (message.command === "setBreakpoints") {
+        respond(send, message, { breakpoints: [] });
       } else {
         respond(send, message);
       }
     });
     return;
   }
-  target = channel(socket, (message, send) => {
+  if (target === undefined) {
+    target = channel(socket, (message, send) => {
+      if (message.type === "response") return;
+      if (message.command === "initialize") {
+        respond(send, message, { supportsConfigurationDoneRequest: true });
+        event(send, "initialized");
+      } else if (message.command === "configurationDone") {
+        respond(send, message);
+        if (childNames.length === 0) setTimeout(endDebuggee, 50);
+        for (const name of childNames) {
+          send({
+            type: "request",
+            command: "startDebugging",
+            arguments: {
+              request: "launch",
+              configuration: { type: "pwa-node", name, __pendingTargetId: name },
+            },
+          });
+        }
+      } else if (message.command === "setBreakpoints") {
+        // The primary target never loads the code the children run.
+        const count = message.arguments.breakpoints.length;
+        const breakpoints = Array.from({ length: count }, (_, index) => ({
+          id: index + 1,
+          verified: childNames.length === 0,
+        }));
+        respond(send, message, { breakpoints: childNames.length === 0 ? [] : breakpoints });
+      } else {
+        targetRequest(send, message, "primary");
+      }
+    });
+    return;
+  }
+  const name = pendingChildNames.shift() ?? "unexpected";
+  const idBase = (childNames.indexOf(name) + 1) * 100;
+  channel(socket, (message, send) => {
     if (message.command === "initialize") {
       respond(send, message, { supportsConfigurationDoneRequest: true });
       event(send, "initialized");
+    } else if (message.command === "setBreakpoints") {
+      const count = message.arguments.breakpoints.length;
+      respond(send, message, {
+        breakpoints: Array.from({ length: count }, (_, index) => ({
+          id: idBase + index,
+          verified: true,
+        })),
+      });
     } else if (message.command === "configurationDone") {
       respond(send, message);
-      setTimeout(endDebuggee, 50);
-    } else if (message.command === "setBreakpoints") {
-      respond(send, message, { breakpoints: [] });
-    } else {
+      if (script === "children") {
+        setTimeout(
+          () =>
+            event(send, "stopped", {
+              reason: "breakpoint",
+              threadId: 1,
+              hitBreakpointIds: [idBase],
+            }),
+          20,
+        );
+      }
+    } else if (message.command === "continue" && script === "children") {
       respond(send, message);
+      event(send, "terminated");
+      liveChildren -= 1;
+      if (liveChildren === 0) setTimeout(endDebuggee, 20);
+    } else {
+      targetRequest(send, message, name);
     }
   });
 }).listen(port, "127.0.0.1");
