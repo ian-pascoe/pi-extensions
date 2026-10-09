@@ -181,7 +181,7 @@ function isHintedFrame(frame: DebugProtocol.StackFrame): boolean {
   );
 }
 
-/** `ids 34\u201346` for consecutive ascending ids, otherwise every id in order. */
+/** `ids 34–46` for consecutive ascending ids, otherwise every id in order. */
 function frameIdList(frames: readonly DebugProtocol.StackFrame[]): string {
   const ids = frames.map((frame) => frame.id);
   const [first = 0] = ids;
@@ -215,7 +215,7 @@ const stackLines: DapTextFormatter = ({ result, cwd }) => {
     `Stack: ${count} frame${total === 1 ? "" : "s"}`,
     ...hintRuns(frames).flatMap((run) =>
       run.hinted && run.frames.length >= 2
-        ? [`  \u2026 ${run.frames.length} internal frames (${frameIdList(run.frames)})`]
+        ? [`  \u2026 ${run.frames.length} deemphasized frames (${frameIdList(run.frames)})`]
         : run.frames.map(
             (frame) =>
               `  frame ${frame.id}: ${oneLine(frame.name)} at ${frameLocation(frame, cwd)}`,

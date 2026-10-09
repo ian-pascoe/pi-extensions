@@ -183,7 +183,7 @@ test("debugs TypeScript through the Supported vscode-js-debug adapter and cleans
     .map((item) => (item.type === "text" ? item.text : ""))
     .join("");
   expect(stackText).toMatch(/^ {2}frame \d+: .* at program\.ts:3:\d+$/mu);
-  expect(stackText).toMatch(/^ {2}\u2026 \d+ internal frames \(ids [\d\u2013, ]+\)$/mu);
+  expect(stackText).toMatch(/^ {2}\u2026 \d+ deemphasized frames \(ids [\d\u2013, ]+\)$/mu);
   expect(stackResult?.structuredContent).toMatchObject({
     stack_frames: stack.stackFrames?.map(({ id }) => expect.objectContaining({ id })),
   });

@@ -838,7 +838,11 @@ describe("DAP tools", () => {
     });
 
     test("stack collapses each run of subtle, label, and deemphasized-source frames into one line", async () => {
-      const internal = { line: 1, column: 1, source: { presentationHint: "deemphasize" } } as const;
+      const deemphasized = {
+        line: 1,
+        column: 1,
+        source: { presentationHint: "deemphasize" },
+      } as const;
       const stack = await textOf(
         "stack",
         {},
@@ -846,15 +850,15 @@ describe("DAP tools", () => {
           snapshot: stoppedSnapshot,
           stackFrames: [
             { id: 32, name: "fib", line: 5, column: 5, source: { path: "/elsewhere/prog.mjs" } },
-            { id: 34, name: "ModuleJob.run", ...internal },
+            { id: 34, name: "ModuleJob.run", ...deemphasized },
             { id: 35, name: "processTicks", line: 105, column: 5, presentationHint: "subtle" },
             { id: 36, name: "await", line: 0, column: 0, presentationHint: "label" },
             { id: 37, name: "main", line: 12, column: 16 },
             { id: 40, name: "await", line: 0, column: 0, presentationHint: "label" },
             { id: 41, name: "user", line: 3, column: 1 },
-            { id: 50, name: "x", ...internal },
-            { id: 52, name: "y", ...internal },
-            { id: 51, name: "z", ...internal },
+            { id: 50, name: "x", ...deemphasized },
+            { id: 52, name: "y", ...deemphasized },
+            { id: 51, name: "z", ...deemphasized },
           ],
           totalFrames: 40,
         },
@@ -863,11 +867,11 @@ describe("DAP tools", () => {
         [
           "Stack: 10 of 40 frames",
           "  frame 32: fib at /elsewhere/prog.mjs:5:5",
-          "  \u2026 3 internal frames (ids 34\u201336)",
+          "  … 3 deemphasized frames (ids 34–36)",
           "  frame 37: main at 12:16",
           "  frame 40: await at 0:0",
           "  frame 41: user at 3:1",
-          "  \u2026 3 internal frames (ids 50, 52, 51)",
+          "  … 3 deemphasized frames (ids 50, 52, 51)",
         ].join("\n"),
       );
     });

@@ -356,7 +356,7 @@ describe("Pi DAP extension lifecycle", () => {
           "Stack: 6 frames",
           "  frame 10: main at program.ts:4:1",
           "  frame 11: caller at 1:1",
-          "  … 3 internal frames (ids 12–14)",
+          "  … 3 deemphasized frames (ids 12–14)",
           "  frame 15: start at start.ts:2:1",
         ].join("\n"),
       },
