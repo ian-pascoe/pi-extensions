@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-command-deck
 
+## 0.2.2
+
+### Patch Changes
+
+- d13a4b9: The Pi Command Deck troubleshooting skill now points at the package's `GLOSSARY.md`, which replaces `CONTEXT.md` as the vocabulary file.
+
 ## 0.2.1
 
 ### Patch Changes
