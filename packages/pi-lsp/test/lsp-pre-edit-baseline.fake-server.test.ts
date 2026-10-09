@@ -194,24 +194,28 @@ describe("Post-edit Diagnostics against the changed file's Pre-edit Baseline", (
     );
   }, 30_000);
 
-  test("lists every finding after apply_patch, which takes no baseline", async () => {
-    const session = await startContentSession({ "src/a.ts": warnings });
-    const text = await session.applyPatch({
-      toolCallId: "patch",
-      path: "src/a.ts",
-      content: warnings.replace("const c = 3;", "const c = 4;"),
-    });
+  test.each(["applyPatch", "applyWorkspaceEdit"] as const)(
+    "lists every finding after %s, which takes no baseline",
+    async (call) => {
+      const session = await startContentSession({ "src/a.ts": warnings });
+      const text = await session[call]({
+        toolCallId: "apply",
+        path: "src/a.ts",
+        content: warnings.replace("const c = 3;", "const c = 4;"),
+      });
 
-    expect(text).toBe(
-      [
-        "Wrote src/a.ts",
-        "",
-        "LSP diagnostics",
-        "src/a.ts:1:17-48 warning [fake] fake(w1): old warning one",
-        "src/a.ts:2:17-48 warning [fake] fake(w2): old warning two",
-      ].join("\n"),
-    );
-  }, 30_000);
+      expect(text).toBe(
+        [
+          "Wrote src/a.ts",
+          "",
+          "LSP diagnostics",
+          "src/a.ts:1:17-48 warning [fake] fake(w1): old warning one",
+          "src/a.ts:2:17-48 warning [fake] fake(w2): old warning two",
+        ].join("\n"),
+      );
+    },
+    30_000,
+  );
 
   test("drops unchanged hints uncounted and counts only new hints as omitted", async () => {
     const session = await startContentSession({

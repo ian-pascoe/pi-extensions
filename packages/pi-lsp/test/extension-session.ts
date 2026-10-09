@@ -54,6 +54,8 @@ export interface ExtensionSession {
   write(call: WriteCall): Promise<string>;
   /** Run one Codex-style `apply_patch` call that rewrites a file; return the text appended to its result. */
   applyPatch(call: WriteCall): Promise<string>;
+  /** Run one `lsp_apply` call whose Workspace Edit rewrites a file; return the text appended to its result. */
+  applyWorkspaceEdit(call: WriteCall): Promise<string>;
 }
 
 export interface ExtensionSessionOptions {
@@ -153,27 +155,30 @@ export async function startExtensionSession(
     (result?.content ?? []).map((part) => (part.type === "text" ? part.text : "")).join("");
   /** Deliver a whole-file call's `tool_call`, write the file, then deliver its `tool_result`. */
   const runWholeFileCall = async (
-    toolName: "write" | "apply_patch",
+    toolName: "write" | "apply_patch" | "lsp_apply",
     { toolCallId, path, content }: WriteCall,
   ): Promise<string> => {
     const filePath = resolve(cwd, path);
-    const input = toolName === "write" ? { path: filePath, content } : { input: content };
+    const input = {
+      write: { path: filePath, content },
+      apply_patch: { input: content },
+      lsp_apply: {
+        preview_id: "preview-1",
+        mutation_manifest: [{ operation: "modify", path: filePath }],
+      },
+    }[toolName];
     const blocked = await emit({ type: "tool_call", toolCallId, toolName, input });
     if (blocked !== undefined) throw new Error("Expected the tool_call handler to return nothing");
     await mkdir(dirname(filePath), { recursive: true });
     await writeFile(filePath, content);
-    const details =
-      toolName === "write"
-        ? undefined
-        : {
-            status: "success",
-            result: {
-              changedFiles: [filePath],
-              createdFiles: [],
-              deletedFiles: [],
-              movedFiles: [],
-            },
-          };
+    const details = {
+      write: undefined,
+      apply_patch: {
+        status: "success",
+        result: { changedFiles: [filePath], createdFiles: [], deletedFiles: [], movedFiles: [] },
+      },
+      lsp_apply: { kind: "workspace_edit_apply", state: "applied", changed_paths: [filePath] },
+    }[toolName];
     return appendedText(
       await emit({
         type: "tool_result",
@@ -194,5 +199,6 @@ export async function startExtensionSession(
     },
     write: (call) => runWholeFileCall("write", call),
     applyPatch: (call) => runWholeFileCall("apply_patch", call),
+    applyWorkspaceEdit: (call) => runWholeFileCall("lsp_apply", call),
   };
 }

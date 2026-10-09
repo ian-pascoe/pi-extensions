@@ -99,7 +99,7 @@ export const PostEditDiagnosticOutcomeSchema = Type.Union([
     },
     { additionalProperties: false },
   ),
-  /** A server whose Pre-edit Baseline pull failed, so its findings for the file are all listed. */
+  /** A server whose Pre-edit Baseline pull failed or timed out, so its findings for the file are all listed. */
   Type.Object(
     {
       kind: Type.Literal("no_baseline"),

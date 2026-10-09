@@ -2,18 +2,15 @@ import type {
   PostEditDiagnosticOutcome,
   PostEditLspDiagnostic,
 } from "./lsp-post-edit-diagnostics.js";
+import { documentLines } from "./lsp-position-encoding.js";
 
 /** The text of each file a finding lies in, by absolute path, read after the pull that found it. */
 export type FileTexts = ReadonlyMap<string, string>;
 
 /** The trimmed text of a one-based line, or an empty string when the file or line is unknown. */
 function trimmedLineText(texts: FileTexts, path: string, line: number): string {
-  return (
-    texts
-      .get(path)
-      ?.split(/\r\n|\r|\n/u)
-      [line - 1]?.trim() ?? ""
-  );
+  const text = texts.get(path);
+  return text === undefined ? "" : (documentLines(text)[line - 1]?.trim() ?? "");
 }
 
 /**
