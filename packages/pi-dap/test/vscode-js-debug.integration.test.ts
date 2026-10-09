@@ -167,9 +167,27 @@ test("debugs TypeScript through the Supported vscode-js-debug adapter and cleans
   expect(expensiveGroups.length).toBeGreaterThan(0);
   for (const group of expensiveGroups) expect(group.variables).toBeUndefined();
   // The model sees the locals in the visible text, with no Result Spill to read.
-  const variablesTool = createDapToolDefinitions(() => ({ session, sessionFiles: files })).find(
-    ({ name }) => name === "dap_variables",
-  );
+  const toolDefinitions = createDapToolDefinitions(() => ({ session, sessionFiles: files }));
+  // js-debug hints Node's module loader frames, so the stack text collapses them into one line.
+  const stackResult = await toolDefinitions
+    .find(({ name }) => name === "dap_stack")
+    ?.execute(
+      "stack",
+      {},
+      undefined,
+      undefined,
+      // SAFETY: Tool execution only reads cwd from its context.
+      { cwd: projectDirectory } as ExtensionToolContext,
+    );
+  const stackText = stackResult?.content
+    .map((item) => (item.type === "text" ? item.text : ""))
+    .join("");
+  expect(stackText).toMatch(/^ {2}frame \d+: .* at program\.ts:3:\d+$/mu);
+  expect(stackText).toMatch(/^ {2}\u2026 \d+ internal frames \(ids [\d\u2013, ]+\)$/mu);
+  expect(stackResult?.structuredContent).toMatchObject({
+    stack_frames: stack.stackFrames?.map(({ id }) => expect.objectContaining({ id })),
+  });
+  const variablesTool = toolDefinitions.find(({ name }) => name === "dap_variables");
   const variablesResult = await variablesTool?.execute(
     "variables",
     { frame_id: topStackFrame?.id ?? -1 },
