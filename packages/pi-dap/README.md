@@ -223,7 +223,13 @@ reason and the ids tell them apart. Only `dap_set_breakpoints`, `dap_launch`, an
 exist), so a stepping result never repeats them. A call
 that waits and ends still `running` says `(wait timed out)`.
 
-Stack Frames, variables, and evaluations are one line per row. Adapter strings
+Stack Frames, variables, and evaluations are one line per row. In `dap_stack`
+text, each run of two or more Stack Frames the adapter hints as noise (a frame
+`presentationHint` of `subtle` or `label`, or a source `presentationHint` of
+`deemphasize`, as vscode-js-debug sets for runtime internals and async
+boundaries) collapses to one line such as `… 13 deemphasized frames (ids 34–46)`.
+Those ids still work with `dap_variables` and `dap_evaluate`, a lone hinted
+frame keeps its own line, and `stack_frames` in `structuredContent` lists every frame. Adapter strings
 are flattened onto one line with `\n` escapes. Drained Debuggee output follows
 under its own heading. `structuredContent` keeps its fields' strings verbatim, and adds `stop_description`, `hit_breakpoint_ids`, `top_frame`, and, for a stop in a child session, `child_session`.
 `dap_variables` with `frame_id` lists scopes the adapter marks expensive, such

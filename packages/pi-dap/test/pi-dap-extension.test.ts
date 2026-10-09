@@ -322,4 +322,56 @@ describe("Pi DAP extension lifecycle", () => {
     expect(rpc.widgetCalls).toEqual([]);
     await shutdownExtension(rpc);
   });
+
+  test("dap_stack text collapses runs of hinted Stack Frames while structured output keeps them all", async () => {
+    const fakeAdapterPath = resolve(import.meta.dirname, "fixtures/fake-dap-session-adapter.mjs");
+    const harness = await createExtensionHarness(false, {
+      dap: {
+        adapters: {
+          node: { command: process.execPath, args: [fakeAdapterPath], transport: "stdio" },
+        },
+        profiles: { node: { adapter: "node", arguments: { hintedStack: true } } },
+      },
+    });
+    await startExtension(harness, "startup");
+    const run = async (operation: "launch" | "stack") => {
+      const tool = harness.runner.getToolDefinition(`dap_${operation}`);
+      if (tool === undefined) throw new Error(`Expected registered dap_${operation} tool`);
+      return tool.execute(
+        operation,
+        {},
+        undefined,
+        undefined,
+        toToolContext(harness.runner.createContext()),
+      );
+    };
+    await run("launch");
+    const stack = await run("stack");
+
+    expectDapToolOutput("stack", stack);
+    expect(stack.content).toEqual([
+      {
+        type: "text",
+        text: [
+          "Stack: 6 frames",
+          "  frame 10: main at program.ts:4:1",
+          "  frame 11: caller at 1:1",
+          "  … 3 deemphasized frames (ids 12–14)",
+          "  frame 15: start at start.ts:2:1",
+        ].join("\n"),
+      },
+    ]);
+    expect(stack.structuredContent).toMatchObject({
+      total_frames: 6,
+      stack_frames: [
+        { id: 10, name: "main" },
+        { id: 11, name: "caller" },
+        { id: 12, name: "ModuleJob.run", source_name: "module_job" },
+        { id: 13, name: "await" },
+        { id: 14, name: "processTicks" },
+        { id: 15, name: "start" },
+      ],
+    });
+    await shutdownExtension(harness);
+  });
 });

@@ -169,14 +169,57 @@ const stateWithDesiredBreakpointsLines: DapTextFormatter = (context) => [
     : []),
 ];
 
+/**
+ * The adapter marks the frame as noise: a `subtle` frame, a `label` separator such as an async
+ * boundary, or a frame in a source it deemphasizes because the user did not write it.
+ */
+function isHintedFrame(frame: DebugProtocol.StackFrame): boolean {
+  return (
+    frame.presentationHint === "subtle" ||
+    frame.presentationHint === "label" ||
+    frame.source?.presentationHint === "deemphasize"
+  );
+}
+
+/** `ids 34–46` for consecutive ascending ids, otherwise every id in order. */
+function frameIdList(frames: readonly DebugProtocol.StackFrame[]): string {
+  const ids = frames.map((frame) => frame.id);
+  const [first = 0] = ids;
+  return ids.every((id, index) => id === first + index)
+    ? `ids ${first}\u2013${ids.at(-1)}`
+    : `ids ${ids.join(", ")}`;
+}
+
+/** Consecutive frames grouped by whether the adapter hinted them. */
+function hintRuns(frames: readonly DebugProtocol.StackFrame[]) {
+  const runs: { hinted: boolean; frames: DebugProtocol.StackFrame[] }[] = [];
+  for (const frame of frames) {
+    const hinted = isHintedFrame(frame);
+    const last = runs.at(-1);
+    if (last?.hinted === hinted) last.frames.push(frame);
+    else runs.push({ hinted, frames: [frame] });
+  }
+  return runs;
+}
+
+/**
+ * One line per Stack Frame, except that each run of two or more hinted frames becomes one line
+ * giving their count and ids, which `dap_variables` and `dap_evaluate` still accept. A lone hinted
+ * frame stays verbatim: collapsing it would save no line. `structuredContent` lists every frame.
+ */
 const stackLines: DapTextFormatter = ({ result, cwd }) => {
   const frames = result.stackFrames ?? [];
   const total = result.totalFrames ?? frames.length;
   const count = total > frames.length ? `${frames.length} of ${total}` : `${frames.length}`;
   return [
     `Stack: ${count} frame${total === 1 ? "" : "s"}`,
-    ...frames.map(
-      (frame) => `  frame ${frame.id}: ${oneLine(frame.name)} at ${frameLocation(frame, cwd)}`,
+    ...hintRuns(frames).flatMap((run) =>
+      run.hinted && run.frames.length >= 2
+        ? [`  \u2026 ${run.frames.length} deemphasized frames (${frameIdList(run.frames)})`]
+        : run.frames.map(
+            (frame) =>
+              `  frame ${frame.id}: ${oneLine(frame.name)} at ${frameLocation(frame, cwd)}`,
+          ),
     ),
   ];
 };

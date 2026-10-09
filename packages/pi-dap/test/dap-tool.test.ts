@@ -788,6 +788,24 @@ describe("DAP tools", () => {
       expect(stack).toBe(
         "Stack: 2 of 5 frames\n  frame 12: add at /elsewhere/app.js:3:5\n  frame 13: main at 9:1",
       );
+      const normalHints = await textOf(
+        "stack",
+        {},
+        {
+          snapshot: stoppedSnapshot,
+          stackFrames: [
+            { id: 1, name: "a", line: 1, column: 1, presentationHint: "normal" },
+            {
+              id: 2,
+              name: "b",
+              line: 2,
+              column: 1,
+              source: { name: "b.js", presentationHint: "emphasize" },
+            },
+          ],
+        },
+      );
+      expect(normalHints).toBe("Stack: 2 frames\n  frame 1: a at 1:1\n  frame 2: b at b.js:2:1");
       const variables = await textOf(
         "variables",
         { frame_id: 12 },
@@ -817,6 +835,45 @@ describe("DAP tools", () => {
       );
       expect(evaluation).toBe("2 (number)");
       for (const text of [stack, variables, evaluation]) expect(text).not.toMatch(/[{}"]/u);
+    });
+
+    test("stack collapses each run of subtle, label, and deemphasized-source frames into one line", async () => {
+      const deemphasized = {
+        line: 1,
+        column: 1,
+        source: { presentationHint: "deemphasize" },
+      } as const;
+      const stack = await textOf(
+        "stack",
+        {},
+        {
+          snapshot: stoppedSnapshot,
+          stackFrames: [
+            { id: 32, name: "fib", line: 5, column: 5, source: { path: "/elsewhere/prog.mjs" } },
+            { id: 34, name: "ModuleJob.run", ...deemphasized },
+            { id: 35, name: "processTicks", line: 105, column: 5, presentationHint: "subtle" },
+            { id: 36, name: "await", line: 0, column: 0, presentationHint: "label" },
+            { id: 37, name: "main", line: 12, column: 16 },
+            { id: 40, name: "await", line: 0, column: 0, presentationHint: "label" },
+            { id: 41, name: "user", line: 3, column: 1 },
+            { id: 50, name: "x", ...deemphasized },
+            { id: 52, name: "y", ...deemphasized },
+            { id: 51, name: "z", ...deemphasized },
+          ],
+          totalFrames: 40,
+        },
+      );
+      expect(stack).toBe(
+        [
+          "Stack: 10 of 40 frames",
+          "  frame 32: fib at /elsewhere/prog.mjs:5:5",
+          "  … 3 deemphasized frames (ids 34–36)",
+          "  frame 37: main at 12:16",
+          "  frame 40: await at 0:0",
+          "  frame 41: user at 3:1",
+          "  … 3 deemphasized frames (ids 50, 52, 51)",
+        ].join("\n"),
+      );
     });
   });
 
