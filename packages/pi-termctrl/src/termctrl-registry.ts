@@ -538,7 +538,7 @@ export class TermctrlRegistry {
     exit: TerminalExit,
     finalScreen: string,
     seen: boolean,
-    finalCursor: ScreenPosition | null = null,
+    finalCursor: ScreenPosition | null,
   ): void {
     const entry = this.state.entries.get(id);
     if (entry?.kind !== "terminal" || entry.state === "exited") return;

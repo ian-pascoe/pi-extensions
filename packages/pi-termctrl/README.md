@@ -120,7 +120,7 @@ another fails and lists the caller's live entries.
 `terminal_stop` stops a running entry (termctrl stop, then `SIGKILL` of the
 Terminal's process group if it is still alive after 3 s) and forgets it. For a
 Terminal it returns the final screen, as a Screen Delta when it can, with its
-cursor, and scrolled-off lines; for a Background
+cursor in the first line (`Terminal t1 stopped · cursor 4:7`), and scrolled-off lines; for a Background
 job, its recent output. When a Terminal's screen is
 unchanged since the agent's last result, the result omits the screen and reports
 `changed: false` with `state` and `exit_code` or `signal`; `scrolled_off` still

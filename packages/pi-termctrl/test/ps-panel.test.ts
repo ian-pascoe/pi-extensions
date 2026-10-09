@@ -252,7 +252,7 @@ describe("TermctrlPsController", () => {
 
     controller.dispose(false);
     setStatus.mockClear();
-    registry.terminalExited("t1", { code: 0, signal: null }, "", true);
+    registry.terminalExited("t1", { code: 0, signal: null }, "", true, null);
     expect(setStatus).not.toHaveBeenCalled();
 
     const second = new TermctrlPsController(registry, context);

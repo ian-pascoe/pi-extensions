@@ -996,7 +996,7 @@ describe("Screen Delta", () => {
       harness.stop.execute("call", { id: "t1" }, undefined, undefined, root),
     );
     expect(textOf(value)).toBe(
-      "Terminal t1 stopped.\n--- final screen (rows 3-4 of 4; rows above unchanged) · cursor 4:7 ---\n$ exit\nlogout",
+      "Terminal t1 stopped · cursor 4:7\n--- final screen (rows 3-4 of 4; rows above unchanged) ---\n$ exit\nlogout",
     );
     expect(value.structuredContent).toMatchObject({
       changed: true,
@@ -1433,7 +1433,7 @@ describe("terminal_stop and terminal_list", () => {
       scrolled_off: "older",
     });
     expect(textOf(value)).toBe(
-      "Terminal t1 stopped.\n--- scrolled off ---\nolder\n--- final screen · cursor hidden ---\n>>> exit()",
+      "Terminal t1 stopped · cursor hidden\n--- scrolled off ---\nolder\n--- final screen ---\n>>> exit()",
     );
     expect(harness.runtime.registry.entries()).toEqual([]);
   });
@@ -1528,7 +1528,7 @@ describe("terminal_stop and terminal_list", () => {
       changed: true,
       screen: "bye",
     });
-    expect(textOf(value)).toContain("--- final screen · cursor hidden ---\nbye");
+    expect(textOf(value)).toContain("removed · cursor hidden\n--- final screen ---\nbye");
   });
 
   test("a stopped Terminal's full output file lasts until its session shuts down", async () => {

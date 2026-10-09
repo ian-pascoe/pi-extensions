@@ -761,10 +761,10 @@ function describeCursor(cursor: TerminalResult["cursor"]): string {
 }
 
 /** The marker above a shown screen, naming the rows a Screen Delta shows. */
-function screenMarker(label: string, screen: string, view: ScreenView, suffix = ""): string {
-  if (view.startRow === 0) return `--- ${label}${suffix} ---`;
+function screenMarker(label: string, screen: string, view: ScreenView): string {
+  if (view.startRow === 0) return `--- ${label} ---`;
   const total = splitRows(screen).length;
-  return `--- ${label} (rows ${view.startRow + 1}-${total} of ${total}; rows above unchanged)${suffix} ---`;
+  return `--- ${label} (rows ${view.startRow + 1}-${total} of ${total}; rows above unchanged) ---`;
 }
 
 /** Says that `wait_for_text` was not seen when its wait timed out. */
@@ -1124,14 +1124,13 @@ async function finalScrolledOff(entry: TerminalEntry): Promise<ScrolledOff> {
 /** What a stop saw of a Terminal at its turn, before stopping it. */
 interface StopView {
   readonly wasRunning: boolean;
-  readonly previousScreen: string | undefined;
   readonly scrolled: ScrolledOff;
   readonly entry: TermctrlEntry;
 }
 
 /**
- * Stop a Terminal in its turn: the calls ahead have finished, so `wasRunning` and the previous
- * screen are what they left, and calls queued behind find the Terminal gone.
+ * Stop a Terminal in its turn: the calls ahead have finished, so `wasRunning` and the agent's
+ * previous result are what they left, and calls queued behind find the Terminal gone.
  */
 function stopTerminalInTurn(
   registry: TermctrlRegistry,
@@ -1140,10 +1139,9 @@ function stopTerminalInTurn(
 ): Promise<StopView> {
   return driveTerminal(registry, known, signal, async () => {
     const wasRunning = known.state === "running";
-    const previousScreen = known.lastScreen;
     const scrolled = await finalScrolledOff(known);
     const entry = (await registry.stop(known.owner, known.id)) ?? known;
-    return { wasRunning, previousScreen, scrolled, entry };
+    return { wasRunning, scrolled, entry };
   });
 }
 
@@ -1169,33 +1167,31 @@ export function createTerminalStopTool({ registry, scrollback }: TerminalResultR
       const owner = ownerOf(context);
       const known = registry.find(owner, params.id);
       if (known === undefined) throw unknownId(params.id);
-      const { wasRunning, previousScreen, scrolled, entry } =
+      const { wasRunning, scrolled, entry } =
         known.kind === "terminal"
           ? await stopTerminalInTurn(registry, known, signal)
           : {
               wasRunning: known.state === "running",
-              previousScreen: undefined,
               scrolled: NOTHING_SCROLLED,
               entry: (await registry.stop(owner, params.id)) ?? known,
             };
       const label = entry.kind === "terminal" ? "Terminal" : "Background job";
-      const header = wasRunning
-        ? `${label} ${entry.id} stopped.`
-        : `${label} ${entry.id} had already ${describeExit(entry.exit)}; removed.`;
+      const outcome = wasRunning
+        ? `${label} ${entry.id} stopped`
+        : `${label} ${entry.id} had already ${describeExit(entry.exit)}; removed`;
       const result: StopResult = {
         id: entry.id,
         kind: entry.kind === "terminal" ? "terminal" : "background_job",
         state: "exited",
         ...exitFields(entry.exit),
       };
-      const parts = [header];
+      const parts: string[] = [];
       if (entry.kind === "terminal") {
         const screen = entry.finalScreen ?? "";
-        const changed = previousScreen !== screen;
         // A screen the agent already saw is not repeated, whether the Terminal was running or exited.
         const view = viewScreen(entry, screen, scrolled.shift, false);
         const output = await fitOutput(registry, entry, view.text, scrolled, scrollback());
-        result.changed = changed;
+        result.changed = !view.omitted;
         if (!view.omitted) {
           result.cursor = cursorField(entry.finalCursor);
           result.screen = screen;
@@ -1207,12 +1203,7 @@ export function createTerminalStopTool({ registry, scrollback }: TerminalResultR
         if (output.scrolledOff !== "") parts.push(`--- scrolled off ---\n${output.scrolledOff}`);
         if (view.omitted) parts.push("Its screen is unchanged since your last result.");
         else {
-          const marker = screenMarker(
-            "final screen",
-            screen,
-            view,
-            ` · ${describeCursor(result.cursor ?? null)}`,
-          );
+          const marker = screenMarker("final screen", screen, view);
           parts.push(`${marker}\n${output.screen === "" ? "(blank)" : output.screen}`);
         }
         if (output.notice !== undefined) parts.push(`\n${output.notice}`);
@@ -1220,8 +1211,13 @@ export function createTerminalStopTool({ registry, scrollback }: TerminalResultR
         result.output = entry.child.tail();
         if (result.output !== "") parts.push(`--- recent output ---\n${result.output}`);
       }
+      // A shown final screen reports its cursor in the first line, as Terminal results do.
+      const header =
+        result.cursor === undefined
+          ? `${outcome}.`
+          : `${outcome} · ${describeCursor(result.cursor)}`;
       return {
-        content: [{ type: "text" as const, text: parts.join("\n") }],
+        content: [{ type: "text" as const, text: [header, ...parts].join("\n") }],
         details: result,
         structuredContent: result,
       };
