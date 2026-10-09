@@ -338,4 +338,78 @@ describe("one Todo List snapshot per tool group", () => {
     for (let index = 1; index < requests.length; index++)
       expectByteIdenticalPrefix(requests[index - 1]!, requests[index]!);
   }, 30_000);
+
+  test("a codemode script that prints the resulting list projects no snapshot and keeps the prefix byte-identical", async () => {
+    const { session, requests, responses } = await createFixture();
+    responses.push(
+      toolCalls(
+        fauxToolCall("codemode", {
+          code: [
+            'await tools.todo({ action: "add", title: "Write tests" });',
+            'await tools.todo({ action: "add", title: "Ship it" });',
+            'return await tools.todo({ action: "list" });',
+          ].join("\n"),
+        }),
+      ),
+      fauxAssistantMessage("Planned."),
+      fauxAssistantMessage("Unchanged."),
+    );
+    await session.prompt("Plan");
+    await session.prompt("Anything else?");
+    expect(requests).toHaveLength(3);
+    // The script's own result shows the list, so a snapshot would repeat it.
+    const result = requests[1]!.messages.find((message) => message.role === "toolResult");
+    expect(result).toMatchObject({ toolName: "codemode" });
+    expect(JSON.stringify(result)).toContain("Write tests");
+    for (const request of requests.slice(1)) expect(snapshotIndexes(request.messages)).toEqual([]);
+    for (let index = 1; index < requests.length; index++)
+      expectByteIdenticalPrefix(requests[index - 1]!, requests[index]!);
+  }, 30_000);
+
+  test("a codemode script whose output hides the list still projects one snapshot and keeps the prefix", async () => {
+    const { session, requests, responses } = await createFixture();
+    responses.push(
+      toolCalls(
+        fauxToolCall("codemode", {
+          code: [
+            'await tools.todo({ action: "add", title: "Write tests" });',
+            'const list = await tools.todo({ action: "list" });',
+            "return list.tasks.length;",
+          ].join("\n"),
+        }),
+      ),
+      fauxAssistantMessage("Planned."),
+      fauxAssistantMessage("Unchanged."),
+    );
+    await session.prompt("Plan");
+    await session.prompt("Anything else?");
+    expect(requests).toHaveLength(3);
+    for (const request of requests.slice(1)) {
+      const indexes = snapshotIndexes(request.messages);
+      expect(indexes).toHaveLength(1);
+      expect(messageText(request.messages[indexes[0]!])).toBe(
+        `${SNAPSHOT_HEADER}\n[ ] #1 Write tests`,
+      );
+    }
+    for (let index = 1; index < requests.length; index++)
+      expectByteIdenticalPrefix(requests[index - 1]!, requests[index]!);
+  }, 30_000);
+
+  test("an unrelated codemode call after a full-list todo result does not bring the snapshot back", async () => {
+    const { session, requests, responses } = await createFixture();
+    responses.push(
+      toolCalls(
+        fauxToolCall("todo", { action: "add", tasks: [{ title: "One" }] }, { id: "full" }),
+        fauxToolCall("codemode", { code: "return 1;" }, { id: "other" }),
+      ),
+      fauxAssistantMessage("Planned."),
+      fauxAssistantMessage("Unchanged."),
+    );
+    await session.prompt("Plan");
+    await session.prompt("Anything else?");
+    expect(requests).toHaveLength(3);
+    for (const request of requests.slice(1)) expect(snapshotIndexes(request.messages)).toEqual([]);
+    for (let index = 1; index < requests.length; index++)
+      expectByteIdenticalPrefix(requests[index - 1]!, requests[index]!);
+  }, 30_000);
 });

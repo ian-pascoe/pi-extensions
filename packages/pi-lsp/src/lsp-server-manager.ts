@@ -974,7 +974,9 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     const incapableServerIds = routes
       .filter((_route, index) => outcomes[index] === undefined)
       .map((route) => route.serverId);
-    if (successes.length === 0 && incapableServerIds.length > 0) {
+    // A real failure already explains an empty result; claiming no server supports the method
+    // would be false when a capable server failed or timed out.
+    if (successes.length === 0 && failures.length === 0 && incapableServerIds.length > 0) {
       failures.push(noCapableServerFailure(capability, incapableServerIds));
     }
     return { failures, successes };

@@ -118,7 +118,7 @@ describe("lspEmptyPositionReadMessage", () => {
       'No references found at todo-context.ts:61:18 ("readonly").',
     );
     expect(lspEmptyPositionReadMessage("hover", position, false)).toBe(
-      'No hover information at todo-context.ts:61:18 ("readonly").',
+      'The server has no hover information at todo-context.ts:61:18 ("readonly").',
     );
   });
 });

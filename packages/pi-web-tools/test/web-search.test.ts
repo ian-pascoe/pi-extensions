@@ -1113,18 +1113,121 @@ describe("Web Search", () => {
         null,
         2,
       );
-      for (const [provider, complete] of [
-        ["exa", exa],
-        ["parallel", parallel],
-      ] as const) {
-        expect(Array.from(complete).length).toBeGreaterThan(6_000);
-        const { result, text } = await search(provider, complete, { query: "q" });
-        const marker =
-          "\n\n[Search results cut at 6000 characters; pass contextMaxCharacters (up to 50000) for more]";
-        expect(text).toBe(`${Array.from(complete).slice(0, 6_000).join("")}${marker}`);
-        expect(Array.from(text).length).toBe(6_000 + Array.from(marker).length);
-        expect(result.structuredContent).toEqual({ provider, content: text });
+      expect(Array.from(exa).length).toBeGreaterThan(6_000);
+      const shared = await search("exa", exa, { query: "q" });
+      const marker = shared.text.slice(shared.text.lastIndexOf("\n\n["));
+      expect(Array.from(shared.text).length - Array.from(marker).length).toBeLessThanOrEqual(6_000);
+      expect(shared.result.structuredContent).toEqual({ provider: "exa", content: shared.text });
+
+      expect(Array.from(parallel).length).toBeGreaterThan(6_000);
+      const { result, text } = await search("parallel", parallel, { query: "q" });
+      const parallelMarker =
+        "\n\n[Search results cut at 6000 characters; pass contextMaxCharacters (up to 50000) for more]";
+      expect(text).toBe(`${Array.from(parallel).slice(0, 6_000).join("")}${parallelMarker}`);
+      expect(result.structuredContent).toEqual({ provider: "parallel", content: text });
+    });
+
+    describe("shares the budget across Exa results", () => {
+      function exaBlock(index: number, bodyLength: number): string {
+        return [
+          `Title: Result ${index}`,
+          `URL: https://example.com/${index}`,
+          `Published Date: 2025-01-0${index}`,
+          "Highlights:",
+          `${String(index).repeat(bodyLength)}`,
+        ].join("\n");
       }
+      const headers = (index: number) =>
+        `Title: Result ${index}\nURL: https://example.com/${index}\nPublished Date: 2025-01-0${index}`;
+
+      test("keeps every result's header lines when the first result is huge", async () => {
+        const complete = [1, 2, 3, 4, 5]
+          .map((index) => exaBlock(index, index === 1 ? 20_000 : 3_000))
+          .join("\n\n");
+        const { result, text } = await search("exa", complete, { query: "q", numResults: 5 });
+        for (const index of [1, 2, 3, 4, 5]) {
+          expect(text).toContain(headers(index));
+          expect(text).toContain(`Highlights:\n${String(index).repeat(100)}`);
+        }
+        const marker = text.slice(text.lastIndexOf("\n\n["));
+        expect(text.endsWith(marker)).toBe(true);
+        expect(marker).toContain("cut at 6000 characters");
+        expect(marker).toContain("results 1, 2, 3, 4, 5");
+        expect(marker).toContain("contextMaxCharacters");
+        expect(marker).toContain("web_fetch");
+        expect(Array.from(text).length - Array.from(marker).length).toBeLessThanOrEqual(6_000);
+        // Equal long results get equal shares (within the remainder of an uneven split).
+        const bodyLength = (index: number) =>
+          text
+            .split("\n")
+            .filter((line) => line !== "" && line === String(index).repeat(line.length))
+            .at(0)?.length ?? 0;
+        expect(Math.abs(bodyLength(2) - bodyLength(5))).toBeLessThanOrEqual(1);
+        expect(bodyLength(1)).toBe(bodyLength(2));
+        expect(result.structuredContent).toEqual({ provider: "exa", content: text });
+      });
+
+      test("lets short results leave their unused share to longer ones and names only cut results", async () => {
+        const complete = [exaBlock(1, 5_000), exaBlock(2, 50), exaBlock(3, 5_000)].join("\n\n");
+        const { text } = await search("exa", complete, { query: "q" });
+        expect(text).toContain(exaBlock(2, 50));
+        const marker = text.slice(text.lastIndexOf("\n\n["));
+        expect(marker).toContain("results 1, 3");
+        expect(marker).not.toContain("2");
+        expect(Array.from(text).length - Array.from(marker).length).toBe(6_000);
+      });
+
+      test("keeps header lines whole for an explicit budget that holds them", async () => {
+        const complete = [exaBlock(1, 5_000), exaBlock(2, 5_000)].join("\n\n");
+        const { text } = await search("exa", complete, { query: "q", contextMaxCharacters: 400 });
+        expect(text).toContain(headers(1));
+        expect(text).toContain(headers(2));
+      });
+
+      test("keeps only Title and URL lines when the full headers do not fit", async () => {
+        const complete = [1, 2, 3, 4].map((index) => exaBlock(index, 5_000)).join("\n\n");
+        // Full headers need ~4 x 75 characters; Title and URL alone need ~4 x 40.
+        const { text } = await search("exa", complete, { query: "q", contextMaxCharacters: 260 });
+        for (const index of [1, 2, 3, 4]) {
+          expect(text).toContain(`Title: Result ${index}\nURL: https://example.com/${index}\n`);
+        }
+        expect(text).not.toContain("Published Date");
+        const marker = text.slice(text.lastIndexOf("\n\n["));
+        expect(marker).toContain("metadata other than Title and URL dropped");
+        expect(Array.from(text).length - Array.from(marker).length).toBeLessThanOrEqual(260);
+      });
+
+      test("cuts body lines that merely look like metadata", async () => {
+        const body = `Summary text: ${"s".repeat(8_000)}`;
+        const complete = [exaBlock(1, 10).replace(/Highlights:\n.*$/, body), exaBlock(2, 10)].join(
+          "\n\n",
+        );
+        const { text } = await search("exa", complete, { query: "q" });
+        expect(text).toContain(headers(2));
+        expect(text).toContain("Summary text: ");
+        expect(text).not.toContain("s".repeat(7_000));
+        expect(text).toContain("results 1 shortened".replace("results", "result"));
+      });
+
+      test("adds the contextMaxCharacters hint only when the budget was the default", async () => {
+        const complete = [exaBlock(1, 5_000), exaBlock(2, 5_000)].join("\n\n");
+        const byDefault = await search("exa", complete, { query: "q" });
+        expect(byDefault.text).toContain("pass contextMaxCharacters (up to 50000) for more");
+        const explicit = await search("exa", complete, { query: "q", contextMaxCharacters: 1_000 });
+        expect(explicit.text).not.toContain("pass contextMaxCharacters");
+        expect(explicit.text).toContain("cut at 1000 characters");
+      });
+
+      test("falls back to a plain cut when the budget cannot hold every header", async () => {
+        const complete = [exaBlock(1, 5_000), exaBlock(2, 5_000)].join("\n\n");
+        const { text } = await search("exa", complete, { query: "q", contextMaxCharacters: 50 });
+        expect(text).toBe(`${complete.slice(0, 50)}\n\n[Search results cut at 50 characters]`);
+      });
+
+      test("returns text that fits unchanged", async () => {
+        const complete = [exaBlock(1, 500), exaBlock(2, 500)].join("\n\n");
+        expect((await search("exa", complete, { query: "q" })).text).toBe(complete);
+      });
     });
 
     test("defaults contextMaxCharacters to 6,000 and says how to read more when it cuts", async () => {

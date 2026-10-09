@@ -591,6 +591,11 @@ function renderWaitProgress(
 
 /** Shown instead of the output of a result already delivered to the parent automatically. */
 const ALREADY_DELIVERED_TEXT = "Already delivered automatically; wait with turn_id to reread it.";
+const DELIVERY_PENDING_TEXT = "Handed to you automatically; it arrives as a separate message.";
+
+function alreadyDeliveredText(details: { delivery_pending?: boolean }): string {
+  return details.delivery_pending ? DELIVERY_PENDING_TEXT : ALREADY_DELIVERED_TEXT;
+}
 
 /** The activity labels of a timeout result, including pre-compact results that carried the full status. */
 function timeoutActivityLabels(
@@ -616,7 +621,7 @@ function collapsedWaitBody(
       : undefined;
   }
   if (details.already_delivered) {
-    return collapsedText(theme, theme.fg("muted", ALREADY_DELIVERED_TEXT));
+    return collapsedText(theme, theme.fg("muted", alreadyDeliveredText(details)));
   }
   const output = details.output ?? "";
   if (status === "completed") {
@@ -691,7 +696,7 @@ function renderWaitResult(
   }
   const output = details.output ?? "";
   if (details.already_delivered) {
-    appendTextSection(container, theme, "Output", ALREADY_DELIVERED_TEXT);
+    appendTextSection(container, theme, "Output", alreadyDeliveredText(details));
   } else if (status === "completed") {
     if (output.length > 0) {
       appendComponentSection(

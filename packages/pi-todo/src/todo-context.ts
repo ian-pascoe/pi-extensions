@@ -4,12 +4,13 @@ import {
   type ContextEvent,
   type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import {
   formatTodoList,
   parseTodoStateSnapshot,
   TodoStateRecord,
+  TodoTaskRecord,
   type TodoStateSnapshot,
 } from "./todo-list.js";
 
@@ -44,13 +45,79 @@ export function todoStateFromEntry(entry: SessionEntry): TodoStateSnapshot | und
   return parseTodoStateSnapshot(entry.data);
 }
 
-/** True when a successful `todo` result's details carry exactly the complete resulting list. */
-function resultRendersList(message: Message | undefined, tasks: TodoStateSnapshot["tasks"]) {
-  if (message?.role !== "toolResult" || message.toolName !== "todo" || message.isError)
-    return false;
+/** A printed result's `tasks`, or a bare non-empty Task array a script returned. */
+const ShownTasks = Type.Union([
+  Type.Object({ tasks: Type.Array(TodoTaskRecord) }),
+  Type.Array(TodoTaskRecord, { minItems: 1 }),
+]);
+/** Longer output is treated as not showing the list; Pi itself truncates output near this size. */
+const MAX_SCANNED_OUTPUT_CHARS = 65_536;
+
+/**
+ * The last Todo List a `codemode` script printed as JSON, however deeply it nested it.
+ *
+ * Deliberate coupling to codemode's output text: Pi records a script's nested calls on the
+ * `codemode` tool result without their results (`nestedCalls` holds names, arguments and
+ * statuses only), so what the model saw can only be read from the output. This is a best-effort
+ * dedupe: anything unrecognised keeps the Snapshot, which is always safe.
+ *
+ * One pass tracks bracket nesting and string state, and parses each balanced value that mentions
+ * Tasks, so the cost is bounded by output size times nesting depth.
+ */
+function lastListInText(text: string): readonly Static<typeof TodoTaskRecord>[] | undefined {
+  let last: readonly Static<typeof TodoTaskRecord>[] | undefined;
+  if (text.length > MAX_SCANNED_OUTPUT_CHARS) return last;
+  const opened: number[] = [];
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (inString) {
+      if (char === "\\") i++;
+      else if (char === '"') inString = false;
+    } else if (char === '"') inString = opened.length > 0;
+    else if (char === "{" || char === "[") opened.push(i);
+    else if (char === "}" || char === "]") {
+      const start = opened.pop();
+      if (start === undefined || text[start] !== (char === "}" ? "{" : "[")) {
+        opened.length = 0;
+        continue;
+      }
+      const candidate = text.slice(start, i + 1);
+      if (!candidate.includes('"title"') && !candidate.includes('"tasks"')) continue;
+      try {
+        const value = JSON.parse(candidate);
+        if (Value.Check(ShownTasks, value)) last = Array.isArray(value) ? value : value.tasks;
+      } catch {
+        // Not JSON: prose that merely contains brackets.
+      }
+    }
+  }
+  return last;
+}
+
+/** True when Pi recorded a nested `todo` call on this `codemode` result. */
+function codemodeCalledTodo(message: Message): boolean {
   return (
-    Value.Check(ListDetails, message.details) && isDeepStrictEqual(message.details.tasks, tasks)
+    message.role === "toolResult" &&
+    message.toolName === "codemode" &&
+    (message.nestedCalls?.calls ?? []).some((call) => call.name === "todo")
   );
+}
+
+/**
+ * True when a successful `todo` result's details, or the last list the output of a successful
+ * `codemode` script that called `todo` printed, carry exactly the complete resulting list.
+ */
+function resultRendersList(message: Message | undefined, tasks: TodoStateSnapshot["tasks"]) {
+  if (message?.role !== "toolResult" || message.isError) return false;
+  if (message.toolName === "todo")
+    return (
+      Value.Check(ListDetails, message.details) && isDeepStrictEqual(message.details.tasks, tasks)
+    );
+  if (!codemodeCalledTodo(message)) return false;
+  const text = message.content.flatMap((block) => (block.type === "text" ? [block.text] : []));
+  const shown = lastListInText(text.join("\n"));
+  return shown !== undefined && isDeepStrictEqual(shown, tasks);
 }
 
 function snapshotMessage(
@@ -122,7 +189,8 @@ export function projectTodoContext(
     }
   }
   const outstanding = new Map<string, number>();
-  // A tool group projects only its final state, once its last result has landed.
+  // A tool group projects only its final state, once its last result has landed. Nested `todo`
+  // calls in a `codemode` script leave no results in the journal, so the script's result stands in.
   let lastTodoResult: Message | undefined;
   let pending: { entry: SessionEntry; state: TodoStateSnapshot } | undefined;
   const project = (entry: SessionEntry, state: TodoStateSnapshot, finalResult?: Message): void => {
@@ -156,7 +224,8 @@ export function projectTodoContext(
         if (block.type === "toolCall")
           outstanding.set(block.id, (outstanding.get(block.id) ?? 0) + 1);
     } else if (message.role === "toolResult") {
-      if (message.toolName === "todo") lastTodoResult = message;
+      // A `codemode` result counts only when it recorded a nested `todo` call.
+      if (message.toolName === "todo" || codemodeCalledTodo(message)) lastTodoResult = message;
       const remaining = (outstanding.get(message.toolCallId) ?? 0) - 1;
       if (remaining > 0) outstanding.set(message.toolCallId, remaining);
       else outstanding.delete(message.toolCallId);

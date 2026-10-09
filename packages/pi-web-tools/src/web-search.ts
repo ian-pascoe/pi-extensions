@@ -129,7 +129,7 @@ const WEB_SEARCH_PARAMETERS = Type.Object(
         minimum: 1,
         maximum: MAX_CONTEXT_MAX_CHARACTERS,
         default: WEB_SEARCH_DEFAULT_CONTEXT_MAX_CHARACTERS,
-        description: `Maximum characters of Search Provider text returned (1–${formatCount(MAX_CONTEXT_MAX_CHARACTERS)}, default: ${formatCount(WEB_SEARCH_DEFAULT_CONTEXT_MAX_CHARACTERS)}). Longer text is cut at that many code points, then marked; raise it to read more.`,
+        description: `Maximum characters of Search Provider text returned (1–${formatCount(MAX_CONTEXT_MAX_CHARACTERS)}, default: ${formatCount(WEB_SEARCH_DEFAULT_CONTEXT_MAX_CHARACTERS)}). Exa results share it so each keeps its Title and URL; other text is cut at that many code points. Cuts are marked; raise it to read more.`,
       }),
     ),
   },
@@ -173,7 +173,7 @@ const MCP_RESPONSE_SCHEMA = Type.Object(
   { additionalProperties: true },
 );
 
-const WEB_SEARCH_DESCRIPTION = `Discover current public web information using Exa or Parallel. Results are textual, cut at ${formatCount(WEB_SEARCH_DEFAULT_CONTEXT_MAX_CHARACTERS)} characters by default (see contextMaxCharacters), and model-visible output is truncated to 50 KiB or 2,000 lines, with complete output saved to a private temporary file.`;
+const WEB_SEARCH_DESCRIPTION = `Discover current public web information using Exa or Parallel. Results are textual, cut at ${formatCount(WEB_SEARCH_DEFAULT_CONTEXT_MAX_CHARACTERS)} characters by default and shared across results (see contextMaxCharacters), and model-visible output is truncated to 50 KiB or 2,000 lines, with complete output saved to a private temporary file.`;
 
 type ExaSearchArguments = {
   query: string;
@@ -527,20 +527,125 @@ function truncateCodePoints(text: string, limit: number): string {
   return text.length <= limit ? text : Array.from(text).slice(0, limit).join("");
 }
 
+/** Starts one Exa result: a `Title:` line directly followed by its `URL:` line. */
+const EXA_RESULT_START = /(?:^|\n\n)(?=Title: [^\n]*\nURL: )/;
+const EXA_RESULT_SEPARATOR = "\n\n";
+/** Exa's metadata keys; the first line with any other key (`Highlights:`, `Text:`, ...) opens the body. */
+const EXA_HEADER_LINE = /^(?:Title|URL|Published Date|Published|Author|Image|Favicon|ID|Score): /;
+/** The lines a model needs to choose a URL for `web_fetch`. */
+const EXA_ESSENTIAL_LINE = /^(?:Title|URL): /;
+
+/** One Exa result: all metadata lines, just Title and URL, and the body that follows the metadata. */
+type ExaResult = {
+  readonly header: string;
+  readonly essentialHeader: string;
+  readonly body: string;
+};
+
+function splitExaResults(text: string): ExaResult[] | undefined {
+  const blocks = text.split(EXA_RESULT_START).filter((block) => block !== "");
+  if (blocks.length === 0 || !blocks.every((block) => block.startsWith("Title: ")))
+    return undefined;
+  return blocks.map((block) => {
+    const lines = block.split("\n");
+    let count = 0;
+    while (count < lines.length && EXA_HEADER_LINE.test(lines[count] ?? "")) count++;
+    const headerLines = lines.slice(0, count);
+    const header = headerLines.join("\n");
+    return {
+      header,
+      essentialHeader: headerLines.filter((line) => EXA_ESSENTIAL_LINE.test(line)).join("\n"),
+      body: block.slice(header.length),
+    };
+  });
+}
+
 /**
- * Cut provider text at `contextMaxCharacters` code points (default 6,000), then mark the cut. The
- * default cut also says how to read more, since the model did not choose that budget.
+ * The hint for reading more. The model did not choose the default budget, so only a default cut
+ * says how to raise it; an explicit budget is already the model's own choice.
+ */
+function moreHint(explicit: number | undefined): string {
+  return explicit === undefined
+    ? `; pass contextMaxCharacters (up to ${MAX_CONTEXT_MAX_CHARACTERS}) for more`
+    : "";
+}
+
+/** Split `budget` code points over bodies: short ones keep all, the rest share what remains evenly. */
+function shareBodyBudget(lengths: readonly number[], budget: number): number[] {
+  const shares = [...lengths];
+  let remaining = budget;
+  let pending = lengths
+    .map((length, index) => ({ length, index }))
+    .toSorted((a, b) => a.length - b.length || a.index - b.index);
+  while (pending.length > 0) {
+    const fair = Math.floor(remaining / pending.length);
+    const first = pending[0];
+    if (first === undefined || first.length > fair) break;
+    remaining -= first.length;
+    pending = pending.slice(1);
+  }
+  let extra = pending.length === 0 ? 0 : remaining % pending.length;
+  const fair = pending.length === 0 ? 0 : Math.floor(remaining / pending.length);
+  for (const { index } of pending.toSorted((a, b) => a.index - b.index)) {
+    shares[index] = fair + (extra > 0 ? 1 : 0);
+    if (extra > 0) extra--;
+  }
+  return shares;
+}
+
+/**
+ * Split `limit` code points across an Exa result list so every result keeps its header lines and a
+ * fair share of its body. When the full headers do not fit, only each Title and URL line is kept.
+ * Returns undefined when the text is not such a list or even those lines do not fit, so the caller
+ * falls back to one plain cut.
+ */
+function shareSearchBudget(
+  text: string,
+  limit: number,
+  explicit: number | undefined,
+): string | undefined {
+  const results = splitExaResults(text);
+  if (results === undefined) return undefined;
+  const separators = EXA_RESULT_SEPARATOR.length * (results.length - 1);
+  const fixedLength = (headers: readonly string[]) =>
+    headers.reduce((sum, header) => sum + Array.from(header).length, separators);
+  let headers = results.map(({ header }) => header);
+  let reduced = false;
+  if (fixedLength(headers) > limit) {
+    headers = results.map(({ essentialHeader }) => essentialHeader);
+    reduced = true;
+    if (fixedLength(headers) > limit) return undefined;
+  }
+  const bodies = results.map(({ body }) => Array.from(body));
+  const shares = shareBodyBudget(
+    bodies.map((body) => body.length),
+    limit - fixedLength(headers),
+  );
+  const cut: number[] = [];
+  const kept = headers.map((header, index) => {
+    const body = bodies[index] ?? [];
+    const share = shares[index] ?? 0;
+    if (body.length > share) cut.push(index + 1);
+    return header + body.slice(0, share).join("");
+  });
+  const label = cut.length === 1 ? "result" : "results";
+  const shortened = cut.length === 0 ? "" : `; ${label} ${cut.join(", ")} shortened`;
+  const dropped = reduced ? "; metadata other than Title and URL dropped" : "";
+  return `${kept.join(EXA_RESULT_SEPARATOR)}\n\n[Search results cut at ${limit} characters, shared across ${results.length} results${shortened}${dropped}${moreHint(explicit)}; web_fetch a result's URL for the full page]`;
+}
+
+/**
+ * Cut provider text at `contextMaxCharacters` code points (default 6,000), then mark the cut. An
+ * Exa result list shares that budget so each result keeps its Title and URL; other text is cut once.
  */
 function limitSearchText(text: string, parameters: WebSearchParameters): string {
   const explicit = parameters.contextMaxCharacters;
   const limit = explicit ?? WEB_SEARCH_DEFAULT_CONTEXT_MAX_CHARACTERS;
   const kept = truncateCodePoints(text, limit);
   if (kept === text) return text;
-  const more =
-    explicit === undefined
-      ? `; pass contextMaxCharacters (up to ${MAX_CONTEXT_MAX_CHARACTERS}) for more`
-      : "";
-  return `${kept}\n\n[Search results cut at ${limit} characters${more}]`;
+  const shared = shareSearchBudget(text, limit, explicit);
+  if (shared !== undefined) return shared;
+  return `${kept}\n\n[Search results cut at ${limit} characters${moreHint(explicit)}]`;
 }
 
 function unableToSearch(query: string | undefined, failure: WebFailure): Error {

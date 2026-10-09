@@ -118,13 +118,25 @@ export function contextReference(manager: ReadonlySessionManager, entryId: strin
   return `context:${manager.getSessionId()}:${entryId}`;
 }
 
+/** Longest prefix of a rejected ref echoed back, so a pasted blob cannot flood the error. */
+const MAX_ECHOED_REFERENCE_CHARACTERS = 80;
+
+function invalidReferenceMessage(manager: ReadonlySessionManager, ref: string): string {
+  const shown =
+    ref.length > MAX_ECHOED_REFERENCE_CHARACTERS
+      ? `${ref.slice(0, MAX_ECHOED_REFERENCE_CHARACTERS)}…`
+      : ref;
+  const example = contextReference(manager, manager.getLeafId() ?? "<entry>");
+  return `Invalid reference ${JSON.stringify(shown)}: expected a source-qualified context:<session>:<entry> reference, for example ${example}. Copy refs verbatim from context_history windows, list, or search results (or context_notes list or search results); do not construct them.`;
+}
+
 /** Validates that a reference issuer is proven on the selected branch before resolving its entry ID. */
 export function resolveContextReference(manager: ReadonlySessionManager, ref: string): string {
   const match = /^context:([A-Za-z0-9-]{1,128}):([A-Za-z0-9-]{1,128})$/.exec(ref);
   const sourceSession = match?.[1];
   const entryId = match?.[2];
   if (!sourceSession || !entryId) {
-    throw new Error("Expected a source-qualified context:<session>:<entry> reference");
+    throw new Error(invalidReferenceMessage(manager, ref));
   }
   assertContextJournalReadable(manager);
   if (sourceSession === manager.getSessionId()) return entryId;

@@ -98,6 +98,9 @@ export interface WaitTurnResult extends TurnResult {
   messages?: WaitMessageResult[];
 }
 
+/** How a result reached the caller automatically: handed to Pi but not yet in its branch, or recorded there. */
+export type AutomaticDelivery = "handed" | "recorded";
+
 /**
  * Reports that a default wait selected a terminal turn whose result was already delivered
  * automatically, handed or settled, so the output is not repeated; an explicit `turn_id` rereads it.
@@ -108,6 +111,11 @@ export interface WaitDeliveredTurnResult extends Pick<
 > {
   event: "turn";
   already_delivered: true;
+  /**
+   * Set when the result is handed to Pi but not yet recorded in the caller's branch, so it will
+   * arrive as a separate message and needs no reread.
+   */
+  delivery_pending?: true;
   messages?: WaitMessageResult[];
 }
 

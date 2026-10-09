@@ -118,11 +118,21 @@ function expectAlreadyDelivered(
   wait: ReturnType<typeof toolResult>,
   turnId: string,
   output: string,
+  /** The result is handed but not yet recorded in the caller's branch. */
+  pending = false,
 ): void {
   expect(wait.text).not.toContain(output);
-  expect(wait.text).toContain("already delivered automatically");
   expect(wait.text).toContain(turnId);
-  expect(wait.details).toEqual({
+  if (pending) {
+    expect(wait.text).toContain("arrives as a separate message");
+    expect(wait.text).not.toContain("already delivered automatically");
+    expect(wait.text).not.toContain("call subagent_wait");
+  } else {
+    expect(wait.text).toContain("already delivered automatically");
+    expect(wait.text).toContain("call subagent_wait");
+    expect(wait.text).not.toContain("separate message");
+  }
+  const expected = {
     event: "turn",
     agent_id: "worker",
     turn_id: turnId,
@@ -130,7 +140,8 @@ function expectAlreadyDelivered(
     already_delivered: true,
     source_agent_id: "worker",
     source_turn_id: turnId,
-  });
+  };
+  expect(wait.details).toEqual(pending ? { ...expected, delivery_pending: true } : expected);
 }
 
 test("a default wait does not repeat a spawned result automatic fallback already handed", async () => {
@@ -144,7 +155,7 @@ test("a default wait does not repeat a spawned result automatic fallback already
   await session.waitForIdle();
 
   expect(resultEntries()).toHaveLength(1);
-  expectAlreadyDelivered(toolResult("wait"), spawnedTurnId(session), SPAWN_OUTPUT);
+  expectAlreadyDelivered(toolResult("wait"), spawnedTurnId(session), SPAWN_OUTPUT, true);
 });
 
 test("a default wait does not repeat a started-turn result automatic fallback already handed", async () => {
@@ -164,7 +175,12 @@ test("a default wait does not repeat a started-turn result automatic fallback al
   await session.waitForIdle();
 
   expect(resultEntries()).toHaveLength(2);
-  expectAlreadyDelivered(toolResult("wait"), reportedTurnId(session, "continue"), MESSAGE_OUTPUT);
+  expectAlreadyDelivered(
+    toolResult("wait"),
+    reportedTurnId(session, "continue"),
+    MESSAGE_OUTPUT,
+    true,
+  );
 });
 
 test("a default wait does not repeat a result automatic fallback already delivered", async () => {
@@ -206,7 +222,7 @@ test("an explicit turn_id rereads a result automatic fallback already handed", a
   await session.prompt("Spawn a worker");
   await session.waitForIdle();
 
-  expectAlreadyDelivered(toolResult("wait"), spawnedTurnId(session), SPAWN_OUTPUT);
+  expectAlreadyDelivered(toolResult("wait"), spawnedTurnId(session), SPAWN_OUTPUT, true);
   const reread = toolResult("reread");
   expect(reread.text).toContain(SPAWN_OUTPUT);
   expect(reread.details).toMatchObject({
@@ -237,7 +253,7 @@ test("an already-delivered wait is not Delivery Evidence, so a result Esc discar
   await session.prompt("Spawn a worker");
   await session.waitForIdle();
   unsubscribe();
-  expectAlreadyDelivered(toolResult("wait"), spawnedTurnId(session), SPAWN_OUTPUT);
+  expectAlreadyDelivered(toolResult("wait"), spawnedTurnId(session), SPAWN_OUTPUT, true);
   expect(requests).toHaveLength(2);
   expect(resultEntries()).toHaveLength(0);
   // The wait's own tool result did not settle the discarded result.

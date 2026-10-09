@@ -425,6 +425,31 @@ describe("minimal subagents coordinator tools", () => {
     expect(
       Value.Check(CoordinatorToolOutputSchemas.subagent_wait, withMessages.structuredContent),
     ).toBe(true);
+
+    // A result handed to Pi but not yet in the caller's branch arrives after this tool result.
+    const pending = { ...alreadyDelivered, delivery_pending: true } as const;
+    options.recordedWait.mockResolvedValueOnce(pending);
+    const pendingNotice = await waitTool.execute(
+      "wait-call",
+      { agent_id: "child" },
+      undefined,
+      undefined,
+      context,
+    );
+    expect(pendingNotice.content).toEqual([
+      {
+        type: "text",
+        text: "Result of child turn child:turn-1 (completed) was handed to you automatically and arrives as a separate message; no reread is needed.",
+      },
+    ]);
+    expect(pendingNotice.structuredContent).toEqual({
+      ...pending,
+      source_agent_id: "child",
+      source_turn_id: "child:turn-1",
+    });
+    expect(
+      Value.Check(CoordinatorToolOutputSchemas.subagent_wait, pendingNotice.structuredContent),
+    ).toBe(true);
   });
 
   it("streams the waited-on child's running-turn progress in partial wait updates", async () => {

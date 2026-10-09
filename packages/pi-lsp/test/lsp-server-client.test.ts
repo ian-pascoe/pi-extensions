@@ -8,6 +8,7 @@ import {
   LspServerClientError,
   type LspServerClientOptions,
 } from "../src/lsp-server-client.js";
+import { testTimeouts } from "./lsp-timeouts.js";
 
 const fixturePath = resolve(import.meta.dirname, "fixtures/fake-lsp-server.mjs");
 const temporaryDirectories: string[] = [];
@@ -45,6 +46,8 @@ async function startFakeServer(
     readonly onUnavailable?: LspServerClientOptions["onUnavailable"];
     readonly onWorkspaceEdit?: LspServerClientOptions["onWorkspaceEdit"];
     readonly diagnosticsMs?: number;
+    readonly requestMs?: number;
+    readonly workspaceRequestMs?: number;
   } = {},
 ): Promise<LspServerClient> {
   const clientOptions: LspServerClientOptions = {
@@ -56,12 +59,13 @@ async function startFakeServer(
     initializationOptions: { fakeInitialization: true },
     settings: { typescript: { preferences: { quoteStyle: "single" } } },
     stderrPath: resolve(directory, "fake.stderr.log"),
-    timeouts: {
+    timeouts: testTimeouts({
       initializeMs: 5_000,
-      requestMs: 1_000,
+      requestMs: options.requestMs ?? 1_000,
+      workspaceRequestMs: options.workspaceRequestMs ?? 2_000,
       diagnosticsMs: options.diagnosticsMs ?? 500,
       shutdownMs: 1_000,
-    },
+    }),
   };
   const client = await LspServerClient.start({
     ...clientOptions,
@@ -270,6 +274,52 @@ describe("LspServerClient", () => {
     const stderr = await waitForStderrTail(client.stderrPath);
     expect(stderr.length).toBe(1024 * 1024);
     expect(stderr.subarray(-3).toString()).toBe("END");
+  });
+
+  test("gives workspace-wide requests the larger workspace request budget", async () => {
+    const directory = await createTemporaryDirectory();
+    const slow = await startFakeServer(directory, {
+      environment: { FAKE_REFERENCES_DELAY_MS: "400" },
+      requestMs: 100,
+      workspaceRequestMs: 3_000,
+    });
+    const params = {
+      textDocument: { uri: "file:///x.ts" },
+      position: { line: 0, character: 0 },
+      context: { includeDeclaration: true },
+    };
+
+    await expect(slow.request("textDocument/references", params)).resolves.toEqual([]);
+
+    // The ordinary budget still ends a request that is not workspace-wide.
+    await expect(slow.request("fake/delay", {})).rejects.toMatchObject({ kind: "timeout" });
+  });
+
+  test("ends a workspace-wide request at the workspace budget, never below the request budget", async () => {
+    const directory = await createTemporaryDirectory();
+    const params = {
+      textDocument: { uri: "file:///x.ts" },
+      position: { line: 0, character: 0 },
+      context: { includeDeclaration: true },
+    };
+    const bounded = await startFakeServer(directory, {
+      environment: { FAKE_DELAY_REFERENCES: "1" },
+      requestMs: 100,
+      workspaceRequestMs: 300,
+    });
+    const started = Date.now();
+    await expect(bounded.request("textDocument/references", params)).rejects.toMatchObject({
+      kind: "timeout",
+    });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+
+    // A request budget above the workspace budget is the floor.
+    const floored = await startFakeServer(directory, {
+      environment: { FAKE_REFERENCES_DELAY_MS: "400" },
+      requestMs: 2_000,
+      workspaceRequestMs: 100,
+    });
+    await expect(floored.request("textDocument/references", params)).resolves.toEqual([]);
   });
 
   test("reports a distinct diagnostics timeout", async () => {

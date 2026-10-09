@@ -42,7 +42,9 @@ From this package checkout, load the source directly with
    response arrives automatically as a steer message. Without `turn_id`, a wait
    skips turns whose result you already claimed or received automatically, and
    never repeats an automatically delivered result: it reports
-   `already_delivered: true` instead of the output.
+   `already_delivered: true` instead of the output. If the result is handed to Pi but
+   not yet in your conversation, it also sets `delivery_pending: true` and the
+   result arrives as a separate message; no reread needed.
 3. `agent_message` continues an idle child: the result reports
    `disposition: "started-turn"` with the new `turn_id`. A plain
    `subagent_wait({ agent_id })` targets that new turn, not the first result;
@@ -352,7 +354,9 @@ remaining observable turn, falling back to the active, then latest, turn. When
 that fallback reaches a result already delivered to you automatically, whether
 still queued or settled, the wait returns `event: "turn"` with
 `already_delivered: true`, the turn identity, and status, but no output; it does
-not claim the turn, and `turn_id` rereads the full result. A
+not claim the turn, and `turn_id` rereads the full result. A result handed but
+not yet recorded in your branch also carries `delivery_pending: true`: it will
+arrive as a separate message (redelivered if Pi discards the queued steer), so no reread is needed. A
 caller may have only one outstanding wait for the same source turn; a
 concurrent duplicate is rejected instead of competing for one Wait Event.
 When `timeout_ms` expires, the wait returns an observational `event: "timeout"`

@@ -276,6 +276,22 @@ function timeoutError(options: LspServerClientOptions, operation: string): LspSe
   );
 }
 
+/** Methods that search the whole workspace, so a server still loading projects can answer slowly. */
+const WORKSPACE_WIDE_METHODS: ReadonlySet<string> = new Set([
+  "textDocument/references",
+  "textDocument/implementation",
+  "textDocument/rename",
+  "workspace/symbol",
+  "callHierarchy/incomingCalls",
+  "callHierarchy/outgoingCalls",
+]);
+
+function requestBudgetMs(method: string, timeouts: LspServerClientTimeouts): number {
+  return WORKSPACE_WIDE_METHODS.has(method)
+    ? Math.max(timeouts.requestMs, timeouts.workspaceRequestMs)
+    : timeouts.requestMs;
+}
+
 /** Own one stdio LSP process, connection, synchronized-document cache, and diagnostics state. */
 export class LspServerClient {
   private capabilitiesValue: ServerCapabilities = {};
@@ -532,7 +548,7 @@ export class LspServerClient {
     return this.sendRequestWithBudget<TResult>(
       method,
       parameters,
-      this.options.timeouts.requestMs,
+      requestBudgetMs(method, this.options.timeouts),
       method,
       signal,
     );

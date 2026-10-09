@@ -139,6 +139,21 @@ describe("Context History tools", () => {
       /source-qualified/,
     );
   });
+  test("malformed references explain the format, an example, and where valid refs come from", async () => {
+    const f = harness();
+    const id = f.manager.appendMessage({ role: "user", content: "recent", timestamp: 0 });
+    const message = await f.run("context_history", { action: "read", ref: "bogus" }).then(
+      () => "",
+      (error: Error) => error.message,
+    );
+    expect(message).toContain('Invalid reference "bogus"');
+    expect(message).toContain("context:<session>:<entry>");
+    expect(message).toContain(`context:${f.manager.getSessionId()}:${id}`);
+    expect(message).toMatch(/windows.*list.*search/);
+    await expect(f.run("context_history", { action: "list", window: "bogus" })).rejects.toThrow(
+      /Invalid reference "bogus"/,
+    );
+  });
   test("rejects forged source qualifiers even when the entry exists locally", async () => {
     const f = harness();
     f.manager.appendMessage({ role: "user", content: "local", timestamp: 0 });
