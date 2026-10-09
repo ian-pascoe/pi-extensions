@@ -208,7 +208,7 @@ export interface DapLaunchInput {
 export interface DapRejectedChildSession {
   readonly type?: string;
   readonly name?: string;
-  /** The adapter's id for the pending child target. */
+  /** The adapter's id for the child session's pending debug target. */
   readonly targetId?: string;
   /** Actionable, model-readable explanation naming the child session. */
   readonly message: string;
@@ -334,6 +334,8 @@ export interface DapSessionOptions {
 
 /** A stop a debuggable target reported that no operation has resumed yet. */
 interface DapTargetStop {
+  /** Orders waiting stops, so they are reported in the order they arrived. */
+  readonly arrival: number;
   readonly reason: string;
   readonly description: string | undefined;
   /** The target's own Breakpoint ids, translated to the reported ids when the stop is reported. */
@@ -377,7 +379,10 @@ interface ActiveDapSession {
   /** Child sessions being debugged, from attach until they terminate or the session ends. */
   readonly children: Set<DapDebugTarget>;
   /** Pi thread id to its target and adapter thread id, for targets that map thread ids. */
-  readonly threads: Map<number, { readonly target: DapDebugTarget; readonly threadId: number }>;
+  readonly threadOwners: Map<
+    number,
+    { readonly target: DapDebugTarget; readonly threadId: number }
+  >;
   nextThreadId: number;
   /** Desired Breakpoint key to the id reported for it: the primary target's, else the first child's. */
   readonly reportedBreakpointIds: Map<string, number>;
@@ -391,6 +396,8 @@ interface ActiveDapSession {
   topFrame: DebugProtocol.StackFrame | undefined;
   /** Counts stopped events, so a frame read for an earlier stop is never attached to a later one. */
   stopSequence: number;
+  /** Counts stops any target reported, to order waiting stops. */
+  stopArrivals: number;
   exitCode: number | undefined;
   /** Whether the primary target channel has reported `terminated`. */
   targetTerminated: boolean;
@@ -485,6 +492,25 @@ function jsDebugExitCode(body: Static<typeof DapOutputEventBodySchema>): number 
   if (body.category !== "stderr") return undefined;
   const match = /^Process exited with code (\d+)\r?\n?$/u.exec(body.output);
   return match?.[1] === undefined ? undefined : Number(match[1]);
+}
+
+/** Pi DAP's `initialize` arguments; only the adapter id and two reverse-request flags vary. */
+function initializeArguments(
+  adapterID: string,
+  supportsRunInTerminalRequest: boolean,
+  supportsStartDebuggingRequest: boolean,
+): DebugProtocol.InitializeRequestArguments {
+  return {
+    adapterID,
+    clientID: "pi-dap",
+    clientName: "Pi DAP",
+    columnsStartAt1: true,
+    linesStartAt1: true,
+    locale: "en-US",
+    pathFormat: "path",
+    supportsRunInTerminalRequest,
+    supportsStartDebuggingRequest,
+  };
 }
 
 function debugTarget(
@@ -634,7 +660,7 @@ export class DapSession {
         primary: rootTarget,
         focus: rootTarget,
         children: new Set(),
-        threads: new Map(),
+        threadOwners: new Map(),
         nextThreadId: 1,
         reportedBreakpointIds: new Map(),
         debuggeeProcesses,
@@ -644,6 +670,7 @@ export class DapSession {
         phase: "launching",
         topFrame: undefined,
         stopSequence: 0,
+        stopArrivals: 0,
         exitCode: undefined,
         targetTerminated: false,
         rootTerminated: false,
@@ -673,17 +700,11 @@ export class DapSession {
         DapCapabilitiesSchema,
         await client.request(
           "initialize",
-          {
-            adapterID: adapterProtocolId,
-            clientID: "pi-dap",
-            clientName: "Pi DAP",
-            columnsStartAt1: true,
-            linesStartAt1: true,
-            locale: "en-US",
-            pathFormat: "path",
-            supportsRunInTerminalRequest: true,
-            supportsStartDebuggingRequest: supportsJsDebugPrimaryTarget(adapter, launchArguments),
-          },
+          initializeArguments(
+            adapterProtocolId,
+            true,
+            supportsJsDebugPrimaryTarget(adapter, launchArguments),
+          ),
           dapRequestOptions(signal, this.options.settings.timeouts.startupMs),
         ),
         "initialize",
@@ -760,6 +781,13 @@ export class DapSession {
       ),
     ]);
     this.retainBreakpoints(filePath, breakpoints);
+    // A child that became ready meanwhile may have applied the previous list; it gets this one.
+    const late = [...active.children].filter((child) => child.ready && !children.includes(child));
+    await Promise.all(
+      late.map((child) =>
+        this.sendBreakpoints(active, child, filePath, breakpoints, signal).catch(() => undefined),
+      ),
+    );
     // Code a child session loads is unknown to the primary target: verified where any target is.
     const reported = primary.breakpoints.map((breakpoint, index) => {
       const verified = breakpoint.verified
@@ -801,7 +829,7 @@ export class DapSession {
 
   /** Pause a running Debuggee and wait for its stopped event. */
   pause(signal?: AbortSignal): Promise<DapSessionResult> {
-    return this.executeLifecycleRequest("pause", signal);
+    return this.pauseTargets(signal);
   }
 
   /** Retrieve a page of Stack Frames from the stopped thread. */
@@ -809,7 +837,7 @@ export class DapSession {
     const active = this.requireActivePhase("stopped", "stack");
     const threadId =
       input.threadId === undefined
-        ? await this.resolveThreadId(active.focus, signal)
+        ? await this.resolveThreadId(active, active.focus, signal)
         : this.adapterThreadId(active, input.threadId);
     const body = parseDapBody(
       DapStackTraceBodySchema,
@@ -876,7 +904,11 @@ export class DapSession {
         DapStackTraceBodySchema,
         await active.focus.client.request(
           "stackTrace",
-          { threadId: await this.resolveThreadId(active.focus, signal), startFrame: 0, levels: 1 },
+          {
+            threadId: await this.resolveThreadId(active, active.focus, signal),
+            startFrame: 0,
+            levels: 1,
+          },
           dapRequestOptions(signal),
         ),
         "stackTrace",
@@ -1002,24 +1034,50 @@ export class DapSession {
     return response;
   }
 
-  /** Resume or step the target whose stop is reported, or pause every target. */
+  /** Resume or step the target whose stop is reported, then wait for the next stop. */
   private async executeLifecycleRequest(
-    command: "continue" | "next" | "stepIn" | "stepOut" | "pause",
+    command: "continue" | "next" | "stepIn" | "stepOut",
     signal: AbortSignal | undefined,
   ): Promise<DapSessionResult> {
-    const active = this.requireActivePhase(command === "pause" ? "running" : "stopped", command);
+    const active = this.requireActivePhase("stopped", command);
     const target = active.focus;
-    const threadId = command === "pause" ? undefined : await this.resolveThreadId(target, signal);
-    if (command !== "pause") {
-      target.stop = undefined;
-      this.transitionActiveToRunning(active);
-    }
+    const threadId = await this.resolveThreadId(active, target, signal);
+    target.stop = undefined;
+    this.transitionActiveToRunning(active);
+    return this.waitAfter(active, signal, async () => {
+      await target.client.request(command, { threadId }, dapRequestOptions(signal));
+    });
+  }
+
+  /** Pause the primary target and, best effort, every Child session; the first stop is reported. */
+  private async pauseTargets(signal: AbortSignal | undefined): Promise<DapSessionResult> {
+    const active = this.requireActivePhase("running", "pause");
+    const pause = async (target: DapDebugTarget) => {
+      const threadId = await this.resolveThreadId(active, target, signal);
+      await target.client.request("pause", { threadId }, dapRequestOptions(signal));
+    };
+    const children = [...active.children].filter((child) => child.ready);
+    return this.waitAfter(active, signal, async () => {
+      await Promise.all([
+        pause(active.primary),
+        ...children.map((child) => pause(child).catch(() => undefined)),
+      ]);
+    });
+  }
+
+  /** Send an execution request, then wait for a stop, exit, cancellation, or the execution timeout. */
+  private async waitAfter(
+    active: ActiveDapSession,
+    signal: AbortSignal | undefined,
+    send: () => Promise<void>,
+  ): Promise<DapSessionResult> {
     const wait = this.waitForExecutionTransition(signal);
     try {
-      if (threadId === undefined) await this.pauseTargets(active, signal);
-      else await target.client.request(command, { threadId }, dapRequestOptions(signal));
+      await send();
     } catch (cause) {
       wait.cancel();
+      // A target that stopped meanwhile stays reportable even though this request failed.
+      this.focusQueuedStop(active);
       if (isProtocolCancellation(cause)) return this.result();
       throw cause;
     }
@@ -1028,19 +1086,6 @@ export class DapSession {
     await wait.promise;
     await active.cleanupPromise;
     return this.stoppedResult(active);
-  }
-
-  /** Pause the primary target and, best effort, every Child session; the first stop is reported. */
-  private async pauseTargets(active: ActiveDapSession, signal: AbortSignal | undefined) {
-    const pause = async (target: DapDebugTarget) => {
-      const threadId = await this.resolveThreadId(target, signal);
-      await target.client.request("pause", { threadId }, dapRequestOptions(signal));
-    };
-    const children = [...active.children].filter((child) => child.ready);
-    await Promise.all([
-      pause(active.primary),
-      ...children.map((child) => pause(child).catch(() => undefined)),
-    ]);
   }
 
   /** Result that, when the Debuggee is stopped, says where and why without a separate stack call. */
@@ -1079,7 +1124,11 @@ export class DapSession {
         DapStackTraceBodySchema,
         await target.client.request(
           "stackTrace",
-          { threadId: await this.resolveThreadId(target, undefined), startFrame: 0, levels: 1 },
+          {
+            threadId: await this.resolveThreadId(active, target, undefined),
+            startFrame: 0,
+            levels: 1,
+          },
           dapRequestOptions(undefined),
         ),
         "stackTrace",
@@ -1109,6 +1158,7 @@ export class DapSession {
 
   /** The adapter thread id of the target's stop, else of its first thread. */
   private async resolveThreadId(
+    active: ActiveDapSession,
     target: DapDebugTarget,
     signal: AbortSignal | undefined,
   ): Promise<number> {
@@ -1123,11 +1173,12 @@ export class DapSession {
       throw new DapSessionError("state", "Debuggee has no thread available for this operation");
     }
     target.threadId = threadId;
+    this.assignPiThreadId(active, target, threadId);
     return threadId;
   }
 
-  /** The thread id Pi reports for a target's adapter thread id. */
-  private piThreadId(
+  /** Assign, once, the thread id Pi reports for a target's adapter thread id. */
+  private assignPiThreadId(
     active: ActiveDapSession,
     target: DapDebugTarget,
     adapterThreadId: number,
@@ -1137,14 +1188,14 @@ export class DapSession {
     if (known !== undefined) return known;
     const threadId = active.nextThreadId++;
     target.piThreadIds.set(adapterThreadId, threadId);
-    active.threads.set(threadId, { target, threadId: adapterThreadId });
+    active.threadOwners.set(threadId, { target, threadId: adapterThreadId });
     return threadId;
   }
 
   /** The adapter thread id behind a reported thread id, which must belong to the stopped target. */
   private adapterThreadId(active: ActiveDapSession, threadId: number): number {
     if (active.focus.piThreadIds === undefined) return threadId;
-    const owner = active.threads.get(threadId);
+    const owner = active.threadOwners.get(threadId);
     if (owner === undefined || owner.target !== active.focus) {
       throw new DapSessionError(
         "state",
@@ -1211,11 +1262,13 @@ export class DapSession {
         case "stopped": {
           const body = parseDapBody(DapStoppedEventBodySchema, event.body, "stopped event");
           target.stop = {
+            arrival: ++active.stopArrivals,
             reason: body.reason,
             description: body.description,
             hitBreakpointIds: body.hitBreakpointIds,
           };
           target.threadId = body.threadId;
+          if (body.threadId !== undefined) this.assignPiThreadId(active, target, body.threadId);
           // One stop is reported at a time; a stop in another target waits its turn.
           if (active.phase !== "stopped" || active.focus === target) this.focusStop(active, target);
           return;
@@ -1223,7 +1276,10 @@ export class DapSession {
         case "continued": {
           const body = parseDapBody(DapContinuedEventBodySchema, event.body, "continued event");
           target.stop = undefined;
-          if (body.threadId !== undefined) target.threadId = body.threadId;
+          if (body.threadId !== undefined) {
+            target.threadId = body.threadId;
+            this.assignPiThreadId(active, target, body.threadId);
+          }
           if (active.focus === target) {
             this.transitionActiveToRunning(active);
             this.focusQueuedStop(active);
@@ -1243,7 +1299,7 @@ export class DapSession {
         case "terminated":
           if (active.stopping) return;
           if (channel === "child") {
-            this.removeChildTarget(active, target);
+            this.removeChildSession(active, target);
             return;
           }
           if (channel === "root") active.rootTerminated = true;
@@ -1261,7 +1317,7 @@ export class DapSession {
     } catch (cause) {
       // A Child session that misbehaves is dropped; the Debuggee's own session goes on.
       if (channel === "child") {
-        this.removeChildTarget(active, target);
+        this.removeChildSession(active, target);
         return;
       }
       const error =
@@ -1281,15 +1337,19 @@ export class DapSession {
     this.settleExecutionWaiters();
   }
 
-  /** While running, report the first queued stop of any target, primary target first. */
+  /** While running, report the stop that has waited longest, if any target has one. */
   private focusQueuedStop(active: ActiveDapSession): void {
     if (!this.isCurrentActive(active) || active.phase === "stopped") return;
-    const queued = [active.primary, ...active.children].find((target) => target.stop);
+    let queued: DapDebugTarget | undefined;
+    for (const target of [active.primary, ...active.children]) {
+      if (target.stop === undefined) continue;
+      if (queued?.stop === undefined || target.stop.arrival < queued.stop.arrival) queued = target;
+    }
     if (queued !== undefined) this.focusStop(active, queued);
   }
 
   /** Forget a Child session that ended or failed, and detach its channel. */
-  private removeChildTarget(active: ActiveDapSession, target: DapDebugTarget): void {
+  private removeChildSession(active: ActiveDapSession, target: DapDebugTarget): void {
     if (!active.children.delete(target)) return;
     void target.client.detach().catch(() => undefined);
     if (active.focus !== target) return;
@@ -1399,7 +1459,7 @@ export class DapSession {
       failure = "Pi DAP debugs child sessions of vscode-js-debug targets only";
     } else {
       try {
-        await this.attachChildTarget(
+        await this.attachChildSession(
           active,
           child?.request ?? "launch",
           configuration,
@@ -1419,7 +1479,7 @@ export class DapSession {
    * The channel joins the Child sessions before it starts, so its stops, its own children, and its
    * `terminated` are handled like any target's; it leaves them when it terminates or fails.
    */
-  private async attachChildTarget(
+  private async attachChildSession(
     active: ActiveDapSession,
     request: string,
     configuration: Static<typeof StartDebuggingChildArgumentsSchema>["configuration"],
@@ -1431,7 +1491,7 @@ export class DapSession {
       onReverseRequest: (nested) =>
         this.handleReverseRequest(nested, active.debuggeeProcesses, () => active, undefined),
       onFailure: () => {
-        if (attached !== undefined) this.removeChildTarget(active, attached);
+        if (attached !== undefined) this.removeChildSession(active, attached);
       },
     });
     if (!this.isCurrentActive(active) || active.stopping) {
@@ -1451,17 +1511,8 @@ export class DapSession {
         DapCapabilitiesSchema,
         await client.request(
           "initialize",
-          {
-            adapterID: "pwa-node",
-            clientID: "pi-dap",
-            clientName: "Pi DAP",
-            columnsStartAt1: true,
-            linesStartAt1: true,
-            locale: "en-US",
-            pathFormat: "path",
-            supportsRunInTerminalRequest: false,
-            supportsStartDebuggingRequest: true,
-          },
+          // A Child session's own children are asked for on its channel.
+          initializeArguments("pwa-node", false, true),
           { timeoutMs: startupMs },
         ),
         "initialize child js-debug target",
@@ -1480,7 +1531,7 @@ export class DapSession {
       }
       await launchResponse;
     } catch (cause) {
-      this.removeChildTarget(active, target);
+      this.removeChildSession(active, target);
       throw cause;
     }
   }
@@ -1513,18 +1564,8 @@ export class DapSession {
       DapCapabilitiesSchema,
       await targetClient.request(
         "initialize",
-        {
-          adapterID: "pwa-node",
-          clientID: "pi-dap",
-          clientName: "Pi DAP",
-          columnsStartAt1: true,
-          linesStartAt1: true,
-          locale: "en-US",
-          pathFormat: "path",
-          supportsRunInTerminalRequest: true,
-          // vscode-js-debug asks for the primary target's Child sessions on this channel.
-          supportsStartDebuggingRequest: true,
-        },
+        // vscode-js-debug asks for the primary target's Child sessions on this channel.
+        initializeArguments("pwa-node", true, true),
         dapRequestOptions(signal, this.options.settings.timeouts.startupMs),
       ),
       "initialize primary js-debug target",
@@ -1715,9 +1756,10 @@ export class DapSession {
         profileId: active.profile.id,
         stopReason: active.focus.stop?.reason ?? "unknown",
       };
-      if (active.focus.threadId !== undefined) {
-        snapshot.threadId = this.piThreadId(active, active.focus, active.focus.threadId);
-      }
+      const { piThreadIds, threadId } = active.focus;
+      const reported =
+        threadId === undefined || piThreadIds === undefined ? threadId : piThreadIds.get(threadId);
+      if (reported !== undefined) snapshot.threadId = reported;
       return snapshot;
     }
     return {
