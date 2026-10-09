@@ -1,5 +1,12 @@
 # @ian-pascoe/pi-context-management
 
+## 0.5.2
+
+### Patch Changes
+
+- d92c376: Invalid `context_history` references now report an example reference from the current session and say that valid references come from windows, list, or search results.
+- b415a53: `context_notes` append now starts the appended text on a new line when the existing Note is non-empty and does not already end with a newline, so appended lines no longer run into the Note's last line.
+
 ## 0.5.1
 
 ### Patch Changes

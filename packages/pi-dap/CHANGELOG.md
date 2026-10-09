@@ -1,5 +1,12 @@
 # @ian-pascoe/pi-dap
 
+## 0.9.0
+
+### Minor Changes
+
+- b0913f0: `dap_stack` text now collapses each run of two or more Stack Frames that the adapter hints as noise (frame `presentationHint` `subtle` or `label`, or source `presentationHint` `deemphasize`) into one line such as `… 13 deemphasized frames (ids 34–46)`. The ids still work with `dap_variables` and `dap_evaluate`, and `stack_frames` and `total_frames` in `structuredContent` are unchanged.
+- 7dbdb70: Debug vscode-js-debug child sessions (worker threads and child processes, such as vitest's `forks` and `threads` pool workers) inside the one Debug Session instead of refusing them. Breakpoints now bind in children. A stop in a child names it in `child_session`, and only one stop is reported at a time: inspection and stepping act on the target that stopped, and a stop that was waiting is reported as soon as that target resumes. `dap_pause` pauses every target. Thread ids are assigned by Pi DAP for vscode-js-debug. `debugger;` statements and exceptions in children now stop instead of being continued automatically. `rejected_child_sessions` now lists only child sessions Pi DAP could not debug.
+
 ## 0.8.0
 
 ### Minor Changes
