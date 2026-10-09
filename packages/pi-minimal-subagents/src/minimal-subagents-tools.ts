@@ -22,9 +22,7 @@ import {
   formatDeleteResultText,
   formatSpawnResultText,
   formatStatusResultText,
-  formatWaitMessageText,
-  formatWaitTimeoutText,
-  formatWaitTurnText,
+  formatWaitResultText,
 } from "./minimal-subagents-result-text.js";
 import {
   renderCoordinatorToolCall,
@@ -51,7 +49,6 @@ import type {
   DeleteResult,
   SpawnResult,
   StatusResult,
-  WaitDeliveredTurnResult,
   WaitResult,
 } from "./minimal-subagents-types.js";
 
@@ -244,34 +241,9 @@ function structuredToolResult<TDetails extends CoordinatorToolResultDetails>(
   };
 }
 
-/**
- * One line saying an already-delivered result is not repeated and how to reread it, or that a
- * handed result is still to arrive as a separate message, followed by
- * any Coordination Messages the wait drained, which the parent has not seen yet.
- */
-function alreadyDeliveredContent(
-  result: WaitDeliveredTurnResult,
-): AgentToolResult<WaitResult>["content"] {
-  const subject = `Result of ${result.agent_id} turn ${result.turn_id} (${result.status})`;
-  const notice = result.delivery_pending
-    ? `${subject} was handed to you automatically and arrives as a separate message; no reread is needed.`
-    : `${subject} was already delivered automatically; call subagent_wait with turn_id "${result.turn_id}" to reread it.`;
-  const messages = result.messages
-    ?.map((message) => `Message from ${result.agent_id}: ${message.message}`)
-    .join("\n");
-  return textContent(messages ? `${notice}\n${messages}` : notice);
-}
-
+/** One wait result as model-facing text. */
 function waitResultText(result: WaitResult): AgentToolResult<WaitResult>["content"] {
-  if ("already_delivered" in result) return alreadyDeliveredContent(result);
-  switch (result.event) {
-    case "message":
-      return textContent(formatWaitMessageText(result));
-    case "turn":
-      return textContent(formatWaitTurnText(result));
-    case "timeout":
-      return textContent(formatWaitTimeoutText(result));
-  }
+  return textContent(formatWaitResultText(result));
 }
 
 /**

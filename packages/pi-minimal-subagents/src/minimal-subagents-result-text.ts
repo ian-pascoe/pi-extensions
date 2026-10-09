@@ -15,7 +15,9 @@ import type {
   SpawnResult,
   StatusResult,
   ToolSelection,
+  WaitDeliveredTurnResult,
   WaitMessageResult,
+  WaitResult,
   WaitTimeoutResult,
   WaitTurnResult,
 } from "./minimal-subagents-types.js";
@@ -121,13 +123,27 @@ function coordinationMessagesText(
   return messages.map((message) => `Message from ${agentId}: ${message.message}`).join("\n");
 }
 
+/**
+ * One line saying an already-delivered result is not repeated and how to reread it, or that a
+ * handed result is still to arrive as a separate message, followed by any Coordination Messages
+ * the wait drained, which the parent has not seen yet.
+ */
+function formatWaitDeliveredText(result: WaitDeliveredTurnResult): string {
+  const subject = `Result of ${result.agent_id} turn ${result.turn_id} (${result.status})`;
+  const notice = result.delivery_pending
+    ? `${subject} was handed to you automatically and arrives as a separate message; no reread is needed.`
+    : `${subject} was already delivered automatically; call subagent_wait with turn_id "${result.turn_id}" to reread it.`;
+  const messages = coordinationMessagesText(result.agent_id, result.messages);
+  return messages ? `${notice}\n${messages}` : notice;
+}
+
 /** A Coordination Message returned before its source turn settled. */
-export function formatWaitMessageText(result: WaitMessageResult): string {
+function formatWaitMessageText(result: WaitMessageResult): string {
   return `Message from ${result.agent_id} (turn ${result.turn_id} still running):\n${result.message}`;
 }
 
 /** Status and elapsed time, one token/cost total, drained messages, then the turn's output. */
-export function formatWaitTurnText(result: WaitTurnResult): string {
+function formatWaitTurnText(result: WaitTurnResult): string {
   const header = joinParts([
     `${result.agent_id} turn ${result.turn_id} ${result.status}`,
     formatSubagentDuration(result.elapsed_ms),
@@ -142,7 +158,7 @@ export function formatWaitTurnText(result: WaitTurnResult): string {
 }
 
 /** The observational timeout snapshot; the wait never cancels the child. */
-export function formatWaitTimeoutText(result: WaitTimeoutResult): string {
+function formatWaitTimeoutText(result: WaitTimeoutResult): string {
   const lines = [
     `Wait timed out after ${formatSubagentDuration(result.timeout_ms) ?? `${result.timeout_ms}ms`}; ${result.agent_id} is ${result.state} on turn ${result.turn_id} and was not cancelled.`,
   ];
@@ -160,6 +176,19 @@ export function formatWaitTimeoutText(result: WaitTimeoutResult): string {
     lines.push(`recent activity: ${result.recent_activity_labels.join(", ")}`);
   }
   return lines.join("\n");
+}
+
+/** Any Wait Event: a message, a settled or already-delivered turn, or a timeout. */
+export function formatWaitResultText(result: WaitResult): string {
+  if ("already_delivered" in result) return formatWaitDeliveredText(result);
+  switch (result.event) {
+    case "message":
+      return formatWaitMessageText(result);
+    case "turn":
+      return formatWaitTurnText(result);
+    case "timeout":
+      return formatWaitTimeoutText(result);
+  }
 }
 
 function turnSummary(agent: AgentSummary): string {
@@ -209,10 +238,10 @@ function toolLines(agent: AgentDetail, verbose: boolean): string[] {
   } else {
     const differences = [
       inactiveGrants.length > 0
-        ? `also grants ${inactiveGrants.join(", ")} (not active: codemode-only or undeclared)`
+        ? `plus ${inactiveGrants.join(", ")} (granted but not active: codemode-only or undeclared)`
         : undefined,
       adapterTools.length > 0
-        ? `active adds ${adapterTools.join(", ")} (runtime adapter, not in the grant)`
+        ? `minus ${adapterTools.join(", ")} (active from a runtime adapter, not granted)`
         : undefined,
     ].filter(Boolean);
     lines.push(`granted tools (${granted.length}): active ${differences.join("; ")}`);
@@ -361,7 +390,7 @@ export function formatCancelResultText(result: CancelResult): string {
   if (result.cancelled_turn_ids.length === 0) {
     return `Nothing cancelled: ${result.agent_id} had no active turn${result.recursive ? ", nor did any descendant" : ""}.`;
   }
-  return `Cancelled ${plural(result.cancelled_turn_ids.length, "active turn")}: ${result.cancelled_turn_ids.join(", ")}. Sessions are kept; agent_message continues an agent.`;
+  return `Cancelled ${plural(result.cancelled_turn_ids.length, "active turn")}: ${result.cancelled_turn_ids.join(", ")}; sessions are kept.`;
 }
 
 /** One line naming the deleted agents, plus one line per failure. */
@@ -370,7 +399,7 @@ export function formatDeleteResultText(result: DeleteResult): string {
     result.deleted_agent_ids.length === 0
       ? [`Deleted no agents under ${result.agent_id}.`]
       : [
-          `Deleted ${result.deleted_agent_ids.join(", ")}; their IDs are tombstoned and ${plural(result.trashed_session_files.length, "session file")} moved to trash.`,
+          `Deleted ${result.deleted_agent_ids.join(", ")}; ${plural(result.trashed_session_files.length, "session file")} moved to trash.`,
         ];
   for (const failure of result.failures) {
     lines.push(`failed: ${failure.agent_id}: ${failure.error}`);

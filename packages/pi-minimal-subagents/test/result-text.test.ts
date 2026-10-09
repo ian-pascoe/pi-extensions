@@ -5,8 +5,7 @@ import {
   formatDeleteResultText,
   formatSpawnResultText,
   formatStatusResultText,
-  formatWaitTimeoutText,
-  formatWaitTurnText,
+  formatWaitResultText,
 } from "../src/minimal-subagents-result-text.js";
 import type { AgentDetail, SpawnResult } from "../src/minimal-subagents-types.js";
 
@@ -131,7 +130,7 @@ describe("Coordinator Tool result text", () => {
     const text = formatStatusResultText({ agent });
 
     expect(text).toContain(
-      "granted tools (5): active also grants lsp_call_hierarchy (not active: codemode-only or undeclared); active adds exec_command (runtime adapter, not in the grant)",
+      "granted tools (5): active plus lsp_call_hierarchy (granted but not active: codemode-only or undeclared); minus exec_command (active from a runtime adapter, not granted)",
     );
     expect(text).toContain("capability ceiling: same as granted");
   });
@@ -151,7 +150,7 @@ describe("Coordinator Tool result text", () => {
   });
 
   it("lists direct children one line each", () => {
-    const { agent } = { agent: idleReadChild() };
+    const agent = idleReadChild();
     expect(formatStatusResultText({ parent_id: "root", agents: [] })).toBe("root has no children.");
     expect(formatStatusResultText({ parent_id: "root", agents: [agent] })).toBe(
       `1 child of root:\n- explore idle · latest turn explore:turn-1 completed · anthropic/claude-haiku-5-5 (medium) · 48s · task: ${agent.task?.slice(0, 117).trimEnd()}...`,
@@ -173,9 +172,7 @@ describe("Coordinator Tool result text", () => {
         affected_agent_ids: ["child", "child.leaf"],
         cancelled_turn_ids: ["child:turn-2", "child.leaf:turn-1"],
       }),
-    ).toBe(
-      "Cancelled 2 active turns: child:turn-2, child.leaf:turn-1. Sessions are kept; agent_message continues an agent.",
-    );
+    ).toBe("Cancelled 2 active turns: child:turn-2, child.leaf:turn-1; sessions are kept.");
   });
 
   it("reports deletion in one line plus one line per failure", () => {
@@ -187,9 +184,7 @@ describe("Coordinator Tool result text", () => {
         trashed_session_files: ["/trash/leaf.jsonl"],
         failures: [{ agent_id: "child", error: "disk full" }],
       }),
-    ).toBe(
-      "Deleted child.leaf; their IDs are tombstoned and 1 session file moved to trash.\nfailed: child: disk full",
-    );
+    ).toBe("Deleted child.leaf; 1 session file moved to trash.\nfailed: child: disk full");
   });
 
   it("names the spawn's tool grant without repeating a preset's list", () => {
@@ -229,7 +224,7 @@ describe("Coordinator Tool result text", () => {
 
   it("reports a settled turn's status, elapsed time, usage total, messages, and output", () => {
     expect(
-      formatWaitTurnText({
+      formatWaitResultText({
         event: "turn",
         agent_id: "child",
         turn_id: "child:1",
@@ -255,7 +250,7 @@ describe("Coordinator Tool result text", () => {
 
   it("reports a timeout without cancelling", () => {
     expect(
-      formatWaitTimeoutText({
+      formatWaitResultText({
         event: "timeout",
         agent_id: "child",
         turn_id: "child:1",

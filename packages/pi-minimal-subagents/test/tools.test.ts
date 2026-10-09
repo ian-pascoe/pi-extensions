@@ -67,6 +67,10 @@ function toolOptions(
   return { ...options, recordedWait };
 }
 
+function contentText(result: { content: readonly { type: string; text?: string }[] }): string {
+  return result.content.map((part) => (part.type === "text" ? (part.text ?? "") : "")).join("");
+}
+
 function requireTool(
   options: CoordinatorToolDefinitionOptions,
   toolName: string,
@@ -280,7 +284,7 @@ describe("minimal subagents coordinator tools", () => {
         await createToolExecutionContext(),
       );
 
-      const text = result.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+      const text = contentText(result);
       expect(text).not.toMatch(/\d\.\d{7,}/);
       expect(text).toBe("child turn child:1 completed\nusage: 22 tokens · $0.01\n\ndone");
       expect(result.structuredContent).toMatchObject({ usage: { cost: roundedCost } });
@@ -331,7 +335,7 @@ describe("minimal subagents coordinator tools", () => {
         await createToolExecutionContext(),
       );
 
-      const text = result.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+      const text = contentText(result);
       expect(text).not.toMatch(/\d\.\d{7,}/);
       expect(text).toContain("Pass verbose: true");
       // Scripts keep the complete record the text summarizes.
@@ -350,9 +354,7 @@ describe("minimal subagents coordinator tools", () => {
         undefined,
         await createToolExecutionContext(),
       );
-      const verboseText = verbose.content
-        .map((part) => (part.type === "text" ? part.text : ""))
-        .join("");
+      const verboseText = contentText(verbose);
       expect(verboseText).toContain("usage: input 10 · output 5");
       expect(verboseText).not.toContain("Pass verbose: true");
     });
@@ -536,7 +538,7 @@ describe("minimal subagents coordinator tools", () => {
     expect(
       Value.Check(CoordinatorToolOutputSchemas.subagent_delete, result.structuredContent),
     ).toBe(true);
-    const text = result.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+    const text = contentText(result);
     expect(text).toContain("Minimal subagents deletion partially failed");
     expect(text).toContain("disk full");
     // The model-facing text points at the troubleshooting Skill; structured data stays clean.
