@@ -373,7 +373,7 @@ export function registerContextTools(
     name: "context_notes",
     label: "Context Notes",
     description:
-      "Session-branch Markdown Notes. Actions list/read/write/append/delete/search. Names are labels, not paths. Reads use zero-based UTF-16 offsets and return at most 2000 units; lists return at most 20 Notes. Search is case-sensitive literal text. Forks inherit Notes; plain context-only child inheritance does not copy the store.",
+      "Session-branch Markdown Notes. Actions list/read/write/append/delete/search. Names are labels, not paths. Reads use zero-based UTF-16 offsets and return at most 2000 units; lists return at most 20 Notes. Append starts the new text on a new line unless the Note is empty or already ends with one. Search is case-sensitive literal text. Forks inherit Notes; plain context-only child inheritance does not copy the store.",
     parameters: NotesParameters,
     annotations: {
       readOnlyHint: false,
@@ -446,7 +446,9 @@ export function registerContextTools(
       const content =
         params.action === "delete"
           ? null
-          : (params.action === "append" ? (note?.content ?? "") : "") + (params.content ?? "");
+          : params.action === "append"
+            ? joinAppend(note?.content ?? "", params.content ?? "")
+            : (params.content ?? "");
       if (content !== null && content.length > MAX_NOTE_CHARACTERS)
         throw new Error("Note exceeds 64000 UTF-16 content units");
       signal?.throwIfAborted();
@@ -461,4 +463,11 @@ export function registerContextTools(
     },
   });
   pi.registerTool(acceptNullForOptionalArguments(notesTool));
+}
+
+/** Starts appended text on a new line so it never runs into the Note's last line. */
+function joinAppend(existing: string, appended: string): string {
+  return existing === "" || appended === "" || existing.endsWith("\n")
+    ? existing + appended
+    : `${existing}\n${appended}`;
 }
