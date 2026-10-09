@@ -58,7 +58,7 @@ Pi 0.85.1 `dist/core/agent-session.js`, `setActiveToolsByName`, preserves suppli
 
 Domain constraints:
 
-- `packages/pi-minimal-subagents/CONTEXT.md`: Subagent Access is branch-scoped availability; disabling it must not cancel existing Child Agents or delivery. Launch Contracts remain immutable.
+- `packages/pi-minimal-subagents/GLOSSARY.md`: Subagent Access is branch-scoped availability; disabling it must not cancel existing Child Agents or delivery. Launch Contracts remain immutable.
 - `packages/pi-mcp/docs/adr/0002-implement-a-complete-mcp-host.md`: removed Server Tools must be deactivated; exact schemas and immediate execution-policy updates are required. Cache preservation must not leave revoked tools callable.
 - Repository extensions publish source TypeScript, use explicit `.js` local imports, and test with existing Vitest. Match the pure function/property tests in `test/access.test.ts` and `RecordingPi`/`RecordingRuntime` in MCP's `test/mcp-tool-catalog.test.ts`. Do not create a generic ordering framework or new dependency.
 

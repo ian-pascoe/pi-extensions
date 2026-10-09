@@ -34,7 +34,7 @@ expect(search?.description).toContain(String(new Date().getFullYear()));
 
 `src/index.ts:23–37` creates tools once and registers Web Search followed by Web Fetch. `test/pi-web-tools-extension.test.ts` uses `createWebToolsTestRunner` from `test/web-tools-test-harness.ts` to inspect real registrations. Preserve that order and the existing truncation contract.
 
-Vocabulary from `packages/pi-web-tools/CONTEXT.md`: **Web Search** is a query to a remote **Search Provider**; **Web Fetch** retrieves one URL without executing page JavaScript. The calendar year is not part of either operation's input schema or transport contract. Follow source-TypeScript conventions and use the existing Vitest installation; add no dependency.
+Vocabulary from `packages/pi-web-tools/GLOSSARY.md`: **Web Search** is a query to a remote **Search Provider**; **Web Fetch** retrieves one URL without executing page JavaScript. The calendar year is not part of either operation's input schema or transport contract. Follow source-TypeScript conventions and use the existing Vitest installation; add no dependency.
 
 ## Scope
 

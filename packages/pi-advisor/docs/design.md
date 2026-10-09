@@ -4,7 +4,7 @@ Status: accepted and implemented.
 
 Package: `@ian-pascoe/pi-advisor`.
 
-The [Advisor glossary](../CONTEXT.md) defines the domain terms. This document records the agreed behavior, not a replacement compaction or agent framework.
+The [Advisor glossary](../GLOSSARY.md) defines the domain terms. This document records the agreed behavior, not a replacement compaction or agent framework.
 
 ## Purpose and authority
 

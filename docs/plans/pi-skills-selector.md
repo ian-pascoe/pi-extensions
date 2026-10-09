@@ -6,7 +6,7 @@ Status: implemented and verified, with the upstream RPC limitation below.
 
 Create `@ian-pascoe/pi-skills-selector`: reference multiple Skills within user input using `$skill-name`, with Pi's native autocomplete experience. The model receives links to the selected instructions, not their full contents.
 
-Vocabulary authority: [`packages/pi-skills-selector/CONTEXT.md`](../../packages/pi-skills-selector/CONTEXT.md).
+Vocabulary authority: [`packages/pi-skills-selector/GLOSSARY.md`](../../packages/pi-skills-selector/GLOSSARY.md).
 
 ## Agreed behavior
 
@@ -55,7 +55,7 @@ Read Pi's installed `docs/extensions.md` (autocomplete and input events), `docs/
 
 Follow the source-TypeScript package convention in [`ADR-0002`](../adr/0002-publish-pi-extensions-as-source-typescript.md), using `packages/pi-todo/package.json` and `tsconfig.json` as packaging references. Add only the peers actually imported, retaining the repository's wildcard Pi-peer convention.
 
-Start with `src/index.ts`, an extension module, and a small pure reference-recognition/conversion module. Separate autocomplete into another file only if its size warrants it. Keep the existing glossary; behavioral requirements live in this plan and the eventual README, not in `CONTEXT.md`.
+Start with `src/index.ts`, an extension module, and a small pure reference-recognition/conversion module. Separate autocomplete into another file only if its size warrants it. Keep the existing glossary; behavioral requirements live in this plan and the eventual README, not in `GLOSSARY.md`.
 
 Write failing reference-conversion tests before implementation. Recognize complete tokens, not prefixes of longer names. Share literal-context recognition between submission and completion so the menu does not offer a reference that submission will ignore.
 
@@ -83,7 +83,7 @@ Selection inserts shorthand and follows ordinary completion spacing/cursor behav
 
 - Add package metadata, `LICENSE`, `README.md`, and package-local test/typecheck scripts consistent with neighboring extensions. Publish `src`, not generated extension bundles.
 - Add a concise diagnostic skill at `skills/pi-skills-selector/SKILL.md` and declare `pi.skills`. Current package checks require one support skill per extension. Its trigger branches should cover missing autocomplete and missing/wrong link conversion; point to the README instead of copying the behavioral contract.
-- Register the extension and support-skill directories in root `package.json`; update root README discovery/install lists and promote the planned entry in `CONTEXT-MAP.md` into the package table.
+- Register the extension and support-skill directories in root `package.json`; update root README discovery/install lists and promote the planned entry in `GLOSSARY-MAP.md` into the package table.
 - Refresh the lockfile and use the existing Changesets workflow for the initial release. Do not publish as part of implementation verification.
 - Update fixed package/extension counts in `scripts/check-package-packs.mjs` and `scripts/check-git-install.mjs`, including their diagnostics: this addition takes the current 14 packages / 13 extensions to 15 packages / 14 extensions, with 14 support skills. Reconcile against the checkout if other packages have landed meanwhile; retain the integrity checks.
 
