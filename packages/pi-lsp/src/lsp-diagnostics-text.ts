@@ -3,8 +3,9 @@ import { Value } from "typebox/value";
 import {
   assembleLspReadText,
   collapseLspWhitespace,
+  lspDiagnosticOrigin,
   lspDisplayPath,
-  lspDisplayPosition,
+  lspDisplayRange,
   LspNormalizedPositionSchema,
   type LspRead,
   type LspReadTextBlock,
@@ -33,7 +34,10 @@ export function isLspDiagnosticsOperation(
 
 /** Servers send `null` for optional fields they leave out, so `null` reads as an omitted field. */
 const DiagnosticSchema = Type.Object({
-  range: Type.Object({ start: LspNormalizedPositionSchema }),
+  range: Type.Object({
+    start: LspNormalizedPositionSchema,
+    end: Type.Optional(LspNormalizedPositionSchema),
+  }),
   message: Type.String(),
   severity: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
   source: Type.Optional(Type.Union([Type.String(), Type.Null()])),
@@ -72,20 +76,24 @@ export interface LspDiagnosticsReadTextInput {
 }
 
 /**
- * Render `path:line:col[ severity][ source(code)]: message` on one line, or a diagnostic that does
- * not match the protocol's shape as compact JSON.
+ * Render `path:line:col[-end][ severity][ source(code)]: message` on one line, or a diagnostic
+ * that does not match the protocol's shape as compact JSON.
  */
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- One diagnostic is opaque until it matches the diagnostic schema.
 function diagnosticLine(path: string, diagnostic: unknown, cwd: string): string {
   if (!Value.Check(DiagnosticSchema, diagnostic)) return formatLspToolValue(diagnostic);
-  const { severity, source, code } = diagnostic;
-  const origin = code === undefined || code === null ? source : `${source ?? ""}(${code})`;
+  const { severity, source, code, range } = diagnostic;
   const head = [
-    lspDisplayPosition(cwd, { path, ...diagnostic.range.start }),
+    lspDisplayRange(cwd, {
+      path,
+      ...range.start,
+      endLine: range.end?.line,
+      endCharacter: range.end?.character,
+    }),
     severity === undefined || severity === null
       ? undefined
       : (lspSeverityName(severity) ?? `severity ${severity}`),
-    origin,
+    lspDiagnosticOrigin(source, code),
   ]
     .filter((part) => part !== undefined && part !== null && part !== "")
     .join(" ");
@@ -160,8 +168,8 @@ function workspaceDiagnosticLines(value: unknown, cwd: string): readonly string[
 }
 
 /**
- * Render a diagnostics read as one `path:line:col severity source(code): message` line per LSP
- * Diagnostic, with one-based positions and paths relative to Pi's working directory. A queried
+ * Render a diagnostics read as one `path:line:col[-end] severity source(code): message` line per
+ * LSP Diagnostic, with one-based positions and paths relative to Pi's working directory. A queried
  * file with none is one `path: no diagnostics` line; a workspace read counts its clean files on
  * one line and starts with the server's coverage message. Results are grouped by server only when
  * more than one server answered, and server failures follow as warnings. A response or single

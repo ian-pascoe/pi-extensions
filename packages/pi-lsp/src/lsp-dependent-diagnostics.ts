@@ -3,12 +3,13 @@ import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { LSP_MEMBER_CONTAINER_SYMBOL_KINDS } from "./lsp-tool-contract.js";
 import type { PostEditDiagnosticOutcome } from "./lsp-post-edit-diagnostics.js";
+import { findingKey, type FileTexts } from "./lsp-pre-edit-baseline.js";
 
 /** Most dependent files whose diagnostics one edit pulls; the rest are counted, not checked. */
 export const MAX_DEPENDENT_FILES = 20;
 /** Most touched declarations whose references one edit asks for. */
 export const MAX_TOUCHED_DECLARATIONS = 10;
-/** Time the pre-edit dependent scan may delay one edit call before it is abandoned. */
+/** Time the pre-edit work (Pre-edit Baseline pull and dependent scan) may delay one edit call before it is abandoned. */
 export const DEPENDENT_SCAN_BUDGET_MS = 20_000;
 
 const ERROR_SEVERITY = 1;
@@ -164,30 +165,12 @@ export function capDependentFiles(paths: readonly string[]): CappedDependentFile
   };
 }
 
-/** The text of each file a finding lies in, by absolute path, read after the pull that found it. */
-export type FileTexts = ReadonlyMap<string, string>;
-
-/** The trimmed text of a one-based line, or an empty string when the file or line is unknown. */
-function trimmedLineText(texts: FileTexts, path: string, line: number): string {
-  return (
-    texts
-      .get(path)
-      ?.split(/\r\n|\r|\n/u)
-      [line - 1]?.trim() ?? ""
-  );
-}
-
-/**
- * Identity of one error finding: server, message, and the trimmed text of the line it points at.
- * It names no position, so it survives edits that shift the line, such as a sibling edit in the
- * same parallel tool batch adding a line above it.
- */
+/** Identity of one error finding (see `findingKey`); other outcomes and severities have none. */
 export function errorKey(outcome: PostEditDiagnosticOutcome, texts: FileTexts): string | undefined {
   if (outcome.kind !== "diagnostic" || outcome.diagnostic.severity !== ERROR_SEVERITY) {
     return undefined;
   }
-  const { serverId, path, line, message } = outcome.diagnostic;
-  return `${serverId}\u0000${message}\u0000${trimmedLineText(texts, path, line)}`;
+  return findingKey(outcome.diagnostic, texts);
 }
 
 /** Error keys per dependent file, and the count of files whose pull failed. */

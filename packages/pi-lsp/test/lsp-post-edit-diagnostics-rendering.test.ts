@@ -5,8 +5,10 @@ import {
   readableTags,
 } from "@ian-pascoe/pi-utils/ui-testing";
 import { beforeAll, describe, expect, test } from "vitest";
+import { Value } from "typebox/value";
 import {
   createPostEditDiagnosticsEntryData,
+  PostEditDiagnosticsEntryDataSchema,
   renderPostEditDiagnosticsEntry,
 } from "../src/lsp-post-edit-diagnostics-rendering.js";
 import type { PostEditDiagnosticOutcome } from "../src/lsp-post-edit-diagnostics.js";
@@ -159,5 +161,78 @@ describe("Post-edit Diagnostics Entry rendering", () => {
     ).join("\n");
     expect(expanded).toContain("<accent>src/user.ts</accent>  <muted>dependent file</muted>");
     expect(expanded).not.toContain("<accent>src/a.ts</accent>  <muted>dependent file");
+  });
+
+  test("shows the new findings with their range and code, then the file's unchanged counts", () => {
+    const outcomes: PostEditDiagnosticOutcome[] = [
+      {
+        kind: "diagnostic",
+        diagnostic: {
+          serverId: "oxlint",
+          path: "/workspace/src/a.ts",
+          line: 5,
+          character: 28,
+          endLine: 5,
+          endCharacter: 42,
+          severity: 2,
+          message: "Unnecessary cast",
+          source: "eslint",
+          code: "no-cast",
+        },
+      },
+      { kind: "unchanged", path: "/workspace/src/a.ts", severity: 2, count: 12 },
+      { kind: "unchanged", path: "/workspace/src/a.ts", severity: 1, count: 1 },
+      { kind: "no_baseline", path: "/workspace/src/a.ts", serverId: "oxlint" },
+    ];
+    const lines = renderLines(
+      renderPostEditDiagnosticsEntry(
+        entryData(outcomes),
+        { expanded: true, outputPad: 1 },
+        escapeTaggedTheme,
+      ),
+    );
+    const rendered = lines.join("\n");
+    expect(lines[1]).toContain("<warning>1 warning</warning>");
+    expect(lines[1]).toContain("<muted>13 unchanged</muted>");
+    expect(rendered).toContain(
+      "<warning>5:28-42</warning>  <customMessageText>Unnecessary cast</customMessageText>  <muted>oxlint eslint(no-cast)</muted>",
+    );
+    expect(rendered).toContain(
+      "<warning>No pre-edit baseline; all findings listed</warning>  <muted>oxlint</muted>",
+    );
+    // The unchanged counts close the file's group.
+    const unchangedLine = rendered.indexOf("<muted>unchanged: 1 error, 12 warnings</muted>");
+    expect(unchangedLine).toBeGreaterThan(rendered.indexOf("No pre-edit baseline"));
+  });
+
+  test("parses and renders an entry saved before baselines, codes, and ranges were recorded", () => {
+    const saved = {
+      cwd: "/workspace",
+      outcomes: [
+        {
+          kind: "diagnostic",
+          diagnostic: {
+            serverId: "typescript",
+            path: "/workspace/src/a.ts",
+            line: 4,
+            character: 2,
+            severity: 1,
+            message: "Type mismatch",
+          },
+        },
+        { kind: "timeout", path: "/workspace/src/b.ts", serverId: "typescript" },
+      ],
+    };
+    expect(Value.Check(PostEditDiagnosticsEntryDataSchema, saved)).toBe(true);
+    const rendered = renderLines(
+      renderPostEditDiagnosticsEntry(
+        Value.Parse(PostEditDiagnosticsEntryDataSchema, saved),
+        { expanded: true },
+        escapeTaggedTheme,
+      ),
+    ).join("\n");
+    expect(rendered).toContain(
+      "<error>4:2</error>  <customMessageText>Type mismatch</customMessageText>  <muted>typescript</muted>",
+    );
   });
 });

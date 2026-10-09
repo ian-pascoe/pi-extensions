@@ -132,6 +132,48 @@ export function lspDisplayPosition(
   return `${lspDisplayPath(cwd, location.path)}:${location.line}:${location.character}`;
 }
 
+/** A one-based range in a file with an optional end; diagnostics carry one. */
+export interface LspTextRange {
+  readonly path: string;
+  readonly line: number;
+  readonly character: number;
+  readonly endLine?: number | undefined;
+  readonly endCharacter?: number | undefined;
+}
+
+/**
+ * Render a range as `line:col`, adding its end when it differs from the start: `5:28-52` on the
+ * same line, `5:28-6:3` across lines.
+ */
+export function lspRangeText(range: Omit<LspTextRange, "path">): string {
+  const start = `${range.line}:${range.character}`;
+  const { endLine, endCharacter } = range;
+  if (endLine === undefined || endCharacter === undefined) return start;
+  if (endLine === range.line) {
+    return endCharacter === range.character ? start : `${start}-${endCharacter}`;
+  }
+  return `${start}-${endLine}:${endCharacter}`;
+}
+
+/** Display a range as `path:line:col[-end]` with a display path (see `lspRangeText`). */
+export function lspDisplayRange(cwd: string, range: LspTextRange): string {
+  return `${lspDisplayPath(cwd, range.path)}:${lspRangeText(range)}`;
+}
+
+/**
+ * A diagnostic's origin as `source(code)`, `source`, or `(code)`, or undefined when the server
+ * named neither. Servers send `null` for fields they leave out.
+ */
+export function lspDiagnosticOrigin(
+  source: string | null | undefined,
+  code: string | number | null | undefined,
+): string | undefined {
+  if (code === undefined || code === null) {
+    return source === undefined || source === null || source === "" ? undefined : source;
+  }
+  return `${source ?? ""}(${code})`;
+}
+
 /** Render one location as `path:line:col[ kind]  <trimmed source line>`. */
 export async function formatLspLocationLine(
   location: LspTextLocation,

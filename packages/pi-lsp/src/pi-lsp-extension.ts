@@ -31,14 +31,20 @@ import {
   touchedDeclarationPositions,
   touchedLinesOfEdit,
   type DependentBaseline,
-  type FileTexts,
   type TouchedLines,
 } from "./lsp-dependent-diagnostics.js";
+import {
+  compareWithPreEditBaseline,
+  preEditBaselineOf,
+  type FileTexts,
+  type PreEditBaseline,
+} from "./lsp-pre-edit-baseline.js";
 import {
   appendPostEditDiagnostics,
   type PostEditDiagnosticOutcome,
   type PostEditDiagnosticPath,
   type PostEditDiagnosticsResultPatch,
+  type PostEditLspDiagnostic,
 } from "./lsp-post-edit-diagnostics.js";
 import {
   createPostEditDiagnosticsEntryData,
@@ -81,7 +87,7 @@ import { resolveLspSettings, type LspServerEnablement } from "./pi-lsp-settings.
 export interface PiLspLifecycleEffects {
   /** Return Pi's trust-aware global settings directory. */
   getAgentDirectory(): string;
-  /** Time one edit call's pre-edit dependent scan may take; defaults to 20 seconds. */
+  /** Time one edit call's pre-edit work (Pre-edit Baseline pull and dependent scan) may take; defaults to 20 seconds. */
   readonly dependentScanBudgetMs?: number;
 }
 
@@ -158,7 +164,12 @@ function branchLspToolResultDetails(
   return [...records.values()];
 }
 
-/** Normalize one protocol Diagnostic; a missing severity is an Error, so default hint filtering keeps it. */
+const DiagnosticCodeSchema = Type.Union([Type.String(), Type.Number()]);
+
+/**
+ * Normalize one protocol Diagnostic; a missing severity is an Error, so default hint filtering
+ * keeps it. A `source` or `code` that breaks the protocol's types is left out.
+ */
 export function normalizedDiagnosticOutcome(
   diagnostic: Diagnostic,
   serverId: string,
@@ -166,25 +177,24 @@ export function normalizedDiagnosticOutcome(
   documentText: string,
   positionEncoding: LspPositionEncoding,
 ): PostEditDiagnosticOutcome {
-  const position = convertLspProtocolPosition(
-    documentText,
-    diagnostic.range.start,
-    positionEncoding,
-  );
-  return {
-    kind: "diagnostic",
-    diagnostic: {
-      serverId,
-      path: filePath,
-      line: position.line,
-      character: position.character,
-      // LSP leaves a missing severity to the client; treat it as an Error, like vscode-languageclient.
-      severity: diagnostic.severity ?? 1,
-      message: Value.Check(Type.String(), diagnostic.message)
-        ? diagnostic.message
-        : Value.Parse(DiagnosticMarkupContentSchema, diagnostic.message).value,
-    },
+  const start = convertLspProtocolPosition(documentText, diagnostic.range.start, positionEncoding);
+  const end = convertLspProtocolPosition(documentText, diagnostic.range.end, positionEncoding);
+  const normalized: PostEditLspDiagnostic = {
+    serverId,
+    path: filePath,
+    line: start.line,
+    character: start.character,
+    endLine: end.line,
+    endCharacter: end.character,
+    // LSP leaves a missing severity to the client; treat it as an Error, like vscode-languageclient.
+    severity: diagnostic.severity ?? 1,
+    message: Value.Check(Type.String(), diagnostic.message)
+      ? diagnostic.message
+      : Value.Parse(DiagnosticMarkupContentSchema, diagnostic.message).value,
   };
+  if (Value.Check(Type.String(), diagnostic.source)) normalized.source = diagnostic.source;
+  if (Value.Check(DiagnosticCodeSchema, diagnostic.code)) normalized.code = diagnostic.code;
+  return { kind: "diagnostic", diagnostic: normalized };
 }
 
 /** Classify a reportable Post-edit Diagnostics server failure by its failure code. */
@@ -202,13 +212,28 @@ export function failureDiagnosticOutcome(
 }
 
 class ManagerPostEditDiagnosticsRunner {
+  private readonly documentTexts = new Map<string, string>();
+
   constructor(
     private readonly session: ActivePiLspSession,
     private readonly signal: AbortSignal | undefined,
   ) {}
 
+  /**
+   * The text each file with findings had when its positions were converted, so a finding's
+   * identity reads the same line its position points at.
+   */
+  get texts(): FileTexts {
+    return this.documentTexts;
+  }
+
+  /**
+   * Pull each path's diagnostics from every capable Server Instance. `onServerOutcomes` sees each
+   * server's outcomes as soon as it answers, before slower servers finish.
+   */
   async run(
     paths: readonly PostEditDiagnosticPath[],
+    onServerOutcomes?: (outcomes: readonly PostEditDiagnosticOutcome[]) => void,
   ): Promise<readonly PostEditDiagnosticOutcome[]> {
     const outcomes: PostEditDiagnosticOutcome[] = [];
     for (const { path } of paths) {
@@ -221,30 +246,14 @@ class ManagerPostEditDiagnosticsRunner {
           isSupportedBy: (client) => client.hasCapability(DocumentDiagnosticRequest.method),
         },
         async (client, route): Promise<readonly PostEditDiagnosticOutcome[]> => {
-          const diagnostics = await client.documentDiagnostics(
-            filePath,
+          const serverOutcomes = await this.pullServer(
+            client,
+            route.serverId,
             route.language.languageId,
-            this.signal,
+            filePath,
           );
-          if (diagnostics.status === "timeout") {
-            return [{ kind: "timeout", path: filePath, serverId: route.serverId }];
-          }
-          if (diagnostics.diagnostics.length === 0) {
-            return [{ kind: "no_diagnostics", path: filePath }];
-          }
-          const documentText = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
-            await readFile(filePath),
-          );
-          const encoding = normalizeLspPositionEncoding(client.positionEncoding);
-          return diagnostics.diagnostics.map((diagnostic) =>
-            normalizedDiagnosticOutcome(
-              diagnostic,
-              route.serverId,
-              filePath,
-              documentText,
-              encoding,
-            ),
-          );
+          onServerOutcomes?.(serverOutcomes);
+          return serverOutcomes;
         },
       );
       const successfulOutcomes = result.successes.flatMap(({ value }) => value);
@@ -259,19 +268,46 @@ class ManagerPostEditDiagnosticsRunner {
     }
     return outcomes;
   }
+
+  private async pullServer(
+    client: LspServerClient,
+    serverId: string,
+    languageId: string,
+    filePath: string,
+  ): Promise<readonly PostEditDiagnosticOutcome[]> {
+    const diagnostics = await client.documentDiagnostics(filePath, languageId, this.signal);
+    if (diagnostics.status === "timeout") {
+      return [{ kind: "timeout", path: filePath, serverId }];
+    }
+    if (diagnostics.diagnostics.length === 0) {
+      return [{ kind: "no_diagnostics", path: filePath, serverId }];
+    }
+    const documentText = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+      await readFile(filePath),
+    );
+    this.documentTexts.set(filePath, documentText);
+    const encoding = normalizeLspPositionEncoding(client.positionEncoding);
+    return diagnostics.diagnostics.map((diagnostic) =>
+      normalizedDiagnosticOutcome(diagnostic, serverId, filePath, documentText, encoding),
+    );
+  }
 }
 
-/** A file a native mutation tool call is about to change, and the lines it touches. */
-interface DependentScanTarget {
+/** A file a native mutation tool call is about to change, its text before, and the lines it touches. */
+interface PreEditTarget {
   readonly path: string;
+  readonly text: string;
   readonly touched: TouchedLines;
 }
 
-/** Locate what a native `edit` or `write` call will change before it runs; other tools have no scan. */
-async function dependentScanTarget(
+/**
+ * Locate what a native `edit` or `write` call will change before it runs; other tools have no
+ * pre-edit work.
+ */
+async function preEditTarget(
   event: ToolCallEvent,
   cwd: string,
-): Promise<DependentScanTarget | undefined> {
+): Promise<PreEditTarget | undefined> {
   if (event.toolName !== "edit" && event.toolName !== "write") return undefined;
   const { input } = event;
   if (!Value.Check(Type.Object({ path: Type.String() }, { additionalProperties: true }), input)) {
@@ -282,11 +318,29 @@ async function dependentScanTarget(
     const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
       await readFile(path),
     );
-    return { path, touched: event.toolName === "edit" ? touchedLinesOfEdit(text, input) : "all" };
+    return {
+      path,
+      text,
+      touched: event.toolName === "edit" ? touchedLinesOfEdit(text, input) : "all",
+    };
   } catch {
-    // A new file has no dependents, and an unreadable one has no text to locate an edit in.
+    // A new file has no baseline or dependents, and an unreadable one has no text to key them by.
     return undefined;
   }
+}
+
+/**
+ * Pull the changed file's diagnostics before the edit from every server that reports after it,
+ * collecting each server's outcomes as it answers, so a slow server costs only its own baseline.
+ */
+async function pullPreEditBaseline(
+  session: ActivePiLspSession,
+  target: PreEditTarget,
+  signal: AbortSignal,
+  collected: PostEditDiagnosticOutcome[],
+): Promise<void> {
+  const runner = new ManagerPostEditDiagnosticsRunner(session, signal);
+  await runner.run([{ path: target.path }], (outcomes) => collected.push(...outcomes));
 }
 
 /**
@@ -298,7 +352,7 @@ async function dependentScanTarget(
  */
 async function scanDependentFiles(
   session: ActivePiLspSession,
-  target: DependentScanTarget,
+  target: PreEditTarget,
   signal: AbortSignal,
 ): Promise<DependentBaseline | undefined> {
   const read = await session.manager.runRead(
@@ -348,57 +402,53 @@ async function scanDependentFiles(
   };
 }
 
-/** The result of pulling diagnostics for dependent files, with the text each error's line is read from. */
+/** The result of pulling diagnostics for dependent files, with the text each finding's line is read from. */
 interface DependentPull {
   readonly outcomes: readonly PostEditDiagnosticOutcome[];
   readonly texts: FileTexts;
 }
 
-/** Pull the dependent files' diagnostics concurrently, then read the text of each file with errors. */
+/** Pull the dependent files' diagnostics concurrently. */
 async function pullDependentFiles(
   runner: ManagerPostEditDiagnosticsRunner,
   files: readonly string[],
 ): Promise<DependentPull> {
   const outcomes = (await Promise.all(files.map((path) => runner.run([{ path }])))).flat();
-  const withErrors = new Set(
-    outcomes.flatMap((outcome) =>
-      outcome.kind === "diagnostic" && outcome.diagnostic.severity === 1
-        ? [outcome.diagnostic.path]
-        : [],
-    ),
-  );
-  const texts = new Map<string, string>();
-  await Promise.all(
-    [...withErrors].map(async (path) => {
-      try {
-        texts.set(path, await readFile(path, "utf8"));
-      } catch {
-        // An unreadable file keys its errors by message alone.
-      }
-    }),
-  );
-  return { outcomes, texts };
+  return { outcomes, texts: runner.texts };
+}
+
+/** What a native `edit` or `write` call recorded before it ran, until its result arrives. */
+interface PreEditWork {
+  /** The changed file's Pre-edit Baseline. */
+  readonly baseline: PreEditBaseline;
+  /** The dependent files' Pre-edit Baseline, when the scan found dependents or ran out of time. */
+  readonly dependents?: DependentBaseline;
 }
 
 async function appendSessionPostEditDiagnostics(
   event: ToolResultEvent,
   session: ActivePiLspSession,
   context: ExtensionContext,
-  baseline: DependentBaseline | undefined,
+  work: PreEditWork | undefined,
 ): Promise<PostEditDiagnosticsResultPatch | undefined> {
+  const dependents = work?.dependents;
   const runner = new ManagerPostEditDiagnosticsRunner(session, context.signal);
   const patch = await appendPostEditDiagnostics(event, (paths) => runner.run(paths), session.cwd, {
     includeHints: session.includeHintDiagnostics,
+    preEditBaseline:
+      work === undefined
+        ? undefined
+        : async (outcomes) => compareWithPreEditBaseline(work.baseline, outcomes, runner.texts),
     dependentDiagnostics:
-      baseline === undefined
+      dependents === undefined
         ? undefined
         : async (paths: readonly PostEditDiagnosticPath[]) => {
             const changed = new Set(
               paths.map(({ path }) => resolve(session.cwd, normalizeLspFilePath(path))),
             );
-            const files = baseline.files.filter((file) => !changed.has(file));
+            const files = dependents.files.filter((file) => !changed.has(file));
             const { outcomes, texts } = await pullDependentFiles(runner, files);
-            return newDependentErrors(baseline, files, outcomes, texts);
+            return newDependentErrors(dependents, files, outcomes, texts);
           },
   });
   if (patch === undefined) return undefined;
@@ -419,7 +469,7 @@ async function appendSessionPostEditDiagnostics(
 /** Own settings, tool registration, replay, diagnostics middleware, and resource shutdown for one extension instance. */
 export class PiLspLifecycleController {
   private readonly pendingPostEditDiagnosticOutcomes: PostEditDiagnosticOutcome[] = [];
-  private readonly dependentBaselines = new Map<string, DependentBaseline>();
+  private readonly preEditWork = new Map<string, PreEditWork>();
   private session: ActivePiLspSession | undefined;
   private shutdownPromise: Promise<void> | undefined;
   private historyRevision = 0;
@@ -626,8 +676,10 @@ export class PiLspLifecycleController {
   }
 
   /**
-   * Scan for dependent files before a native edit runs. It never blocks or alters the call, and
-   * gives up at its time budget, which the result then reports.
+   * Before a native edit runs, pull the changed file's Pre-edit Baseline and scan for dependent
+   * files, concurrently under one time budget. It never blocks or alters the call. A server whose
+   * baseline pull fails or has not answered when the budget runs out has no baseline, and a scan
+   * that runs out of time is reported by the result.
    */
   private async handleToolCall(
     event: ToolCallEvent,
@@ -638,33 +690,42 @@ export class PiLspLifecycleController {
       return undefined;
     }
     try {
-      const target = await dependentScanTarget(event, session.cwd);
+      const target = await preEditTarget(event, session.cwd);
       if (target === undefined) return undefined;
       const budget = AbortSignal.timeout(
         this.effects.dependentScanBudgetMs ?? DEPENDENT_SCAN_BUDGET_MS,
       );
       const signal =
         context.signal === undefined ? budget : AbortSignal.any([context.signal, budget]);
-      const scan = scanDependentFiles(session, target, signal);
       const timedOut = new Promise<"timed-out">((resolveTimeout) =>
         budget.addEventListener("abort", () => resolveTimeout("timed-out"), { once: true }),
       );
-      // A scan that outlives its budget is aborted; whatever it settles with later is dropped.
-      scan.catch(() => undefined);
-      const baseline = await Promise.race([scan, timedOut]);
+      const withinBudget = <T>(work: Promise<T>): Promise<T | "timed-out"> => {
+        // Work that outlives the budget is aborted; whatever it settles with later is dropped.
+        work.catch(() => undefined);
+        return Promise.race([work, timedOut]);
+      };
+      const preEditOutcomes: PostEditDiagnosticOutcome[] = [];
+      const [, scan] = await Promise.allSettled([
+        withinBudget(pullPreEditBaseline(session, target, signal, preEditOutcomes)),
+        withinBudget(scanDependentFiles(session, target, signal)),
+      ]);
       if (this.session !== session) return undefined;
-      if (baseline === "timed-out") {
-        this.dependentBaselines.set(event.toolCallId, {
-          files: [],
-          omittedFiles: 0,
-          errorKeys: new Map(),
-          scanTimedOut: true,
-        });
-      } else if (baseline !== undefined) {
-        this.dependentBaselines.set(event.toolCallId, baseline);
-      }
+      // Servers that had not answered by now have no baseline. Pi runs a batch's `tool_call`s
+      // before executing any of them, so the text read before the pull is the text it saw.
+      const baseline = preEditBaselineOf(target.path, preEditOutcomes, target.text);
+      const dependents: DependentBaseline | undefined =
+        scan.status === "rejected"
+          ? undefined
+          : scan.value === "timed-out"
+            ? { files: [], omittedFiles: 0, errorKeys: new Map(), scanTimedOut: true }
+            : scan.value;
+      this.preEditWork.set(
+        event.toolCallId,
+        dependents === undefined ? { baseline } : { baseline, dependents },
+      );
     } catch {
-      // The edit proceeds without dependent-file feedback.
+      // The edit proceeds without a Pre-edit Baseline or dependent-file feedback.
     }
     return undefined;
   }
@@ -674,10 +735,10 @@ export class PiLspLifecycleController {
     context: ExtensionContext,
   ): Promise<ToolResultEventResult | undefined> | undefined {
     const session = this.session;
-    const baseline = this.dependentBaselines.get(event.toolCallId);
-    this.dependentBaselines.delete(event.toolCallId);
+    const work = this.preEditWork.get(event.toolCallId);
+    this.preEditWork.delete(event.toolCallId);
     if (session === undefined) return undefined;
-    return appendSessionPostEditDiagnostics(event, session, context, baseline).then((patch) => {
+    return appendSessionPostEditDiagnostics(event, session, context, work).then((patch) => {
       if (patch === undefined) return undefined;
       this.pendingPostEditDiagnosticOutcomes.push(...patch.outcomes);
       const result: ToolResultEventResult = {
@@ -694,8 +755,8 @@ export class PiLspLifecycleController {
   private flushPostEditDiagnosticsEntry(): void {
     const session = this.session;
     const outcomes = this.pendingPostEditDiagnosticOutcomes.splice(0);
-    // A call that never produced a result (blocked or aborted) leaves its scan behind.
-    this.dependentBaselines.clear();
+    // A call that never produced a result (blocked or aborted) leaves its pre-edit work behind.
+    this.preEditWork.clear();
     if (session === undefined) return;
     const entry = createPostEditDiagnosticsEntryData(session.cwd, outcomes);
     if (entry !== undefined) this.pi.appendEntry(POST_EDIT_DIAGNOSTICS_ENTRY_TYPE, entry);
@@ -709,7 +770,7 @@ export class PiLspLifecycleController {
     const session = this.session;
     this.session = undefined;
     this.pendingPostEditDiagnosticOutcomes.length = 0;
-    this.dependentBaselines.clear();
+    this.preEditWork.clear();
     const shutdown = (async () => {
       try {
         await session.manager.shutdown();

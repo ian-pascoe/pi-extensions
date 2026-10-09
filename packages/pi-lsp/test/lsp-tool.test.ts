@@ -3445,7 +3445,7 @@ describe("registered LSP tool", () => {
         "typescript:",
         "  Server typescript publishes no workspace diagnostics; it reports diagnostics only for a requested file. Use lsp_diagnostics for each file.",
         "oxlint:",
-        "  source.ts:1:1: lint",
+        "  source.ts:1:1-2: lint",
         "",
         "Warning: Pi LSP: server failing request failed: expected failure",
       ].join("\n"),
@@ -3543,7 +3543,7 @@ describe("registered LSP tool", () => {
     expect(resultText(result)).toBe(
       [
         "Server typescript publishes no workspace diagnostics; these are the diagnostics it pushed for 2 files opened in this session. Use lsp_diagnostics for other files.",
-        "source.ts:1:1: problem",
+        "source.ts:1:1-2: problem",
         "1 file: no diagnostics",
       ].join("\n"),
     );
@@ -3607,7 +3607,7 @@ describe("registered LSP tool", () => {
         },
       ],
     });
-    expect(resultText(result)).toBe("source.ts:1:16: emoji");
+    expect(resultText(result)).toBe("source.ts:1:16-17: emoji");
     await fixture.close();
   });
 
@@ -5104,9 +5104,9 @@ describe("registered LSP tool", () => {
 
       expect(resultText(result)).toBe(
         [
-          "source.ts:2:5 warning oxlint(eslint(no-unused-vars)): Variable 'unused' is declared but never used. Unused variables should start with a '_'.",
-          "source.ts:2:14 error ts(2322): Type 'string' is not assignable to type 'number'.",
-          "source.ts:1:1: Prefer let.",
+          "source.ts:2:5-11 warning oxlint(eslint(no-unused-vars)): Variable 'unused' is declared but never used. Unused variables should start with a '_'.",
+          "source.ts:2:14-19 error ts(2322): Type 'string' is not assignable to type 'number'.",
+          "source.ts:1:1-6: Prefer let.",
         ].join("\n"),
       );
       const results = [
@@ -5537,8 +5537,49 @@ describe("registered LSP tool", () => {
       });
 
       expect(resultText(result)).toBe(
-        ["b.ts:3:1 error: broken", "3 files: no diagnostics"].join("\n"),
+        ["b.ts:3:1-2 error: broken", "3 files: no diagnostics"].join("\n"),
       );
+      await fixture.close();
+    });
+
+    test("shows each diagnostic's range end so findings at one start stay distinct", async () => {
+      const fixture = await createToolFixture();
+      await writeFile(fixture.filePath, `${"x".repeat(60)}\n${"y".repeat(10)}\n`);
+      const diagnostics: Diagnostic[] = [
+        { range: protocolRange(0, 27, 14), severity: 2, message: "Unnecessary cast" },
+        { range: protocolRange(0, 27, 24), severity: 2, message: "Unnecessary cast" },
+        {
+          range: { start: { line: 0, character: 27 }, end: { line: 1, character: 2 } },
+          severity: 1,
+          message: "broken",
+        },
+        { range: protocolRange(1, 4, 0), severity: 1, message: "empty range" },
+      ];
+      const expected = [
+        "source.ts:1:28-42 warning: Unnecessary cast",
+        "source.ts:1:28-52 warning: Unnecessary cast",
+        "source.ts:1:28-2:3 error: broken",
+        "source.ts:2:5 error: empty range",
+      ];
+      fixture.client.documentDiagnosticsResult = { status: "fresh", source: "push", diagnostics };
+      fixture.client.workspaceDiagnosticsResult = {
+        status: "fresh",
+        source: "workspace_pull",
+        diagnosticsByUri: new Map([[pathToFileURL(fixture.filePath).href, diagnostics]]),
+      };
+
+      const document = await executeTool(fixture, {
+        operation: "diagnostics",
+        file_path: fixture.filePath,
+      });
+      const workspace = await executeTool(fixture, {
+        operation: "workspace_diagnostics",
+        server_id: "typescript",
+        file_path: fixture.filePath,
+      });
+
+      expect(resultText(document)).toBe(expected.join("\n"));
+      expect(resultText(workspace)).toBe(expected.join("\n"));
       await fixture.close();
     });
 
@@ -5568,9 +5609,9 @@ describe("registered LSP tool", () => {
 
       expect(resultText(result)).toBe(
         [
-          "source.ts:1:7 warning ts: first",
+          "source.ts:1:7-12 warning ts: first",
           formatLspToolValue(malformed),
-          "source.ts:1:1 error: nulls",
+          "source.ts:1:1-6 error: nulls",
         ].join("\n"),
       );
       await fixture.close();

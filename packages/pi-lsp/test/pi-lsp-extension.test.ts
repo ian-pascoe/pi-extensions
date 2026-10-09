@@ -1123,7 +1123,7 @@ describe("Pi LSP extension lifecycle", () => {
     const augmented = await harness.runner.emitToolResult(event);
     expect(augmented?.content?.at(-1)).toMatchObject({
       type: "text",
-      text: "\n\nLSP diagnostics\nsource.ts:1:1 error [gated]: fake diagnostic",
+      text: "\n\nLSP diagnostics\nsource.ts:1:1-2 error [gated] fake: fake diagnostic",
     });
     await shutdownExtension(harness);
   });
@@ -1151,15 +1151,58 @@ describe("Pi LSP extension lifecycle", () => {
       "/work",
     );
     expect(result?.content.at(-1)).toMatchObject({
-      text: "\n\nLSP diagnostics\na.ts:1:1 error [srv]: m",
+      text: "\n\nLSP diagnostics\na.ts:1:1-2 error [srv]: m",
     });
   });
 
+  test("normalizes a diagnostic's source, code, and range end, leaving out ones that break the protocol", () => {
+    const range = { start: { line: 0, character: 2 }, end: { line: 1, character: 1 } };
+    expect(
+      normalizedDiagnosticOutcome(
+        { range, message: "m", severity: 2, source: "ts", code: 2322 },
+        "srv",
+        "/work/a.ts",
+        "abc\nde\n",
+        "utf-16",
+      ),
+    ).toEqual({
+      kind: "diagnostic",
+      diagnostic: {
+        serverId: "srv",
+        path: "/work/a.ts",
+        line: 1,
+        character: 3,
+        endLine: 2,
+        endCharacter: 2,
+        severity: 2,
+        message: "m",
+        source: "ts",
+        code: 2322,
+      },
+    });
+    // A decoded wire message can carry `null` where the protocol allows only omission.
+    const malformed = JSON.parse(
+      JSON.stringify({ range, message: "m", severity: 2, source: null, code: null }),
+    );
+    const outcome = normalizedDiagnosticOutcome(
+      malformed,
+      "srv",
+      "/work/a.ts",
+      "abc\nde\n",
+      "utf-16",
+    );
+    expect(outcome.kind === "diagnostic" && "source" in outcome.diagnostic).toBe(false);
+    expect(outcome.kind === "diagnostic" && "code" in outcome.diagnostic).toBe(false);
+  });
+
   test.each([
-    [{}, "\n\nLSP diagnostics\nsource.ts:1:1 error [hinted]: fake diagnostic\n1 hint omitted"],
+    [
+      {},
+      "\n\nLSP diagnostics\nsource.ts:1:1-2 error [hinted] fake: fake diagnostic\n1 hint omitted",
+    ],
     [
       { includeHintDiagnostics: true },
-      "\n\nLSP diagnostics\nsource.ts:1:1 error [hinted]: fake diagnostic\nsource.ts:1:1 hint [hinted]: fake hint",
+      "\n\nLSP diagnostics\nsource.ts:1:1-2 error [hinted] fake: fake diagnostic\nsource.ts:1:1-2 hint [hinted] fake: fake hint",
     ],
   ])("applies lsp settings %j to hint post-edit diagnostics", async (setting, expected) => {
     const fakeServerPath = fileURLToPath(new URL("fixtures/fake-lsp-server.mjs", import.meta.url));

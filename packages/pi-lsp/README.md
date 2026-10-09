@@ -273,7 +273,9 @@ matching items.
 Diagnostics, hover, status, code actions, and apply results are compact text too:
 
 - `lsp_diagnostics` and `lsp_workspace_diagnostics` list one
-  `path:line:col severity source(code): message` line per LSP Diagnostic. A queried file without
+  `path:line:col-end severity source(code): message` line per LSP Diagnostic. The range end is
+  `5:28-52` on the same line or `5:28-6:3` across lines, and is left out when it equals the start,
+  so two findings that start at the same position stay distinct. A queried file without
   any reads `path: no diagnostics`. A server that publishes nothing within the diagnostics timeout
   reads `path: no diagnostics published by <server> within <wait> (not a failure; ...)`: servers
   that only push diagnostics, such as marksman, stay silent for a clean file, so the file may be
@@ -522,14 +524,16 @@ Pi LSP appends fresh diagnostics to results from:
 - successful or partially applied LSP previews from `lsp_apply`, and from the removed `lsp` tool.
 
 Changed, created, and renamed destination files are diagnosed; deleted files are not. Every
-file a Server Definition covers gets an explicit outcome: findings, `no diagnostics`, timeout, or
-unavailable server. An unrecognized `apply_patch` result shape adds an adapter-version warning. Findings read
-`path:line:col severity [server]: message`, one line each, with paths relative to the working
-directory, named severities (`error`, `warning`, `info`, `hint`), and the whole message collapsed
-onto one line. When every changed file is clean, the section is one line:
-`LSP diagnostics: no diagnostics`. Otherwise clean files share one `no diagnostics: a.ts, b.ts`
-line that leaves out any file a server reported a finding for, even when another server found it
-clean. Diagnostics preserve
+file a Server Definition covers gets an explicit outcome: findings, `no diagnostics`,
+`no new diagnostics`, timeout, or unavailable server. An unrecognized `apply_patch` result shape
+adds an adapter-version warning. Findings read
+`path:line:col-end severity [server] source(code): message`, one line each, with paths relative to
+the working directory, named severities (`error`, `warning`, `info`, `hint`), the range end and
+`source(code)` rendered as in `lsp_diagnostics` (the origin is left out when the server names
+neither), and the whole message collapsed onto one line. When every changed file is clean, the
+section is one line: `LSP diagnostics: no diagnostics`. Otherwise clean files share one
+`no diagnostics: a.ts, b.ts` line that leaves out any file a server reported a finding for, even
+when another server found it clean. Diagnostics preserve
 duplicates from independent servers and never change the original tool's success or error state.
 Only servers that advertise document diagnostics participate; formatting-only servers remain
 available for explicit LSP formatting operations without appearing in Post-edit Diagnostics. A
@@ -543,6 +547,40 @@ default and reported as `N hints omitted` (`LSP diagnostics: no diagnostics (N h
 nothing else is reported); a file left with only hints counts as clean. Set `lsp.includeHintDiagnostics`
 to `true` to include them. `lsp_diagnostics` always returns every severity.
 
+### Pre-edit Baseline
+
+A native `edit` or `write` reports only the findings it **introduced** in the file it changed.
+Before the tool runs, Pi LSP pulls that file's diagnostics from every server that takes part in
+Post-edit Diagnostics and records them as its Pre-edit Baseline. Afterwards it lists only findings
+that are not in the baseline and counts the rest per severity:
+
+```text
+LSP diagnostics
+src/a.ts:12:5-18 warning [oxlint] eslint(no-unused-vars): Variable 'x' is declared but never used.
+src/a.ts: 1 new; unchanged: 1 error, 12 warnings
+```
+
+A file with existing findings but no new ones reads
+`src/a.ts: no new diagnostics (unchanged: 1 error)`, or, when nothing else is reported, the whole
+section is one line: `LSP diagnostics: no new diagnostics (unchanged: 3 warnings)`. A file with no
+findings at all keeps `no diagnostics`. Use `lsp_diagnostics` to see every finding.
+
+- Every severity is compared, errors included: an existing error the edit leaves alone is counted,
+  not listed.
+- A finding is the same before and after when its server, severity, code, message, and the trimmed
+  text of the line it starts on match, not its position, so an edit (or a sibling `edit` in the same
+  parallel tool batch) that shifts lines does not make existing findings look new. A finding on a
+  line the edit rewrote counts as new. Matching counts copies: two identical findings before and
+  three after is one new finding.
+- With `lsp.includeHintDiagnostics` off, hints are neither listed nor counted as unchanged, and
+  `N hints omitted` counts only the new ones. With it on, hints are compared like the rest.
+- **No baseline means every finding is listed**: a `write` that creates a file, an unreadable file,
+  and a server whose baseline pull failed or ran out of time. That last case adds a note such as
+  `src/a.ts: no pre-edit baseline from oxlint, so all its findings are listed`.
+- The baseline pull shares the 20-second per-call pre-edit budget with the dependent-file scan
+  below and runs concurrently with it. It never blocks or alters the tool call.
+- `apply_patch` and `lsp_apply` take no baseline and list every finding.
+
 ### Dependent files
 
 An edit can break files other than the ones it changed. For a native `edit` or `write` of a file
@@ -551,7 +589,7 @@ and reports the **new errors** it caused in them under a separate heading:
 
 ```text
 LSP diagnostics in dependent files (new errors only)
-src/pi-todo-extension.ts:1:10 error [typescript]: '"./todo-list.js"' has no exported member named 'createEmptyTodoStateX'. Did you mean 'createEmptyTodoState'?
+src/pi-todo-extension.ts:1:10-30 error [typescript] ts(2724): '"./todo-list.js"' has no exported member named 'createEmptyTodoStateX'. Did you mean 'createEmptyTodoState'?
 ```
 
 How it works, so a pull-only server such as `tsc --lsp` is covered too (it publishes no workspace
@@ -562,9 +600,10 @@ diagnostics and has opened none of the dependents):
    `textDocument/references` for each. The files those references lie in are the dependents.
 2. It pulls diagnostics for those dependents and records their errors as a baseline.
 3. After the tool runs, it pulls them again and reports only errors that were not in the baseline.
-   An error is the same error before and after when its server, message, and the trimmed text of
-   the line it points at match, not its position, so a sibling `edit` in the same parallel tool
-   batch that shifts a dependent's lines does not make its existing errors look new.
+   An error is the same error before and after when it matches as in the Pre-edit Baseline
+   (server, severity, code, message, and the trimmed text of the line it starts on), not by
+   position, so a sibling `edit` in the same parallel tool batch that shifts a dependent's lines
+   does not make its existing errors look new.
 
 Scope and caps:
 
@@ -572,8 +611,9 @@ Scope and caps:
   (the first 20 by path). Files past the cap, or whose diagnostics timed out, are reported as
   `N dependent files not checked`.
 - Only **error**-severity findings are reported; errors a dependent file already had are not.
-- The before-edit scan takes at most 20 seconds **per edit call**; then the edit proceeds and its
-  result says `dependent files not checked: the scan ran out of time`.
+- The before-edit scan shares the 20-second **per edit call** pre-edit budget with the Pre-edit
+  Baseline pull; when it runs out, the edit proceeds and its result says
+  `dependent files not checked: the scan ran out of time`.
 - An edit whose declarations have no dependents adds no output and costs one `documentSymbol` and
   up to ten `references` requests.
 - Only Server Instances that advertise document symbols, references, and document diagnostics
@@ -583,8 +623,10 @@ Scope and caps:
 - A language server only finds references in projects it has loaded. The edited file's own project
   is loaded; a dependent in an unloaded project is not found.
 
-Findings, matched-server failures, timeouts, and adapter warnings also appear in one expandable
-Post-edit Diagnostics Entry after the current tool batch (a dependent file's path is marked `dependent file`). It uses Pi's custom-message look under
+Findings, unchanged counts, missing-baseline notes, matched-server failures, timeouts, and adapter
+warnings also appear in one expandable Post-edit Diagnostics Entry after the current tool batch (a
+dependent file's path is marked `dependent file`); it shows the same new findings and unchanged
+counts as the model-visible text. It uses Pi's custom-message look under
 a `[lsp] edit diagnostics` label followed by the counts; its collapsed rendering shows the
 first 10 detail lines with Pi's expand hint, and expanding it shows every detail.
 Clean results stay silent in the transcript. This entry is

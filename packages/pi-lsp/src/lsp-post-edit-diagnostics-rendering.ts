@@ -9,7 +9,9 @@ import {
 } from "@ian-pascoe/pi-utils/ui";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
+import { lspDiagnosticOrigin, lspRangeText } from "./lsp-location-text.js";
 import {
+  lspSeverityCountsText,
   lspSeverityName,
   PostEditDiagnosticOutcomeSchema,
   type PostEditDiagnosticOutcome,
@@ -86,6 +88,7 @@ function entrySummary(data: PostEditDiagnosticsEntryData, theme: PostEditDiagnos
   let adapterWarnings = 0;
   let timeouts = 0;
   let serverIssues = 0;
+  let unchanged = 0;
   for (const outcome of data.outcomes) {
     switch (outcome.kind) {
       case "diagnostic": {
@@ -100,6 +103,13 @@ function entrySummary(data: PostEditDiagnosticsEntryData, theme: PostEditDiagnos
         break;
       case "unavailable_server":
         serverIssues++;
+        files.add(outcome.path);
+        break;
+      case "unchanged":
+        unchanged += outcome.count;
+        files.add(outcome.path);
+        break;
+      case "no_baseline":
         files.add(outcome.path);
         break;
       case "warning":
@@ -120,6 +130,7 @@ function entrySummary(data: PostEditDiagnosticsEntryData, theme: PostEditDiagnos
     [counts.get("diagnostic") ?? 0, "diagnostic", "diagnostics", "muted"],
     [timeouts, "timeout", "timeouts", "warning"],
     [serverIssues, "server issue", "server issues", "warning"],
+    [unchanged, "unchanged", "unchanged", "muted"],
   ] as const;
   return joinInline(theme, [
     ...metrics
@@ -161,6 +172,12 @@ function compareReportableOutcomes(
   }
   if (left.kind === "diagnostic") return -1;
   if (right.kind === "diagnostic") return 1;
+  if (left.kind === "unchanged" && right.kind === "unchanged") {
+    return left.severity - right.severity;
+  }
+  // Unchanged counts close their file's group, summarized on one line.
+  if (left.kind === "unchanged") return 1;
+  if (right.kind === "unchanged") return -1;
   return left.kind.localeCompare(right.kind);
 }
 
@@ -170,15 +187,37 @@ function diagnosticLine(
 ): string {
   const diagnostic = outcome.diagnostic;
   const severity = diagnosticSeverity(diagnostic.severity);
-  return `${theme.fg(severityColor(severity), `${diagnostic.line}:${diagnostic.character}`)}  ${theme.fg("customMessageText", diagnostic.message)}  ${theme.fg("muted", diagnostic.serverId)}`;
+  const origin = lspDiagnosticOrigin(diagnostic.source, diagnostic.code);
+  const server = origin === undefined ? diagnostic.serverId : `${diagnostic.serverId} ${origin}`;
+  return `${theme.fg(severityColor(severity), lspRangeText(diagnostic))}  ${theme.fg("customMessageText", diagnostic.message)}  ${theme.fg("muted", server)}`;
 }
 
 function unavailableLine(
-  outcome: Extract<ReportablePostEditDiagnosticOutcome, { kind: "timeout" | "unavailable_server" }>,
+  outcome: Extract<
+    ReportablePostEditDiagnosticOutcome,
+    { kind: "timeout" | "unavailable_server" | "no_baseline" }
+  >,
   theme: PostEditDiagnosticsEntryTheme,
 ): string {
-  const label = outcome.kind === "timeout" ? "Diagnostics timed out" : "Server unavailable";
+  const label =
+    outcome.kind === "timeout"
+      ? "Diagnostics timed out"
+      : outcome.kind === "no_baseline"
+        ? "No pre-edit baseline; all findings listed"
+        : "Server unavailable";
   return `${theme.fg("warning", label)}${outcome.serverId === undefined ? "" : `  ${theme.fg("muted", outcome.serverId)}`}`;
+}
+
+/** One `unchanged: 1 error, 12 warnings` line for a file's findings already in its Pre-edit Baseline. */
+function unchangedLine(
+  outcomes: readonly Extract<ReportablePostEditDiagnosticOutcome, { kind: "unchanged" }>[],
+  theme: PostEditDiagnosticsEntryTheme,
+): string {
+  const counts = new Map<number, number>();
+  for (const { severity, count } of outcomes) {
+    counts.set(severity, (counts.get(severity) ?? 0) + count);
+  }
+  return theme.fg("muted", `unchanged: ${lspSeverityCountsText(counts)}`);
 }
 
 function outcomeLines(
@@ -211,13 +250,15 @@ function outcomeLines(
       `${theme.fg("accent", displayPath(data.cwd, path))}${dependent ? `  ${theme.fg("muted", "dependent file")}` : ""}`,
     );
     for (const outcome of outcomes) {
-      if (outcome.kind === "warning") continue;
+      if (outcome.kind === "warning" || outcome.kind === "unchanged") continue;
       lines.push(
         outcome.kind === "diagnostic"
           ? diagnosticLine(outcome, theme)
           : unavailableLine(outcome, theme),
       );
     }
+    const unchanged = outcomes.filter((outcome) => outcome.kind === "unchanged");
+    if (unchanged.length > 0) lines.push(unchangedLine(unchanged, theme));
   }
   if (warnings.length > 0) {
     lines.push(theme.fg("warning", "Warnings"));
