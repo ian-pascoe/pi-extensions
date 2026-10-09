@@ -150,7 +150,7 @@ test("keeps only errors the baseline lacked and counts unchecked files", () => {
     files: ["/w/a.ts", "/w/b.ts", "/w/c.ts"],
     omittedFiles: 2,
     errorKeys: new Map([
-      ["/w/a.ts", new Set(["typescript\u0000already broken\u0000broken line"])],
+      ["/w/a.ts", new Set([errorKey(preExisting, texts) ?? ""])],
       ["/w/b.ts", new Set()],
       ["/w/c.ts", new Set()],
     ]),

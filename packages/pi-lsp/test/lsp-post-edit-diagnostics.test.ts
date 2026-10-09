@@ -410,3 +410,187 @@ test("reports a hint-only file as clean beside another server's timeout", async 
     "\n\nLSP diagnostics\na.ts: diagnostics timeout (slow)\nno diagnostics: a.ts\n1 hint omitted",
   );
 });
+
+test("renders a finding's rule code and range end, so findings at one start stay distinct", async () => {
+  const cast = (endCharacter: number, code: string | number): PostEditDiagnosticOutcome => ({
+    kind: "diagnostic",
+    diagnostic: {
+      serverId: "oxlint",
+      path: "/work/a.ts",
+      line: 5,
+      character: 28,
+      endLine: 5,
+      endCharacter,
+      severity: 2,
+      message: "Unnecessary cast",
+      source: "typescript-eslint",
+      code,
+    },
+  });
+  const multiline: PostEditDiagnosticOutcome = {
+    kind: "diagnostic",
+    diagnostic: {
+      serverId: "ts",
+      path: "/work/a.ts",
+      line: 5,
+      character: 28,
+      endLine: 6,
+      endCharacter: 3,
+      severity: 1,
+      message: "broken",
+    },
+  };
+  await expect(appendedText([cast(52, "no-cast"), cast(42, 7), multiline])).resolves.toBe(
+    [
+      "",
+      "",
+      "LSP diagnostics",
+      "a.ts:5:28-6:3 error [ts]: broken",
+      "a.ts:5:28-42 warning [oxlint] typescript-eslint(7): Unnecessary cast",
+      "a.ts:5:28-52 warning [oxlint] typescript-eslint(no-cast): Unnecessary cast",
+    ].join("\n"),
+  );
+});
+
+/** Run an edit result through a baseline comparison that returns `compared` for the fresh outcomes. */
+async function comparedText(
+  compared: readonly PostEditDiagnosticOutcome[],
+  options: { includeHints?: boolean } = {},
+): Promise<string | undefined> {
+  const result = await appendPostEditDiagnostics(
+    mutationEvent({ input: { path: "/work/a.ts" } }),
+    async () => [],
+    "/work",
+    { ...options, preEditBaseline: async () => compared },
+  );
+  const appended = result?.content.at(-1);
+  return appended?.type === "text" ? appended.text : undefined;
+}
+
+const unchanged = (
+  severity: number,
+  count = 1,
+  path = "/work/a.ts",
+): PostEditDiagnosticOutcome => ({
+  kind: "unchanged",
+  path,
+  severity,
+  count,
+});
+
+test("lists new findings and counts unchanged ones per file and severity", async () => {
+  await expect(
+    comparedText([
+      unchanged(2),
+      diagnosticOutcome("/work/a.ts", 2, "new one"),
+      unchanged(2),
+      unchanged(1),
+      diagnosticOutcome("/work/a.ts", 1, "new two"),
+    ]),
+  ).resolves.toBe(
+    [
+      "",
+      "",
+      "LSP diagnostics",
+      "a.ts:3:7 error [typescript]: new two",
+      "a.ts:3:7 warning [typescript]: new one",
+      "a.ts: 2 new; unchanged: 1 error, 2 warnings",
+    ].join("\n"),
+  );
+});
+
+test("states that a file has no new diagnostics when every finding is unchanged", async () => {
+  await expect(comparedText([unchanged(1), unchanged(2, 3)])).resolves.toBe(
+    "\n\nLSP diagnostics: no new diagnostics (unchanged: 1 error, 3 warnings)",
+  );
+  await expect(
+    comparedText([unchanged(2), { kind: "timeout", path: "/work/b.ts", serverId: "slow" }]),
+  ).resolves.toBe(
+    [
+      "",
+      "",
+      "LSP diagnostics",
+      "a.ts: no new diagnostics (unchanged: 1 warning)",
+      "b.ts: diagnostics timeout (slow)",
+    ].join("\n"),
+  );
+});
+
+test("never lists a file with unchanged findings as clean", async () => {
+  await expect(
+    comparedText([
+      unchanged(2),
+      { kind: "no_diagnostics", path: "/work/a.ts", serverId: "oxlint" },
+      diagnosticOutcome("/work/b.ts", 1, "broken"),
+      { kind: "no_diagnostics", path: "/work/c.ts" },
+    ]),
+  ).resolves.toBe(
+    [
+      "",
+      "",
+      "LSP diagnostics",
+      "b.ts:3:7 error [typescript]: broken",
+      "a.ts: no new diagnostics (unchanged: 1 warning)",
+      "no diagnostics: c.ts",
+    ].join("\n"),
+  );
+});
+
+test("keeps today's wording for a file with no findings at all", async () => {
+  await expect(comparedText([{ kind: "no_diagnostics", path: "/work/a.ts" }])).resolves.toBe(
+    "\n\nLSP diagnostics: no diagnostics",
+  );
+});
+
+test("notes a server without a baseline only while it lists a finding", async () => {
+  const noBaseline: PostEditDiagnosticOutcome = {
+    kind: "no_baseline",
+    path: "/work/a.ts",
+    serverId: "typescript",
+  };
+  await expect(
+    comparedText([diagnosticOutcome("/work/a.ts", 2, "listed"), noBaseline]),
+  ).resolves.toBe(
+    [
+      "",
+      "",
+      "LSP diagnostics",
+      "a.ts:3:7 warning [typescript]: listed",
+      "a.ts: no pre-edit baseline from typescript, so all its findings are listed",
+    ].join("\n"),
+  );
+  // Its only finding is an omitted hint, so the note would stand alone.
+  await expect(
+    comparedText([diagnosticOutcome("/work/a.ts", 4, "hint"), noBaseline]),
+  ).resolves.toBe("\n\nLSP diagnostics: no diagnostics (1 hint omitted)");
+});
+
+test("compares hints like other severities when includeHints is set", async () => {
+  await expect(
+    comparedText([unchanged(4, 2), diagnosticOutcome("/work/a.ts", 4, "new hint")], {
+      includeHints: true,
+    }),
+  ).resolves.toBe(
+    [
+      "",
+      "",
+      "LSP diagnostics",
+      "a.ts:3:7 hint [typescript]: new hint",
+      "a.ts: 1 new; unchanged: 2 hints",
+    ].join("\n"),
+  );
+});
+
+test("drops unchanged hints uncounted when hints are omitted, keeping the file's outcome", async () => {
+  await expect(comparedText([unchanged(4, 2)])).resolves.toBe(
+    "\n\nLSP diagnostics: no diagnostics",
+  );
+  const result = await appendPostEditDiagnostics(
+    mutationEvent({ input: { path: "/work/a.ts" } }),
+    async () => [],
+    "/work",
+    { preEditBaseline: async () => [unchanged(2), unchanged(2), unchanged(1)] },
+  );
+  // Persisted outcomes carry one merged count per file and severity.
+  expect(result?.outcomes).toEqual([unchanged(2, 2), unchanged(1)]);
+});

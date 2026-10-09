@@ -76,7 +76,7 @@ describe("dependent-file Post-edit Diagnostics with the real tsc --lsp server", 
     expect(text).toContain("LSP diagnostics\nsrc/todo-list.ts:9:");
     const dependents = text.split("LSP diagnostics in dependent files")[1];
     if (dependents === undefined) throw new Error(`Expected a dependent-files section:\n${text}`);
-    expect(dependents).toContain("src/pi-todo-extension.ts:1:10 error [typescript]");
+    expect(dependents).toContain("src/pi-todo-extension.ts:1:10-30 error [typescript] ts(2724): ");
     expect(dependents).toContain("createEmptyTodoStateX");
     expect(dependents).not.toContain("unrelated.ts");
     expect(dependents).not.toContain("not checked");

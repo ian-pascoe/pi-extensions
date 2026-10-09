@@ -1,5 +1,6 @@
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 let input = Buffer.alloc(0);
 let nextRequestId = 1000;
@@ -41,7 +42,42 @@ function respondError(id, code, message) {
   send({ jsonrpc: "2.0", id, error: { code, message } });
 }
 
-function diagnostics(message = "fake diagnostic") {
+const CONTENT_SEVERITIES = { error: 1, warning: 2, info: 3, hint: 4 };
+
+/**
+ * FAKE_DIAGNOSTICS=content reads the document from disk and reports one finding per
+ * `diag:<severity>:<code>:<message>` marker, ranging from the marker to the end of its line.
+ */
+function contentDiagnostics(uri) {
+  let text;
+  try {
+    text = readFileSync(fileURLToPath(uri), "utf8");
+  } catch {
+    return [];
+  }
+  const found = [];
+  text.split("\n").forEach((lineText, line) => {
+    for (const match of lineText.matchAll(/diag:(\w+):([\w-]+):([^;]*)/gu)) {
+      found.push({
+        range: {
+          start: { line, character: match.index },
+          end: { line, character: match.index + match[0].length },
+        },
+        severity: CONTENT_SEVERITIES[match[1]] ?? 1,
+        code: match[2],
+        source: "fake",
+        message: match[3].trim(),
+      });
+    }
+  });
+  return found;
+}
+
+let documentDiagnosticRequests = 0;
+
+function diagnostics(message = "fake diagnostic", uri) {
+  if (process.env.FAKE_DIAGNOSTICS === "content")
+    return uri === undefined ? [] : contentDiagnostics(uri);
   if (process.env.FAKE_DIAGNOSTICS === "error-and-hint") {
     const range = { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } };
     return [
@@ -165,11 +201,16 @@ async function handleRequest(message) {
       );
       return;
     case "textDocument/diagnostic":
+      documentDiagnosticRequests++;
       if (process.env.FAKE_DELAY_DIAGNOSTICS === "1") return;
+      // FAKE_DELAY_FIRST_DIAGNOSTICS never answers the first document pull, such as a pre-edit one.
+      if (process.env.FAKE_DELAY_FIRST_DIAGNOSTICS === "1" && documentDiagnosticRequests === 1) {
+        return;
+      }
       respond(message.id, {
         kind: "full",
         resultId: "fake-document-result",
-        items: diagnostics(),
+        items: diagnostics(undefined, message.params?.textDocument?.uri),
       });
       return;
     case "workspace/diagnostic":
