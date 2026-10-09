@@ -334,8 +334,17 @@ function orderedTexts(run: MutationRun): string[] {
 }
 
 /** Where the fake server's diagnostic lies: line 3 of the formatted file, line 2 before it. */
-const formattedDiagnostic = `${DIAGNOSTICS_HEADING}source.ts:3:1 warning [fakelsp]: TODO left in formatted source`;
-const unformattedDiagnostic = `${DIAGNOSTICS_HEADING}source.ts:2:1 warning [fakelsp]: TODO left in unformatted source`;
+const formattedDiagnostic = `${DIAGNOSTICS_HEADING}source.ts:3:1-5 warning [fakelsp] fake: TODO left in formatted source`;
+const unformattedDiagnostic = `${DIAGNOSTICS_HEADING}source.ts:2:1-5 warning [fakelsp] fake: TODO left in unformatted source`;
+
+/**
+ * Post-edit Diagnostics of the unformatted file. The `edit` leaves the TODO line alone, so against
+ * its Pre-edit Baseline the finding is only counted; `lsp_apply` takes no baseline and lists it.
+ */
+const swappedDiagnostics = {
+  edit: "\n\nLSP diagnostics: no new diagnostics (unchanged: 1 warning)",
+  lsp_apply: unformattedDiagnostic,
+} satisfies Record<ToolName, string>;
 
 const formattedFiles = {
   edit: "// formatted\nconst oldName = 2;\n// TODO later\n",
@@ -417,7 +426,7 @@ describe("Pi Formatter and Pi LSP loaded as the Git collection loads them", () =
       expect(run.blocks.map(({ type }) => type)).toEqual(["text", "text", "text"]);
       expect(orderedTexts(run)).toEqual([
         expectedOriginalResult(toolName, run.filePath),
-        unformattedDiagnostic,
+        swappedDiagnostics[toolName],
         formatterNotes[toolName],
       ]);
     },
