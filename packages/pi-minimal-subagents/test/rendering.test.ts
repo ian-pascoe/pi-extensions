@@ -264,6 +264,27 @@ describe("minimal subagents result rows", () => {
     }
   });
 
+  it("shows that a handed wait result will arrive as a separate message", () => {
+    const details = {
+      event: "turn",
+      agent_id: "worker",
+      turn_id: "worker:turn-1",
+      status: "completed",
+      already_delivered: true,
+      delivery_pending: true,
+      source_agent_id: "worker",
+      source_turn_id: "worker:turn-1",
+    };
+    for (const options of [collapsed, expanded]) {
+      const rendered = wait(details, options);
+      expect(text(rendered)).toContain(
+        "Handed to you automatically; it arrives as a separate message.",
+      );
+      expect(text(rendered)).not.toContain("reread");
+      expectFits(rendered);
+    }
+  });
+
   it("hangs a waiting child's turn off a rail of Pi-rendered items", () => {
     const toolTurn = (index: number): AgentMessage[] => [
       {

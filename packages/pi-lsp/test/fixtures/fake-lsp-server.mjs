@@ -147,6 +147,10 @@ async function handleRequest(message) {
     case "textDocument/references":
       // FAKE_DELAY_REFERENCES never answers, so the caller's budget has to end the wait.
       if (process.env.FAKE_DELAY_REFERENCES === "1") return;
+      // FAKE_REFERENCES_DELAY_MS answers only after that many milliseconds, like a warming-up server.
+      if (process.env.FAKE_REFERENCES_DELAY_MS) {
+        await new Promise((done) => setTimeout(done, Number(process.env.FAKE_REFERENCES_DELAY_MS)));
+      }
       // FAKE_REFERENCE_FILE is a path relative to the workspace root that references the symbol.
       respond(
         message.id,

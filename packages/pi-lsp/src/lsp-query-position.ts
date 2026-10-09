@@ -111,7 +111,8 @@ function emptyResultSubject(operation: LspPositionReadOperation, noHierarchyItem
     case "completion":
       return "No completions";
     case "hover":
-      return "No hover information";
+      // A null hover is the server's plain answer, so say the server had nothing to show.
+      return "The server has no hover information";
     case "signature_help":
       return "No signature help";
     case "declaration":

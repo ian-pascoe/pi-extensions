@@ -315,6 +315,148 @@ describe("immutable Todo journal projection", () => {
     ]);
   });
 
+  function codemodeResult(
+    manager: SessionManager,
+    id: string,
+    text: string,
+    isError = false,
+    calledTodo = true,
+  ): void {
+    manager.appendMessage({
+      role: "toolResult",
+      toolCallId: id,
+      toolName: "codemode",
+      content: [{ type: "text", text }],
+      isError,
+      timestamp: 4,
+      nestedCalls: {
+        calls: calledTodo ? [{ id: `${id}/1`, name: "todo", status: "ok" }] : [],
+        complete: true,
+      },
+    });
+  }
+  const script = (output: string) => `Script completed\nWall time 0.1 seconds\nOutput:\n${output}`;
+  const shown = (tasks: JsonValue, action = "list") => JSON.stringify({ action, tasks });
+
+  it("skips the Snapshot when a codemode result shows the complete final list from nested todo results", () => {
+    const manager = SessionManager.inMemory();
+    user(manager, "Script");
+    assistantCalls(manager, ["a"]);
+    state(manager, "One");
+    state(manager, "Final");
+    codemodeResult(manager, "a", script(shown(task("Final"), "add")));
+    expect(snapshots(project(manager))).toEqual([]);
+    assistantCalls(manager, ["b"]);
+    state(manager, "Pretty");
+    codemodeResult(
+      manager,
+      "b",
+      script(
+        `==> text 1/2 <==\nDone\n==> text 2/2 <==\n${JSON.stringify({ action: "list", tasks: task("Pretty") }, null, 2)}`,
+      ),
+    );
+    assistantCalls(manager, ["c"]);
+    state(manager, null);
+    codemodeResult(manager, "c", script(shown([])));
+    expect(snapshots(project(manager))).toEqual([]);
+  });
+
+  it("finds the list inside a wrapper value or a bare task array the script returned", () => {
+    const manager = SessionManager.inMemory();
+    user(manager, "Script");
+    assistantCalls(manager, ["a"]);
+    state(manager, "Wrapped");
+    codemodeResult(
+      manager,
+      "a",
+      script(JSON.stringify({ after: JSON.parse(shown(task("Wrapped"))) })),
+    );
+    assistantCalls(manager, ["b"]);
+    state(manager, "Bare");
+    codemodeResult(manager, "b", script(JSON.stringify(task("Bare"))));
+    expect(snapshots(project(manager))).toEqual([]);
+  });
+
+  it("keeps the Snapshot when a codemode result does not show exactly the final list", () => {
+    const manager = SessionManager.inMemory();
+    user(manager, "Script");
+    assistantCalls(manager, ["a"]);
+    state(manager, "Hidden");
+    codemodeResult(manager, "a", script("added 1 task"));
+    assistantCalls(manager, ["b"]);
+    state(manager, "Changed");
+    codemodeResult(manager, "b", script(shown(task("Before"))));
+    assistantCalls(manager, ["c"]);
+    state(manager, "Failed");
+    codemodeResult(manager, "c", script(shown(task("Failed"))), true);
+    assistantCalls(manager, ["d"]);
+    state(manager, "Latest");
+    codemodeResult(manager, "d", script(`${shown(task("Latest"))}\n${shown(task("Earlier"))}`));
+    assistantCalls(manager, ["e"]);
+    state(manager, "Partial");
+    codemodeResult(
+      manager,
+      "e",
+      script(JSON.stringify({ action: "update", task: task("Partial")[0] })),
+    );
+    assistantCalls(manager, ["f"]);
+    state(manager, "Prose");
+    codemodeResult(manager, "f", script("tasks: [ ] #1 Prose (not JSON)"));
+    expect(snapshots(project(manager))).toEqual([
+      `${HEADER}[ ] #1 Hidden`,
+      `${HEADER}[ ] #1 Changed`,
+      `${HEADER}[ ] #1 Failed`,
+      `${HEADER}[ ] #1 Latest`,
+      `${HEADER}[ ] #1 Partial`,
+      `${HEADER}[ ] #1 Prose`,
+    ]);
+  });
+
+  it("ignores a codemode result that never called todo, keeping the earlier todo result as the anchor", () => {
+    const manager = SessionManager.inMemory();
+    user(manager, "Mixed");
+    assistantCalls(manager, ["a", "b", "c"]);
+    state(manager, "Task");
+    toolResult(manager, "a", "list", false, fullList(task("Task")));
+    codemodeResult(manager, "b", script("unrelated"), false, false);
+    // Even a printed list is not evidence for a script that made no todo call.
+    codemodeResult(manager, "c", script(shown(task("Other"))), false, false);
+    expect(snapshots(project(manager))).toEqual([]);
+  });
+
+  it("recovers from stray brackets in prose but keeps the Snapshot for oversized or desynchronized output", () => {
+    const manager = SessionManager.inMemory();
+    user(manager, "Script");
+    assistantCalls(manager, ["a"]);
+    state(manager, "Big");
+    codemodeResult(manager, "a", script(`${"x".repeat(70_000)}\n${shown(task("Big"))}`));
+    assistantCalls(manager, ["b"]);
+    state(manager, "Noisy");
+    codemodeResult(manager, "b", script(`} ] "oops [ { \n${shown(task("Noisy"))}`));
+    assistantCalls(manager, ["c"]);
+    state(manager, "Desynced");
+    // An unterminated string inside an open bracket swallows everything after it.
+    codemodeResult(manager, "c", script(`{ "oops\n${shown(task("Desynced"))}`));
+    expect(snapshots(project(manager))).toEqual([
+      `${HEADER}[ ] #1 Big`,
+      `${HEADER}[ ] #1 Desynced`,
+    ]);
+  });
+
+  it("judges a mixed group by its last todo or codemode result", () => {
+    const manager = SessionManager.inMemory();
+    user(manager, "Mixed");
+    assistantCalls(manager, ["a", "b"]);
+    state(manager, "Direct");
+    toolResult(manager, "a", "x", false, { action: "update", task: task("Direct")[0]! });
+    codemodeResult(manager, "b", script(shown(task("Direct"))));
+    assistantCalls(manager, ["c", "d"]);
+    state(manager, "Later");
+    codemodeResult(manager, "c", script(shown(task("Later"))));
+    toolResult(manager, "d", "x", false, { action: "update", task: task("Later")[0]! });
+    expect(snapshots(project(manager))).toEqual([`${HEADER}[ ] #1 Later`]);
+  });
+
   it("rejects destroyed or ambiguous anchors rather than relocating old snapshots", () => {
     const manager = SessionManager.inMemory();
     user(manager, "Anchor");

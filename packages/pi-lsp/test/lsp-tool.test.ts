@@ -63,6 +63,7 @@ import {
 } from "../src/troubleshooting-skill.js";
 import type { ResolvedLspSettings } from "../src/pi-lsp-settings.js";
 import { LSP_WARM_UP_LIMITS, type LspWarmUpLimits } from "../src/lsp-workspace-warm-up.js";
+import { testTimeouts } from "./lsp-timeouts.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -216,12 +217,13 @@ function resolvedSettings(
     enablement: new Map(),
     includeHintDiagnostics: false,
     warnings: [],
-    timeouts: {
+    timeouts: testTimeouts({
       diagnosticsMs: 100,
       initializeMs: 100,
       requestMs: 100,
       shutdownMs: 100,
-    },
+      workspaceRequestMs: 100,
+    }),
     servers: new Map(
       serverIds.map((id) => [
         id,
@@ -366,6 +368,9 @@ describe("registered LSP tool", () => {
       // Shared rules live in the namespace instructions and one deduplicated guideline.
       expect(tool.description, tool.name).not.toMatch(/one-based|Result Spill|leading @/u);
     }
+    // The guideline is static, so read-only sessions without the preview tools must not be told
+    // those tools exist.
+    expect(LSP_TOOL_GUIDELINE).toContain("Where available, lsp_rename, lsp_code_actions");
     expect(LSP_TOOL_NAMESPACE.description).toContain(LSP_TOOL_GUIDELINE);
     expect(LSP_TOOL_NAMESPACE.instructions).toContain("one-based");
     expect(LSP_TOOL_NAMESPACE.instructions).toContain("Result Spill");
@@ -2355,6 +2360,28 @@ describe("registered LSP tool", () => {
     );
     expect(warning).toContain("expected failure");
     await manager.shutdown();
+    await fixture.close();
+  });
+
+  test("says plainly that a single server has no hover information at the position", async () => {
+    const fixture = await createToolFixture();
+    fixture.client.responderByMethod.set("textDocument/hover", () => null);
+
+    const hover = await executeTool(fixture, {
+      operation: "hover",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 9,
+    });
+
+    expect(resultText(hover)).toBe(
+      'The server has no hover information at source.ts:1:9 ("emoji").',
+    );
+    expect(Value.Parse(LspPositionReadOutputSchema, hover.structuredContent)).toMatchObject({
+      results: [{ server_id: "typescript", value: null }],
+      warnings: [],
+    });
+    expect(hover.details).toMatchObject({ operation: "hover", result_count: 0 });
     await fixture.close();
   });
 
@@ -5560,7 +5587,9 @@ describe("registered LSP tool", () => {
         character: 7,
       });
 
-      expect(resultText(result)).toBe('No hover information at source.ts:1:7 ("emoji").');
+      expect(resultText(result)).toBe(
+        'The server has no hover information at source.ts:1:7 ("emoji").',
+      );
       await fixture.close();
     });
 

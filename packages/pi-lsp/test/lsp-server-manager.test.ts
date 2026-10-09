@@ -20,6 +20,7 @@ import type {
   LspServerEnablement,
   ResolvedLspSettings,
 } from "../src/pi-lsp-settings.js";
+import { testTimeouts } from "./lsp-timeouts.js";
 
 const configuredServers: readonly LspServerRoutingDefinition[] = [
   {
@@ -314,12 +315,7 @@ function resolvedSettings(serverIds: readonly string[]): ResolvedLspSettings {
     enablement: new Map(),
     includeHintDiagnostics: false,
     servers: new Map(serverIds.map((serverId) => [serverId, serverDefinition(serverId)])),
-    timeouts: {
-      diagnosticsMs: 3000,
-      initializeMs: 45000,
-      requestMs: 3000,
-      shutdownMs: 5000,
-    },
+    timeouts: testTimeouts(),
     warnings: [],
   };
 }
@@ -1255,6 +1251,33 @@ describe("session-scoped LSP server manager", () => {
     });
   });
 
+  test("reports only the real failure when a capable server fails beside an incapable one", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    const factory = createRecordingClientFactory(
+      async (input) => new RecordingLspClient(input.definition.id === "typescript"),
+    );
+    const manager = new LspServerManager({
+      cwd,
+      settings: resolvedSettings(["oxlint", "typescript"]),
+      startClient: factory.start,
+    });
+
+    const result = await manager.runRead(filePath, undefined, hoverCapability, async () => {
+      throw new LspServerClientError(
+        "timeout",
+        "typescript",
+        "/tmp/typescript.stderr",
+        "textDocument/hover timed out",
+      );
+    });
+
+    expect(result.successes).toEqual([]);
+    expect(result.failures).toEqual([
+      expect.objectContaining({ code: "request-timeout", serverId: "typescript" }),
+    ]);
+    await manager.shutdown();
+  });
+
   test("names the capability and the matching servers lacking it when no mutation server is capable", async () => {
     const { cwd, filePath } = await createRoutedFileFixture();
     const factory = createRecordingClientFactory(async () => new RecordingLspClient(false));
@@ -1451,7 +1474,7 @@ describe("session-scoped LSP server manager", () => {
     });
   });
 
-  test("reports startup failures and the capability incapable servers lack when no read succeeds", async () => {
+  test("reports only the startup failure, not a missing capability, when no read succeeds", async () => {
     const { cwd, filePath } = await createRoutedFileFixture();
     const factory = createRecordingClientFactory(async ({ definition }) => {
       if (definition.id === "typescript") throw new Error("fixture startup failed");
@@ -1470,18 +1493,12 @@ describe("session-scoped LSP server manager", () => {
       async () => "unused",
     );
 
+    // The unavailable server's support is unknown, so "no matching server supports" would mislead.
     expect(result).toMatchObject({
-      failures: [
-        { code: "server-unavailable", serverId: "typescript" },
-        {
-          code: "no-capable-server",
-          message:
-            "Pi LSP: no matching server supports textDocument/hover; matching servers without it: lint",
-          serverId: "*",
-        },
-      ],
+      failures: [{ code: "server-unavailable", serverId: "typescript" }],
       successes: [],
     });
+    expect(result.failures).toHaveLength(1);
   });
 
   test("requires exactly one capable instance when mutation server_id is omitted", async () => {

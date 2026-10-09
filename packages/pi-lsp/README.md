@@ -29,6 +29,7 @@ Pi LSP reads only the `lsp` key from Pi's global `settings.json` and trusted pro
     "timeouts": {
       "initializeMs": 45000,
       "requestMs": 3000,
+      "workspaceRequestMs": 15000,
       "diagnosticsMs": 3000,
       "shutdownMs": 5000
     },
@@ -101,7 +102,9 @@ workspace also uses more memory than one per package.
 
 `includeHintDiagnostics` (default `false`) controls whether Post-edit Diagnostics include
 hint-severity findings; a project value overrides the global one. Global and project timeouts
-merge by field. A project server replaces the complete global server with the same ID; set a project server to `null` to remove it. `initializationOptions` is sent only
+merge by field. `workspaceRequestMs` is the budget for workspace-wide requests (references,
+implementation, rename, workspace symbols, incoming and outgoing calls), which can wait on a server
+that is still loading projects; it is never lower than `requestMs`, which bounds every other request. A project server replaces the complete global server with the same ID; set a project server to `null` to remove it. `initializationOptions` is sent only
 during initialization. `settings` is used for `workspace/didChangeConfiguration` and
 `workspace/configuration`. Environment strings override `process.env`; `null` removes a variable.
 Invalid server definitions, timeout fields, and `includeHintDiagnostics` are quarantined

@@ -1451,6 +1451,7 @@ describe("minimal subagents coordinator", () => {
       turn_id: spawned.turn_id,
       status: "completed",
       already_delivered: true,
+      delivery_pending: true,
     });
     await expect(
       coordinator.wait("root", "worker", 1_000, undefined, spawned.turn_id),
@@ -1497,6 +1498,7 @@ describe("minimal subagents coordinator", () => {
       turn_id: spawned.turn_id,
       status: "completed",
       already_delivered: true,
+      delivery_pending: true,
       messages: [
         expect.objectContaining({
           event: "message",
@@ -1552,6 +1554,7 @@ describe("minimal subagents coordinator", () => {
       turn_id: spawned.turn_id,
       status: "completed",
       already_delivered: true,
+      delivery_pending: true,
     });
 
     // Pi persists the queued result steer; replay then finds nothing left to deliver.

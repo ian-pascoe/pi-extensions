@@ -70,6 +70,7 @@ import type {
   TurnResult,
   WaitMessageResult,
   WaitTimeoutResult,
+  AutomaticDelivery,
   WaitDeliveredTurnResult,
   WaitResult,
 } from "./minimal-subagents-types.js";
@@ -155,6 +156,7 @@ function terminalWaitResult(result: TurnResult, messages: WaitMessageResult[] = 
 function alreadyDeliveredWaitResult(
   result: TurnResult,
   messages: WaitMessageResult[],
+  delivery: AutomaticDelivery,
 ): WaitDeliveredTurnResult {
   const delivered: WaitDeliveredTurnResult = {
     event: "turn",
@@ -163,6 +165,7 @@ function alreadyDeliveredWaitResult(
     status: result.status,
     already_delivered: true,
   };
+  if (delivery === "handed") delivered.delivery_pending = true;
   if (messages.length > 0) delivered.messages = structuredClone(messages);
   return delivered;
 }
@@ -515,8 +518,12 @@ export class MinimalSubagentsCoordinator {
       const messages = this.drainPendingParentMessages(callerId, agentId, turnId);
       // A default wait falls back to the latest turn, whose result may already have been delivered
       // automatically; repeating its output would deliver it twice. An explicit turn_id rereads it.
-      if (requestedTurnId === undefined && this.wasAlreadyDelivered(callerId, retainedResult)) {
-        return Promise.resolve(alreadyDeliveredWaitResult(retainedResult, messages));
+      const delivery =
+        requestedTurnId === undefined
+          ? this.automaticDelivery(callerId, retainedResult)
+          : undefined;
+      if (delivery) {
+        return Promise.resolve(alreadyDeliveredWaitResult(retainedResult, messages, delivery));
       }
       this.claimTerminalDelivery(callerId, retainedResult);
       return Promise.resolve(terminalWaitResult(retainedResult, messages));
@@ -1772,17 +1779,23 @@ export class MinimalSubagentsCoordinator {
   /**
    * Whether this result was already delivered to the caller automatically: it is handed, or the
    * caller's branch holds its automatic result message. A wait's own tool result does not count.
+   * "recorded" means the branch already holds it; "handed" means it is queued to Pi but not yet
+   * recorded, so it still arrives as a separate message (redelivered if Pi discarded the queued steer).
    */
-  private wasAlreadyDelivered(callerId: string, result: TurnResult): boolean {
-    return (
-      this.handedTerminalKeys.has(deliveryTurnKey(result.agent_id, result.turn_id)) ||
+  private automaticDelivery(callerId: string, result: TurnResult): AutomaticDelivery | undefined {
+    if (
       this.hasRecipientDeliveryEvidence(
         callerId,
         result.agent_id,
         result.turn_id,
         automaticResultMessageId(result.agent_id, result.turn_id),
       )
-    );
+    ) {
+      return "recorded";
+    }
+    return this.handedTerminalKeys.has(deliveryTurnKey(result.agent_id, result.turn_id))
+      ? "handed"
+      : undefined;
   }
 
   private hasDeliveryEvidence(delivery: PersistedDelivery): boolean {

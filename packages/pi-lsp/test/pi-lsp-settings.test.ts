@@ -120,7 +120,7 @@ describe("resolveLspSettings", () => {
   test("merges timeout fields from global and trusted project settings", async () => {
     const settingsManager = await createSettingsReader(
       { lsp: { timeouts: { initializeMs: 100, requestMs: 200 } } },
-      { lsp: { timeouts: { requestMs: 300, shutdownMs: 400 } } },
+      { lsp: { timeouts: { requestMs: 300, shutdownMs: 400, workspaceRequestMs: 500 } } },
       true,
     );
 
@@ -129,7 +129,17 @@ describe("resolveLspSettings", () => {
       initializeMs: 100,
       requestMs: 300,
       shutdownMs: 400,
+      workspaceRequestMs: 500,
     });
+  });
+
+  test("gives workspace-wide requests a larger default budget than ordinary requests", async () => {
+    const settingsManager = await createSettingsReader({}, {}, true);
+
+    const { requestMs, workspaceRequestMs } = resolveLspSettings(settingsManager).timeouts;
+
+    expect(requestMs).toBe(3000);
+    expect(workspaceRequestMs).toBe(15000);
   });
 
   test("omits hint diagnostics by default and lets project settings override global", async () => {
@@ -301,6 +311,7 @@ describe("resolveLspSettings", () => {
       initializeMs: 400,
       requestMs: 300,
       shutdownMs: 5000,
+      workspaceRequestMs: 15000,
     });
     expect(settings.warnings).toEqual([
       expect.stringContaining("project lsp.timeouts.diagnosticsMs"),

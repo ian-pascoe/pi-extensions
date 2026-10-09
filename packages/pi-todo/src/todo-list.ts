@@ -73,7 +73,7 @@ const PositiveSafeIntegerRecord = Type.Integer({
   minimum: 1,
   maximum: Number.MAX_SAFE_INTEGER,
 });
-const TodoTaskRecord = Type.Object({
+export const TodoTaskRecord = Type.Object({
   id: PositiveSafeIntegerRecord,
   title: Type.String({ minLength: 1 }),
   description: Type.Optional(Type.String({ minLength: 1 })),

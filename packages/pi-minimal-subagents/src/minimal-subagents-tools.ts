@@ -233,13 +233,17 @@ function structuredToolResult<TDetails extends CoordinatorToolResultDetails>(
 }
 
 /**
- * One line saying an already-delivered result is not repeated and how to reread it, followed by
+ * One line saying an already-delivered result is not repeated and how to reread it, or that a
+ * handed result is still to arrive as a separate message, followed by
  * any Coordination Messages the wait drained, which the parent has not seen yet.
  */
 function alreadyDeliveredContent(
   result: WaitDeliveredTurnResult,
 ): AgentToolResult<WaitResult>["content"] {
-  const notice = `Result of ${result.agent_id} turn ${result.turn_id} (${result.status}) was already delivered automatically; call subagent_wait with turn_id "${result.turn_id}" to reread it.`;
+  const subject = `Result of ${result.agent_id} turn ${result.turn_id} (${result.status})`;
+  const notice = result.delivery_pending
+    ? `${subject} was handed to you automatically and arrives as a separate message; no reread is needed.`
+    : `${subject} was already delivered automatically; call subagent_wait with turn_id "${result.turn_id}" to reread it.`;
   if (!result.messages) return [{ type: "text", text: notice }];
   const messages = truncateHead(JSON.stringify({ messages: result.messages }, null, 2), {
     maxBytes: DEFAULT_MAX_BYTES,
@@ -364,7 +368,7 @@ export function createCoordinatorToolDefinitions(
     name: "subagent_wait",
     label: "Subagent Wait",
     description:
-      "Wait for one direct child's oldest observable turn whose result you have neither claimed nor received, or select an exact retained turn_id. An active child may first return event=message; later unconsumed items still fall back automatically. A settled turn returns event=turn, with any queued messages in messages; waiting again returns a result you claimed in full. Without turn_id, a result already delivered to you automatically returns event=turn with already_delivered=true and no output; pass its turn_id to reread it. Timeout returns a compact event=timeout (state, elapsed_ms, latest_activity_at, total_tokens, last few activity labels; use subagent_status for detail) and never cancels the child.",
+      "Wait for one direct child's oldest observable turn whose result you have neither claimed nor received, or select an exact retained turn_id. An active child may first return event=message; later unconsumed items still fall back automatically. A settled turn returns event=turn, with any queued messages in messages; waiting again returns a result you claimed in full. Without turn_id, a result already delivered to you automatically returns event=turn with already_delivered=true and no output; pass its turn_id to reread it. If it was handed to you but is not yet in your conversation, delivery_pending=true and it arrives as a separate message; do not reread. Timeout returns a compact event=timeout (state, elapsed_ms, latest_activity_at, total_tokens, last few activity labels; use subagent_status for detail) and never cancels the child.",
     promptSnippet: "Wait for one direct child's exact turn",
     parameters: options.schemas.subagent_wait,
     annotations: {

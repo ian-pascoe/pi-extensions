@@ -11,6 +11,7 @@ import type {
 import { DefinitionRequest } from "vscode-languageserver-protocol";
 import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, test } from "vitest";
+import { testTimeouts } from "./lsp-timeouts.js";
 import { LspServerClient } from "../src/lsp-server-client.js";
 import { LspServerManager } from "../src/lsp-server-manager.js";
 import type { LspServerDefinition } from "../src/pi-lsp-settings.js";
@@ -36,12 +37,7 @@ function processExists(processId: number): boolean {
   }
 }
 
-const typescriptTimeouts = {
-  initializeMs: 45_000,
-  requestMs: 5_000,
-  diagnosticsMs: 8_000,
-  shutdownMs: 5_000,
-} as const;
+const typescriptTimeouts = testTimeouts({ requestMs: 5_000, diagnosticsMs: 8_000 });
 
 function typescriptDefinition(rootMarkers: readonly string[]): LspServerDefinition {
   return {
@@ -156,12 +152,7 @@ describe("real TypeScript 7 language server client", () => {
       initializationOptions: {},
       settings: {},
       stderrPath: resolve(projectDirectory, ".pi-lsp/typescript.stderr.log"),
-      timeouts: {
-        initializeMs: 45_000,
-        requestMs: 5_000,
-        diagnosticsMs: 8_000,
-        shutdownMs: 5_000,
-      },
+      timeouts: typescriptTimeouts,
     });
     clients.push(client);
 
@@ -454,12 +445,7 @@ describe("real TypeScript 7 language server client", () => {
         enablement: new Map(),
         includeHintDiagnostics: false,
         warnings: [],
-        timeouts: {
-          initializeMs: 45_000,
-          requestMs: 5_000,
-          diagnosticsMs: 8_000,
-          shutdownMs: 5_000,
-        },
+        timeouts: typescriptTimeouts,
         servers: new Map([
           [
             "typescript",

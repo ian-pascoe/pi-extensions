@@ -7,6 +7,7 @@ const DEFAULT_LSP_TIMEOUTS = {
   initializeMs: 45000,
   requestMs: 3000,
   shutdownMs: 5000,
+  workspaceRequestMs: 15000,
 } as const;
 
 const NonEmptyStringSchema = Type.String({ minLength: 1 });
@@ -43,6 +44,7 @@ const LspTimeoutsSchema = Type.Object(
     initializeMs: Type.Optional(PositiveMillisecondsSchema),
     requestMs: Type.Optional(PositiveMillisecondsSchema),
     shutdownMs: Type.Optional(PositiveMillisecondsSchema),
+    workspaceRequestMs: Type.Optional(PositiveMillisecondsSchema),
   },
   { additionalProperties: false },
 );
@@ -61,6 +63,7 @@ const LSP_TIMEOUT_NAMES: readonly LspTimeoutName[] = [
   "initializeMs",
   "requestMs",
   "shutdownMs",
+  "workspaceRequestMs",
 ];
 type ParsedLspServerDefinition =
   | { readonly kind: "excluded" }
@@ -98,6 +101,8 @@ export interface LspTimeouts {
   readonly initializeMs: number;
   readonly requestMs: number;
   readonly shutdownMs: number;
+  /** Budget for the workspace-wide requests named by `WORKSPACE_WIDE_METHODS`; never below `requestMs`. */
+  readonly workspaceRequestMs: number;
 }
 
 /** Identifies the highest-priority explicit choice, or implicit default eligibility. */

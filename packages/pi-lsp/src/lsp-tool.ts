@@ -2182,7 +2182,7 @@ const LSP_TOOL_RULES = [
  * coordinate and output rules a call or its result cannot be read correctly without.
  */
 export const LSP_TOOL_GUIDELINE =
-  "Use the lsp_* tools for semantic code navigation and diagnostics. Their lines and characters, in arguments and results, are one-based Unicode code points, and paths may start with @. Location results list one path:line:col line per location, with paths relative to the working directory. Output over 2,000 lines or 50 KB is cut, and the complete output is saved to the Result Spill file named in the result. lsp_rename, lsp_code_actions, and lsp_format_* only create Workspace Edit Previews; call lsp_apply with a preview_id to change files.";
+  "Use the lsp_* tools for semantic code navigation and diagnostics. Their lines and characters, in arguments and results, are one-based Unicode code points, and paths may start with @. Location results list one path:line:col line per location, with paths relative to the working directory. Output over 2,000 lines or 50 KB is cut, and the complete output is saved to the Result Spill file named in the result. Where available, lsp_rename, lsp_code_actions, and lsp_format_* only create Workspace Edit Previews; call lsp_apply with a preview_id to change files.";
 
 /**
  * The `lsp` tool namespace: a short listing description and the shared rules for scripts. It is
