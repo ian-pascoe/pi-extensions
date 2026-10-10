@@ -1271,7 +1271,10 @@ export default function (pi) {
             ? ["context_rollover", "codemode"]
             : [...toolNames.filter((name) => name !== "script_tool"), ...coordinatorToolNames],
         );
-        expect(getCurrentSystemPrompt(requests[0]!.messages)).toContain("Context Management:");
+        // context_rollover stays declared in every mode, so its prompt guideline always renders.
+        expect(getCurrentSystemPrompt(requests[0]!.messages)).toContain(
+          "call context_rollover alone with an explicit continuation Handoff",
+        );
         for (const request of requests.slice(1)) {
           expect(getCurrentTools(request.messages)).toEqual(tools);
         }

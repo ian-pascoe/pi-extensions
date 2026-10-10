@@ -26,6 +26,19 @@ import {
   withTroubleshootingHint,
 } from "./context-store.js";
 
+/**
+ * Tool guidelines live in Pi's base prompt, so runs that skip `before_agent_start`, such as
+ * idle-triggered custom messages, keep the same prompt prefix. Each names only its own tool:
+ * codemode repeats a hidden tool's guideline to scripts, which never see `context_rollover`.
+ */
+export const CONTEXT_PROMPT_GUIDELINES = {
+  context_notes: "Keep named Notes with context_notes; read full Notes only when needed.",
+  context_history:
+    "Original selected-branch History is available through context_history; inherited references may be unavailable locally.",
+  context_rollover:
+    "Before Rollover, update Notes with context_notes, then call context_rollover alone with an explicit continuation Handoff.",
+} as const;
+
 const NotesParameters = Type.Object(
   {
     action: StringEnum(["list", "read", "write", "append", "delete", "search"]),
@@ -261,6 +274,7 @@ export function registerContextTools(
     label: "Context History",
     description:
       "Read-only selected-branch journal. windows/list/search are paginated (max 20); read returns exact serialized entry JSON with zero-based UTF-16 offsets (max 2000 units). Search is case-sensitive literal text, with JSON string escaping handled for you; returned offsets address serialized entry JSON. Optional window limits list/search. Optional type (entry type, e.g. message) and role (message role, e.g. user) filter list/search; by default every entry is included, and list previews describe each entry's text, tool call, or custom type. Search previews are decoded readable text; a direct search call does not match its own tool-call block. References carry their issuing session; a fork can resolve inherited entry IDs only when present on its selected branch. No unrelated session, abandoned sibling, or external spill file is opened.",
+    promptGuidelines: [CONTEXT_PROMPT_GUIDELINES.context_history],
     parameters: HistoryParameters,
     annotations: {
       readOnlyHint: true,
@@ -374,6 +388,7 @@ export function registerContextTools(
     label: "Context Notes",
     description:
       "Session-branch Markdown Notes. Actions list/read/write/append/delete/search. Names are labels, not paths. Reads use zero-based UTF-16 offsets and return at most 2000 units; lists return at most 20 Notes. Append starts the new text on a new line unless the Note is empty or already ends with one. Search is case-sensitive literal text. Forks inherit Notes; plain context-only child inheritance does not copy the store.",
+    promptGuidelines: [CONTEXT_PROMPT_GUIDELINES.context_notes],
     parameters: NotesParameters,
     annotations: {
       readOnlyHint: false,

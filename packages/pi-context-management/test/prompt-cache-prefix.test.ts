@@ -1,21 +1,27 @@
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import {
+  getCurrentSystemPrompt,
   normalizeContext,
+  type AssistantMessage,
   type Context,
+  type Model,
+  type TranscriptContext,
   type StreamFunction,
   type StreamOptions,
 } from "@earendil-works/pi-ai";
 import {
   createCodemodeExtension,
   SettingsManager,
+  type ExtensionAPI,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import contextManagement from "../src/context-management-extension.js";
+import { CONTEXT_PROMPT_GUIDELINES } from "../src/context-tools.js";
 import { createSdkHarness, overflow, reply, toolCall } from "./sdk-harness.js";
 
 const todoPath = fileURLToPath(new URL("../../pi-todo/src/index.ts", import.meta.url));
@@ -36,6 +42,18 @@ async function serialize(request: {
   messages: Context["messages"];
   toolDefinitions: Context["tools"];
 }) {
+  return capturePayload(
+    getModel("anthropic", "claude-sonnet-4-5"),
+    normalizeContext({
+      systemPrompt: request.systemPrompt,
+      messages: request.messages,
+      tools: request.toolDefinitions ?? [],
+    }),
+  );
+}
+
+/** The installed Anthropic serializer's payload for `context`, stopped before transport. */
+async function capturePayload(model: Model<"anthropic-messages">, context: TranscriptContext) {
   const entry = import.meta.resolve("@earendil-works/pi-ai");
   // The internal serializer is intentionally not exported. Pin this offline integration
   // to the installed implementation, never to a reference checkout or HTTP client.
@@ -45,31 +63,23 @@ async function serialize(request: {
   let captured: unknown;
   let transports = 0;
   const response = await api
-    .stream(
-      getModel("anthropic", "claude-sonnet-4-5"),
-      normalizeContext({
-        systemPrompt: request.systemPrompt,
-        messages: request.messages,
-        tools: request.toolDefinitions ?? [],
-      }),
-      {
-        client: {
-          beta: {
-            messages: {
-              create() {
-                transports++;
-                throw new Error("Unexpected transport");
-              },
+    .stream(model, context, {
+      client: {
+        beta: {
+          messages: {
+            create() {
+              transports++;
+              throw new Error("Unexpected transport");
             },
           },
         },
-        cacheRetention: "long",
-        onPayload(payload) {
-          captured = structuredClone(payload);
-          throw new Error(sentinel);
-        },
       },
-    )
+      cacheRetention: "long",
+      onPayload(payload) {
+        captured = structuredClone(payload);
+        throw new Error(sentinel);
+      },
+    })
     .result();
   expect(response.stopReason).toBe("error");
   expect(response.errorMessage).toContain(sentinel);
@@ -82,8 +92,13 @@ async function expectWrittenPrefix(
   previous: Parameters<typeof serialize>[0],
   next: Parameters<typeof serialize>[0],
 ) {
-  const before = await serialize(previous);
-  const after = await serialize(next);
+  expectPayloadPrefix(await serialize(previous), await serialize(next));
+}
+
+function expectPayloadPrefix(
+  before: Awaited<ReturnType<typeof capturePayload>>,
+  after: Awaited<ReturnType<typeof capturePayload>>,
+) {
   expect(after.system).toEqual(before.system);
   expect(after.tools).toEqual(before.tools);
   const blocks = (payload: typeof before) =>
@@ -367,5 +382,75 @@ it("keeps the written prefix stable through filtered History calls and skips the
     expect(request.systemPrompt).toBe(before.systemPrompt);
   }
   await expectWrittenPrefix(before, f.requests.at(-1)!);
+  expect(f.providerRequests).toEqual([]);
+});
+
+function thinkingReply(text: string): AssistantMessage {
+  const message = reply(text);
+  return {
+    ...message,
+    content: [
+      { type: "thinking", thinking: "Reasoning for " + text, thinkingSignature: "sig-" + text },
+      ...message.content,
+    ],
+  };
+}
+
+it("keeps the written prefix and thinking blocks through idle-triggered messages and tool changes", async () => {
+  let api: ExtensionAPI | undefined;
+  const lateTool: ExtensionFactory = (pi) => {
+    api = pi;
+    pi.registerTool({
+      name: "late_tool",
+      label: "Late tool",
+      description: "Activated mid-session",
+      parameters: Type.Object({}),
+      async execute() {
+        return { content: [{ type: "text", text: "late" }], details: {} };
+      },
+    });
+  };
+  // Managed-effort models bind thinking blocks to their prefix and drop them on a mismatch.
+  const f = await createSdkHarness([contextManagement, lateTool], {
+    defaultSystemPrompt: true,
+    modelId: "claude-opus-5-5",
+  });
+  f.session.setActiveToolsByName(
+    f.session.getActiveToolNames().filter((name) => name !== "late_tool"),
+  );
+  f.responses.push(thinkingReply("First."));
+  await f.session.prompt("Start");
+  // Like a pi-termctrl Exit notification while idle: the run skips before_agent_start.
+  f.responses.push(thinkingReply("Noticed."));
+  api?.sendMessage(
+    { customType: "pi-termctrl-exit", content: "t1 exited", display: true },
+    { triggerTurn: true, deliverAs: "steer" },
+  );
+  await vi.waitFor(() => expect(f.transcripts).toHaveLength(2));
+  await f.session.waitForIdle();
+  // Like tool_search activating a tool between runs.
+  f.session.setActiveToolsByName([...f.session.getActiveToolNames(), "late_tool"]);
+  f.responses.push(thinkingReply("Loaded."));
+  await f.session.prompt("Use the late tool next");
+  f.responses.push(thinkingReply("Done."));
+  await f.session.prompt("Continue");
+  expect(f.transcripts).toHaveLength(4);
+  for (const messages of f.transcripts)
+    for (const guideline of Object.values(CONTEXT_PROMPT_GUIDELINES))
+      expect(getCurrentSystemPrompt(messages)).toContain(guideline);
+  const payloads = [];
+  for (const messages of f.transcripts)
+    payloads.push(await capturePayload(f.model, normalizeContext({ messages })));
+  for (const [index, payload] of payloads.entries())
+    if (index > 0) expectPayloadPrefix(payloads[index - 1]!, payload);
+  const thinking = payloads
+    .at(-1)!
+    .messages.flatMap((message) => message.content)
+    .filter((block) => block.type === "thinking");
+  expect(thinking.map((block) => block.signature)).toEqual([
+    "sig-First.",
+    "sig-Noticed.",
+    "sig-Loaded.",
+  ]);
   expect(f.providerRequests).toEqual([]);
 });
