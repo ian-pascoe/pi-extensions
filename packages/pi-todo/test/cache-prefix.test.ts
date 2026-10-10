@@ -30,6 +30,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, test } from "vitest";
 import piTodoExtension from "../src/index.js";
+import { TODO_PROMPT_GUIDELINE, TODO_PROMPT_SNIPPET } from "../src/pi-todo-extension.js";
 
 const SNAPSHOT_HEADER = "Todo List state from the pi-todo extension (not a user message):";
 
@@ -56,7 +57,7 @@ afterEach(async () => {
   );
 });
 
-async function createFixture(): Promise<Fixture> {
+async function createFixture({ defaultSystemPrompt = false } = {}): Promise<Fixture> {
   const cwd = await mkdtemp(join(tmpdir(), "pi-todo-sdk-"));
   directories.push(cwd);
   const agentDir = join(cwd, "agent");
@@ -76,7 +77,8 @@ async function createFixture(): Promise<Fixture> {
     noThemes: true,
     noContextFiles: true,
     extensionFactories: [createCodemodeExtension(), piTodoExtension],
-    systemPromptOverride: () => "Standing instructions: answer with the shortest correct turn.",
+    systemPromptOverride: (base) =>
+      defaultSystemPrompt ? base : "Standing instructions: answer with the shortest correct turn.",
   });
   await loader.reload();
   const errors = loader.getExtensions().errors;
@@ -166,6 +168,27 @@ function expectByteIdenticalPrefix(earlier: CapturedRequest, later: CapturedRequ
   expect(later.systemPrompt).toBe(earlier.systemPrompt);
   expect(later.tools).toBe(earlier.tools);
 }
+
+describe("static Todo prompt guidance", () => {
+  test("Pi's default system prompt lists the tool and its guideline, unchanged through mutations", async () => {
+    const { session, requests, responses } = await createFixture({ defaultSystemPrompt: true });
+    responses.push(
+      toolCalls(
+        fauxToolCall("todo", { action: "add", tasks: [{ title: "One" }, { title: "Two" }] }),
+      ),
+      toolCalls(fauxToolCall("todo", { action: "update", id: 1, status: "completed" })),
+      fauxAssistantMessage("Advanced."),
+      fauxAssistantMessage("Unchanged."),
+    );
+    await session.prompt("Plan and advance");
+    await session.prompt("Anything else?");
+    expect(requests).toHaveLength(4);
+    expect(requests[0]!.systemPrompt).toContain(`- todo: ${TODO_PROMPT_SNIPPET}`);
+    expect(requests[0]!.systemPrompt).toContain(`- ${TODO_PROMPT_GUIDELINE}`);
+    for (let index = 1; index < requests.length; index++)
+      expectByteIdenticalPrefix(requests[index - 1]!, requests[index]!);
+  }, 30_000);
+});
 
 describe("one Todo List snapshot per tool group", () => {
   test("a codemode script with several todo calls projects one labelled snapshot after its result", async () => {

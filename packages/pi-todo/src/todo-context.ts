@@ -17,6 +17,9 @@ import {
 type Message = ContextEvent["messages"][number];
 /** Marks a snapshot as extension state so the model does not read it as user-authored. */
 const SNAPSHOT_HEADER = "Todo List state from the pi-todo extension (not a user message):";
+/** Closes a Checkpoint Snapshot: a Handoff's own plan otherwise silently replaces the Todo List. */
+export const CHECKPOINT_INSTRUCTION =
+  "Context was compacted while Tasks were unfinished. Before continuing, reconcile this Todo List with the work already done and the plan carried forward: mark finished Tasks completed, remove abandoned ones, and keep it current as you work.";
 const ListDetails = Type.Object({ tasks: Type.Array(Type.Unknown()) });
 const ProjectionDetails = Type.Object(
   {
@@ -124,12 +127,14 @@ function snapshotMessage(
   entry: SessionEntry,
   state: TodoStateSnapshot,
   checkpointId: string | null,
+  instruction?: string,
 ): Message {
+  const list = `${SNAPSHOT_HEADER}\n${formatTodoList(state.tasks)}`;
   return {
     role: "custom",
     customType: "pi-todo-context",
     display: false,
-    content: `${SNAPSHOT_HEADER}\n${formatTodoList(state.tasks)}`,
+    content: instruction === undefined ? list : `${list}\n\n${instruction}`,
     timestamp: Date.parse(entry.timestamp),
     details: { version: 1, stateEntryId: entry.id, checkpointId },
   };
@@ -153,9 +158,12 @@ export function projectTodoContext(
   let start = 0;
   let anchor: Message | undefined;
   let previousContent: string | undefined;
+  // The latest state at the point being projected; at the checkpoint, the state it compacted.
+  let current: { entry: SessionEntry; state: TodoStateSnapshot } | undefined;
   const insertions = new Map<number, Message[]>();
   let previousIndex = -1;
-  const insert = (snapshot: Message): void => {
+  /** `supersedes` replaces the last Snapshot at the same position when it shows the same list. */
+  const insert = (snapshot: Message, supersedes?: string): void => {
     let index = -1;
     if (anchor) {
       // ponytail: linear exact matching per mutation; index fingerprints if large journals make this measurable.
@@ -171,6 +179,8 @@ export function projectTodoContext(
     if (index < previousIndex) throw new Error("Todo context anchors are reordered");
     previousIndex = index;
     const group = insertions.get(index) ?? [];
+    const last = group.at(-1);
+    if (last?.role === "custom" && last.content === supersedes) group.pop();
     group.push(snapshot);
     insertions.set(index, group);
   };
@@ -183,11 +193,26 @@ export function projectTodoContext(
     for (const entry of branch.slice(0, start).toReversed()) {
       const state = todoStateFromEntry(entry);
       if (!state) continue;
+      current = { entry, state };
       previousContent = formatTodoList(state.tasks);
       insert(snapshotMessage(entry, state, checkpoint.id));
       break;
     }
   }
+  /**
+   * After the retained Tail, where the next Context Window resumes, unfinished Tasks get one
+   * Checkpoint Snapshot asking the agent to reconcile them. It replaces an identical Snapshot at the
+   * same position, such as the baseline when the Tail is empty, rather than repeating the list.
+   */
+  const projectCheckpoint = (checkpointId: string): void => {
+    if (!current?.state.tasks.some((task) => task.status !== "completed")) return;
+    const { entry, state } = current;
+    previousContent = formatTodoList(state.tasks);
+    insert(
+      snapshotMessage(entry, state, checkpointId, CHECKPOINT_INSTRUCTION),
+      `${SNAPSHOT_HEADER}\n${previousContent}`,
+    );
+  };
   const outstanding = new Map<string, number>();
   // A tool group projects only its final state, once its last result has landed. Nested `todo`
   // calls in a `codemode` script leave no results in the journal, so the script's result stands in.
@@ -206,9 +231,13 @@ export function projectTodoContext(
     previousContent = content;
   };
   for (const entry of branch.slice(start)) {
-    if (entry === checkpoint) continue;
+    if (entry === checkpoint) {
+      projectCheckpoint(entry.id);
+      continue;
+    }
     const state = todoStateFromEntry(entry);
     if (state) {
+      current = { entry, state };
       if (outstanding.size > 0) pending = { entry, state };
       else project(entry, state);
       continue;

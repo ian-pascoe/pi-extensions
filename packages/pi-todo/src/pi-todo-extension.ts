@@ -40,6 +40,11 @@ function assertTodoJournalReadable(context: ExtensionContext): void {
 }
 const TODO_WIDGET_ID = "pi-todo";
 
+/** Static system prompt lines, so they never move the cache prefix within a session. */
+export const TODO_PROMPT_SNIPPET = "Track this session's Tasks in the Todo List";
+export const TODO_PROMPT_GUIDELINE =
+  "When the Todo List has Tasks, keep it current: mark a Task active when you start it and completed as soon as it is done, and bring it up to date before context is compacted.";
+
 const TodoParameters = Type.Object({
   action: StringEnum(TODO_ACTIONS),
   id: Type.Optional(
@@ -185,6 +190,8 @@ export default function piTodoExtension(pi: ExtensionAPI): void {
     name: "todo",
     label: "Todo",
     description: "Manage the current session branch's Todo List.",
+    promptSnippet: TODO_PROMPT_SNIPPET,
+    promptGuidelines: [TODO_PROMPT_GUIDELINE],
     parameters: TodoParameters,
     annotations: {
       readOnlyHint: false,
