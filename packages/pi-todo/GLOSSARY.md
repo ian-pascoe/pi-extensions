@@ -19,3 +19,7 @@ _Avoid_: Task list, plan
 **Todo List Snapshot**:
 The hidden, header-labelled message that carries the Todo List's final state for one tool group (or the post-compaction baseline) into the model's context.
 _Avoid_: Todo message, state update
+
+**Checkpoint Snapshot**:
+The Todo List Snapshot placed after the retained Tail of a compaction while Tasks remain unfinished, repeating the list as compaction left it and asking the agent to reconcile it before continuing.
+_Avoid_: Reminder, nag

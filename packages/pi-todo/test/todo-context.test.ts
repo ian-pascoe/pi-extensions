@@ -1,10 +1,11 @@
 import type { JsonObject, JsonValue } from "@earendil-works/pi-ai";
 import { SessionManager, type ContextEvent } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
-import { projectTodoContext } from "../src/todo-context.js";
+import { CHECKPOINT_INSTRUCTION, projectTodoContext } from "../src/todo-context.js";
 
 type Message = ContextEvent["messages"][number];
 const HEADER = "Todo List state from the pi-todo extension (not a user message):\n";
+const CHECKPOINT = `\n\n${CHECKPOINT_INSTRUCTION}`;
 function state(manager: SessionManager, title: string | null): string {
   return manager.appendCustomEntry("pi-todo-state", {
     nextId: title === null ? 1 : 2,
@@ -89,9 +90,11 @@ describe("immutable Todo journal projection", () => {
     manager.appendCompaction("Summary", cutoff, 1000);
     const first = project(manager);
     expect(first.map((m) => m.role)).toEqual(["compactionSummary", "custom", "user", "custom"]);
+    // The Tail's last Snapshot already sits where the next Context Window resumes, so the
+    // Checkpoint Snapshot replaces it instead of repeating the list.
     expect(snapshots(first)).toEqual([
       `${HEADER}[ ] #1 Before cutoff`,
-      `${HEADER}[ ] #1 Retained change`,
+      `${HEADER}[ ] #1 Retained change${CHECKPOINT}`,
     ]);
     user(manager, "New request");
     state(manager, "Newest");
@@ -117,7 +120,7 @@ describe("immutable Todo journal projection", () => {
     expect(projected.map((m) => m.role)).toEqual(["compactionSummary", "custom", "user", "custom"]);
     expect(snapshots(projected)).toEqual([
       `${HEADER}[ ] #1 Before cutoff`,
-      `${HEADER}[ ] #1 Retained change`,
+      `${HEADER}[ ] #1 Retained change${CHECKPOINT}`,
     ]);
   });
 
@@ -126,7 +129,7 @@ describe("immutable Todo journal projection", () => {
     user(manager, "Request");
     const cutoff = state(manager, "First state");
     manager.appendCompaction("State cutoff", cutoff, 1000);
-    expect(snapshots(project(manager))).toEqual([`${HEADER}[ ] #1 First state`]);
+    expect(snapshots(project(manager))).toEqual([`${HEADER}[ ] #1 First state${CHECKPOINT}`]);
     const empty = manager.appendCompaction("Empty Tail", "unused", 1000);
     // Native appendCompaction can express an empty Tail by pointing at the checkpoint itself.
     const entry = manager.getEntry(empty);
@@ -142,8 +145,9 @@ describe("immutable Todo journal projection", () => {
         timestamp: Date.parse(entry.timestamp),
       },
     ];
+    // With an empty Tail, the Checkpoint Snapshot takes the baseline's place.
     expect(snapshots(projectTodoContext(branch, messages))).toEqual([
-      `${HEADER}[ ] #1 First state`,
+      `${HEADER}[ ] #1 First state${CHECKPOINT}`,
     ]);
   });
 
@@ -455,6 +459,73 @@ describe("immutable Todo journal projection", () => {
     codemodeResult(manager, "c", script(shown(task("Later"))));
     toolResult(manager, "d", "x", false, { action: "update", task: task("Later")[0]! });
     expect(snapshots(project(manager))).toEqual([`${HEADER}[ ] #1 Later`]);
+  });
+
+  type Status = "pending" | "active" | "completed";
+  function tasksState(manager: SessionManager, tasks: Array<[string, Status]>): JsonObject[] {
+    const records = tasks.map(([title, status], index) => ({ id: index + 1, title, status }));
+    manager.appendCustomEntry("pi-todo-state", { nextId: tasks.length + 1, tasks: records });
+    return records;
+  }
+
+  it("asks to reconcile unfinished Tasks created in the Tail where the next Context Window resumes", () => {
+    const manager = SessionManager.inMemory();
+    user(manager, "Old history");
+    state(manager, null);
+    const cutoff = user(manager, "Plan the work");
+    assistantCalls(manager, ["a"]);
+    const added = tasksState(manager, [
+      ["Research", "pending"],
+      ["Build", "pending"],
+    ]);
+    // A batch add shows the full list, so the Tail itself carries no Snapshot of it.
+    toolResult(manager, "a", "Added 2 Tasks", false, { action: "add", tasks: added });
+    user(manager, "Keep going");
+    manager.appendCompaction("Handoff with its own next actions", cutoff, 1000);
+    const first = project(manager);
+    expect(first.map((m) => m.role)).toEqual([
+      "compactionSummary",
+      "custom",
+      "user",
+      "assistant",
+      "toolResult",
+      "user",
+      "custom",
+    ]);
+    expect(snapshots(first)).toEqual([
+      `${HEADER}Todo List is empty`,
+      `${HEADER}[ ] #1 Research\n[ ] #2 Build${CHECKPOINT}`,
+    ]);
+    expect(first.at(-1)).toMatchObject({ details: { checkpointId: expect.any(String) } });
+
+    user(manager, "New request");
+    assistantCalls(manager, ["b"]);
+    const updated = tasksState(manager, [
+      ["Research", "completed"],
+      ["Build", "active"],
+    ]);
+    toolResult(manager, "b", "Updated Task #1", false, { action: "update", task: updated[0]! });
+    const second = project(manager);
+    expect(second.slice(0, first.length)).toEqual(first);
+    // Later Snapshots are ordinary: the instruction appears once per checkpoint.
+    expect(snapshots(second).at(-1)).toBe(`${HEADER}[x] #1 Research\n[>] #2 Build`);
+    expect(project(manager, second)).toEqual(second);
+  });
+
+  it("adds no Checkpoint Snapshot when every Task is completed or the list is empty", () => {
+    const manager = SessionManager.inMemory();
+    user(manager, "Work");
+    tasksState(manager, [
+      ["Done", "completed"],
+      ["Also done", "completed"],
+    ]);
+    const cutoff = user(manager, "Retained");
+    manager.appendCompaction("Summary", cutoff, 1000);
+    expect(snapshots(project(manager))).toEqual([`${HEADER}[x] #1 Done\n[x] #2 Also done`]);
+    state(manager, null);
+    const next = user(manager, "After clearing");
+    manager.appendCompaction("Second summary", next, 1000);
+    expect(snapshots(project(manager))).toEqual([`${HEADER}Todo List is empty`]);
   });
 
   it("rejects destroyed or ambiguous anchors rather than relocating old snapshots", () => {

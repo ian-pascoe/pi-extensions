@@ -332,6 +332,20 @@ for (const transition of ["native", "rollover"] as const) {
       expect(JSON.stringify(baseline)).toContain(
         transition === "native" ? "Retained update" : "Before cutoff",
       );
+      // The pending Task survives the checkpoint, so the Todo List's last Snapshot asks to reconcile it.
+      const checkpointSnapshots = (messages: typeof fresh.messages) =>
+        messages.filter((message) =>
+          JSON.stringify(message).includes("Context was compacted while Tasks were unfinished"),
+        );
+      expect(checkpointSnapshots(fresh.messages)).toHaveLength(1);
+      expect(JSON.stringify(checkpointSnapshots(fresh.messages)[0])).toContain("Retained update");
+      expect(
+        fresh.messages.findLast(
+          (message) =>
+            message.role === "user" &&
+            JSON.stringify(message.content).includes("Todo List state from the pi-todo extension"),
+        ),
+      ).toBe(checkpointSnapshots(fresh.messages)[0]);
       f.responses.push(reply("Unchanged."));
       await f.session.prompt("Continue unchanged");
       await expectWrittenPrefix(fresh, f.requests.at(-1)!);
@@ -344,6 +358,7 @@ for (const transition of ["native", "rollover"] as const) {
       await expectWrittenPrefix(unchanged, f.requests.at(-1)!);
       await expectWrittenPrefix(fresh, f.requests.at(-1)!);
       expect(JSON.stringify(f.requests.at(-1)!.messages)).toContain("After checkpoint");
+      expect(checkpointSnapshots(f.requests.at(-1)!.messages)).toHaveLength(1);
       expect(f.providerRequests).toEqual([]);
     });
   }
