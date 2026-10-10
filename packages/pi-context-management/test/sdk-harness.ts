@@ -34,6 +34,9 @@ interface HarnessOptions {
   reserveTokens?: number;
   keepRecentTokens?: number;
   systemPrompt?: string;
+  /** Render Pi's default structured prompt, which carries tool rules, instead of a custom one. */
+  defaultSystemPrompt?: boolean;
+  modelId?: "claude-sonnet-4-5" | "claude-opus-5-5";
   manager?: SessionManager;
   additionalExtensionPaths?: string[];
 }
@@ -56,7 +59,7 @@ export async function createSdkHarness(
     retry: { enabled: false },
   };
   const settings = options.settings ?? SettingsManager.inMemory(document);
-  const baseModel = getModel("anthropic", "claude-sonnet-4-5");
+  const baseModel = getModel("anthropic", options.modelId ?? "claude-sonnet-4-5");
   const model = {
     ...baseModel,
     contextWindow: options.contextWindow ?? 200_000,
@@ -85,8 +88,10 @@ export async function createSdkHarness(
         }),
     ],
     additionalExtensionPaths: options.additionalExtensionPaths ?? [],
-    systemPromptOverride: () =>
-      options.systemPrompt ?? "Standing instructions: finish the user's task.",
+    systemPromptOverride: (base) =>
+      options.defaultSystemPrompt
+        ? base
+        : (options.systemPrompt ?? "Standing instructions: finish the user's task."),
   });
   await loader.reload();
   const modelRuntime = await ModelRuntime.create({
@@ -118,8 +123,11 @@ export async function createSdkHarness(
     toolDefinitions: Context["tools"];
   }> = [];
   const responses: AssistantMessage[] = [];
+  /** Each request's complete provider transcript, after Pi's prompt and tool projections. */
+  const transcripts: Context["messages"][] = [];
   session.agent.streamFunction = (currentModel, context, requestOptions) => {
     requestOptions?.signal?.throwIfAborted();
+    transcripts.push(structuredClone(context.messages));
     // Pi 0.86+ carries the prompt and tool declarations as transcript system messages.
     const tools = getCurrentTools(context.messages);
     requests.push({
@@ -159,6 +167,8 @@ export async function createSdkHarness(
     settings,
     session,
     requests,
+    transcripts,
+    model,
     responses,
     events,
     providerRequests,

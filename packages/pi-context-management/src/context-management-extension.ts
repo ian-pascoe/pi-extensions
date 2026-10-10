@@ -7,7 +7,7 @@ import {
   type SessionBeforeCompactEvent,
 } from "@earendil-works/pi-coding-agent";
 import { captureCheckpointAdapter, type CheckpointAdapter } from "./checkpoint-adapter.js";
-import { registerContextTools } from "./context-tools.js";
+import { CONTEXT_PROMPT_GUIDELINES, registerContextTools } from "./context-tools.js";
 import {
   CONTEXT_MESSAGE_QUALIFIERS,
   renderContextMessage,
@@ -321,11 +321,6 @@ export default function contextManagement(pi: ExtensionAPI): void {
     pauseAfterRollover = false;
     pendingManualInstructions = undefined;
   });
-  pi.on("before_agent_start", (event) => ({
-    systemPrompt:
-      event.systemPrompt +
-      "\nContext Management: keep named Notes with context_notes. Original selected-branch History is available through context_history. Before Rollover, update Notes then call context_rollover alone with an explicit continuation Handoff. Read full Notes only when needed; inherited references may be unavailable locally.",
-  }));
   const rolloverTool = defineTool<typeof RolloverParameters, ContextToolDetails>({
     name: "context_rollover",
     label: "Context Rollover",
@@ -333,6 +328,7 @@ export default function contextManagement(pi: ExtensionAPI): void {
       "Save an agent-written Handoff and request an immediate native Context Checkpoint after this tool batch. Must be a standalone direct tool call.",
     // Pi never exposes model-only tools to codemode scripts or ctx.executeTool callers.
     exposure: "model-only",
+    promptGuidelines: [CONTEXT_PROMPT_GUIDELINES.context_rollover],
     parameters: RolloverParameters,
     annotations: {
       readOnlyHint: false,
