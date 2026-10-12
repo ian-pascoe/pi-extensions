@@ -13,6 +13,8 @@ import {
   type Component,
   type OverlayHandle,
   type TUI,
+  type TuiMouseEvent,
+  type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
 import { hintLine, joinInline, noticeText } from "@ian-pascoe/pi-utils/ui";
 import type { MinimalSubagentsCoordinator } from "./minimal-subagents-coordinator.js";
@@ -202,6 +204,16 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
       return;
     }
     this.tui.requestRender();
+  }
+
+  /**
+   * Mirror the arrow keys for the mouse wheel: one row of selection per event in the tree, like
+   * Pi's SelectList, and the wheel's logical lines in the transcript.
+   */
+  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    if (event.type !== "wheel" || !event.wheelDelta) return undefined;
+    this.moveSelection(this.view === "transcript" ? event.wheelDelta : Math.sign(event.wheelDelta));
+    return { handled: true };
   }
 
   /** Render the tree or Child Session Transcript in Pi's selector frame, within the terminal. */
