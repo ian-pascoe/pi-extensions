@@ -13,6 +13,8 @@ import {
   type Component,
   type OverlayHandle,
   type TUI,
+  type TuiMouseEvent,
+  type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
 import { hintLine, joinInline, noticeText } from "@ian-pascoe/pi-utils/ui";
 import type { MinimalSubagentsCoordinator } from "./minimal-subagents-coordinator.js";
@@ -143,6 +145,9 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
   private transcriptLayout?: TranscriptLayout;
   private readonly transcriptCache = createTranscriptRenderCache();
   private bodyHeight = 1;
+  /** Panel row of the first body line in the last render; undefined when no body was drawn. */
+  private bodyTop?: number;
+  private mousePressedAgentId?: string;
   private ensureSelectionVisible = true;
   private toolOutputExpanded = false;
   private disposed = false;
@@ -204,6 +209,50 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
     this.tui.requestRender();
   }
 
+  /**
+   * Handle the mouse like Pi's SelectList. The wheel mirrors the arrow keys: one row of selection
+   * per event in the tree, the wheel's logical lines in the transcript. In the tree, pressing a
+   * row selects it and clicking it opens its transcript. Other events stay unhandled so Pi's
+   * screen text selection still copies transcript text.
+   */
+  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    if (event.type === "wheel") {
+      if (!event.wheelDelta) return undefined;
+      this.moveSelection(
+        this.view === "transcript" ? event.wheelDelta : Math.sign(event.wheelDelta),
+      );
+      return { handled: true };
+    }
+    if (this.view !== "tree" || event.button !== "left") return undefined;
+    if (event.type === "press") {
+      const agentId = this.agentIdAtRow(event.y);
+      this.mousePressedAgentId = agentId;
+      if (!agentId) return undefined;
+      this.selectedAgentId = agentId;
+      this.ensureSelectionVisible = true;
+      return { handled: true, focus: true };
+    }
+    if (event.type === "click") {
+      const agentId = this.mousePressedAgentId ?? this.agentIdAtRow(event.y);
+      this.mousePressedAgentId = undefined;
+      if (!agentId || !this.flattened.some(({ agent }) => agent.agent_id === agentId)) {
+        return undefined;
+      }
+      this.selectedAgentId = agentId;
+      this.openSelectedTranscript();
+      return { handled: true };
+    }
+    return undefined;
+  }
+
+  /** The Child Agent drawn on a panel row in the tree, if any. */
+  private agentIdAtRow(row: number): string | undefined {
+    if (this.bodyTop === undefined) return undefined;
+    const bodyRow = row - this.bodyTop;
+    if (bodyRow < 0 || bodyRow >= this.bodyHeight) return undefined;
+    return this.flattened[this.scrollOffset + bodyRow]?.agent.agent_id;
+  }
+
   /** Render the tree or Child Session Transcript in Pi's selector frame, within the terminal. */
   render(width: number): string[] {
     if (width <= 0) return [];
@@ -214,6 +263,7 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
         this.tui.terminal.rows - 2 * STATUS_PANEL_MARGIN,
       ),
     );
+    this.bodyTop = undefined;
     if (width < 6 || height < 5) {
       const cancelKey = this.keybindings.getKeys("tui.select.cancel").join("/");
       return new Text(this.theme.fg("muted", `${cancelKey} back · Enlarge terminal`), 0, 0)
@@ -235,6 +285,8 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
     ].slice(0, Math.min(3, height - 4));
     const visibleHeader = header.slice(0, Math.max(1, height - help.length - 3));
     this.bodyHeight = Math.max(1, height - 2 - visibleHeader.length - help.length);
+    // The top border precedes the header.
+    this.bodyTop = 1 + visibleHeader.length;
     let body: string[];
     if (transcriptView) {
       const layout = renderTranscriptSnapshot(

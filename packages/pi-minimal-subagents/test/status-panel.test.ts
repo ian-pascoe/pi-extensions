@@ -4,7 +4,13 @@ import {
   type ExtensionContext,
   type KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { Text, visibleWidth, type KeyId, type TUI } from "@earendil-works/pi-tui";
+import {
+  Text,
+  visibleWidth,
+  type KeyId,
+  type TUI,
+  type TuiMouseEvent,
+} from "@earendil-works/pi-tui";
 import {
   escapeTaggedTheme as taggedTheme,
   expectLinesFitWidth,
@@ -148,6 +154,23 @@ function panelFixture(
   return { coordinator, onClose, panel, tui };
 }
 
+function mouseEvent(overrides: Partial<TuiMouseEvent>): TuiMouseEvent {
+  return {
+    type: "wheel",
+    button: "none",
+    x: 4,
+    y: 4,
+    screenX: 4,
+    screenY: 4,
+    width: 80,
+    height: 18,
+    shift: false,
+    alt: false,
+    ctrl: false,
+    ...overrides,
+  };
+}
+
 afterEach(() => vi.useRealTimers());
 beforeAll(() => initTheme("dark"));
 
@@ -288,6 +311,77 @@ describe("minimal subagents status panel", () => {
     expect(paged).toContain("worker-09");
     panel.handleInput("pageDown");
     expect(panel.render(60).join("\n")).toContain("worker-19");
+    panel.dispose();
+  });
+
+  it("moves the tree selection one row per mouse-wheel event", () => {
+    const { panel } = panelFixture();
+    expect(panel.handleMouse(mouseEvent({ wheelDelta: 3 }))).toEqual({ handled: true });
+    expect(panel.render(80).join("\n")).toContain("→ └─ ● parent.child");
+    panel.handleMouse(mouseEvent({ wheelDelta: -1 }));
+    expect(panel.render(80).join("\n")).toContain("→ ○ parent");
+    expect(panel.handleMouse(mouseEvent({ type: "click", button: "left" }))).toBeUndefined();
+    panel.dispose();
+  });
+
+  it("selects a pressed tree row and opens its transcript on click, like Pi's SelectList", () => {
+    const { coordinator, panel } = panelFixture();
+    const row = panel.render(80).findIndex((line) => line.includes("parent.child"));
+    const left = { button: "left" as const, y: row };
+
+    expect(panel.handleMouse(mouseEvent({ ...left, type: "press" }))).toEqual({
+      handled: true,
+      focus: true,
+    });
+    expect(panel.render(80).join("\n")).toContain("\u2192 \u2514\u2500 \u25cf parent.child");
+    expect(coordinator.inspectTranscript).not.toHaveBeenCalled();
+
+    expect(panel.handleMouse(mouseEvent({ ...left, type: "click" }))).toEqual({ handled: true });
+    expect(coordinator.inspectTranscript).toHaveBeenCalledWith("parent.child");
+    expect(panel.render(80).join("\n")).toContain("Transcript \u00b7 parent.child");
+    panel.dispose();
+  });
+
+  it("leaves presses off agent rows and in the transcript to Pi's text selection", () => {
+    const { panel } = panelFixture();
+    panel.render(80);
+    for (const y of [0, 1, 17]) {
+      expect(panel.handleMouse(mouseEvent({ type: "press", button: "left", y }))).toBeUndefined();
+    }
+    const row = panel.render(80).findIndex((line) => line.includes("parent.child"));
+    expect(
+      panel.handleMouse(mouseEvent({ type: "press", button: "right", y: row })),
+    ).toBeUndefined();
+    expect(panel.handleMouse(mouseEvent({ type: "move", y: row }))).toBeUndefined();
+
+    panel.handleInput("enter");
+    panel.render(80);
+    for (const type of ["press", "click", "drag", "release"] as const) {
+      expect(panel.handleMouse(mouseEvent({ type, button: "left", y: 4 }))).toBeUndefined();
+    }
+    expect(panel.render(80).join("\n")).toContain("Transcript \u00b7 parent");
+    panel.dispose();
+  });
+
+  it("scrolls the transcript by the wheel's lines and resumes following at the end", () => {
+    const transcript = {
+      messages: [],
+      toolDefinitions: [],
+      fallback: Array.from({ length: 80 }, (_, i) => `line-${i}`).join("\n"),
+    } satisfies ChildAgentTranscriptSnapshot;
+    const { panel } = panelFixture({ transcript });
+    panel.handleInput("enter");
+    expect(panel.render(80).join("\n")).toContain("line-79");
+
+    panel.handleMouse(mouseEvent({ wheelDelta: -3 }));
+    const scrolled = panel.render(80).join("\n");
+    expect(scrolled).not.toContain("line-79");
+    expect(scrolled).toContain("line-76");
+    expect(scrolled).toContain("paused");
+
+    panel.handleMouse(mouseEvent({ wheelDelta: 3 }));
+    transcript.fallback += "\nline-80";
+    expect(panel.render(80).join("\n")).toContain("line-80");
     panel.dispose();
   });
 
