@@ -324,6 +324,45 @@ describe("minimal subagents status panel", () => {
     panel.dispose();
   });
 
+  it("selects a pressed tree row and opens its transcript on click, like Pi's SelectList", () => {
+    const { coordinator, panel } = panelFixture();
+    const row = panel.render(80).findIndex((line) => line.includes("parent.child"));
+    const left = { button: "left" as const, y: row };
+
+    expect(panel.handleMouse(mouseEvent({ ...left, type: "press" }))).toEqual({
+      handled: true,
+      focus: true,
+    });
+    expect(panel.render(80).join("\n")).toContain("\u2192 \u2514\u2500 \u25cf parent.child");
+    expect(coordinator.inspectTranscript).not.toHaveBeenCalled();
+
+    expect(panel.handleMouse(mouseEvent({ ...left, type: "click" }))).toEqual({ handled: true });
+    expect(coordinator.inspectTranscript).toHaveBeenCalledWith("parent.child");
+    expect(panel.render(80).join("\n")).toContain("Transcript \u00b7 parent.child");
+    panel.dispose();
+  });
+
+  it("leaves presses off agent rows and in the transcript to Pi's text selection", () => {
+    const { panel } = panelFixture();
+    panel.render(80);
+    for (const y of [0, 1, 17]) {
+      expect(panel.handleMouse(mouseEvent({ type: "press", button: "left", y }))).toBeUndefined();
+    }
+    const row = panel.render(80).findIndex((line) => line.includes("parent.child"));
+    expect(
+      panel.handleMouse(mouseEvent({ type: "press", button: "right", y: row })),
+    ).toBeUndefined();
+    expect(panel.handleMouse(mouseEvent({ type: "move", y: row }))).toBeUndefined();
+
+    panel.handleInput("enter");
+    panel.render(80);
+    for (const type of ["press", "click", "drag", "release"] as const) {
+      expect(panel.handleMouse(mouseEvent({ type, button: "left", y: 4 }))).toBeUndefined();
+    }
+    expect(panel.render(80).join("\n")).toContain("Transcript \u00b7 parent");
+    panel.dispose();
+  });
+
   it("scrolls the transcript by the wheel's lines and resumes following at the end", () => {
     const transcript = {
       messages: [],
