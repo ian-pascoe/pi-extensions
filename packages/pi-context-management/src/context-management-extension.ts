@@ -82,7 +82,7 @@ export default function contextManagement(pi: ExtensionAPI): void {
     assertContextJournalReadable(adapter.session.sessionManager);
     return adapter;
   };
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", async (_event, ctx) => {
     adapter?.dispose();
     pending = undefined;
     manualRollover = undefined;
@@ -120,14 +120,16 @@ export default function contextManagement(pi: ExtensionAPI): void {
         );
       requireAdapter();
       ensureReferenceOrigin(pi, ctx.sessionManager);
-      const started = ++sessionGeneration;
-      // Git answers after startup; the record is skipped if the session was replaced meanwhile.
-      void recordRepository(pi, ctx.sessionManager, () => started === sessionGeneration).catch(
-        () => undefined, // A missing record only narrows the repository scope later.
-      );
     } catch (cause) {
       fail(cause instanceof Error ? cause : new Error(String(cause)), ctx);
+      return;
     }
+    const started = ++sessionGeneration;
+    // Waiting for git keeps the record at the session's start rather than mid-conversation; the
+    // record is skipped if the session was replaced meanwhile.
+    await recordRepository(pi, ctx.sessionManager, () => started === sessionGeneration).catch(
+      () => undefined, // A missing record only narrows the repository scope later.
+    );
   });
   pi.on("session_shutdown", () => {
     sessionGeneration++;
