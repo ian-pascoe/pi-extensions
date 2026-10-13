@@ -286,9 +286,6 @@ describe("Context Notes tools", () => {
     expect(await f.run("context_notes", { action: "list", offset: 20 })).toContain(
       '"name":"note-20"',
     );
-    const read = await f.run("context_notes", { action: "read", name: "note-00" });
-    expect(read).toContain('"nextOffset":2000');
-    expect(read).not.toContain("x".repeat(2001));
     await expect(
       f.run("context_notes", { action: "write", name: "large", content: "x".repeat(64001) }),
     ).rejects.toThrow(/Invalid/);
@@ -311,6 +308,26 @@ describe("Context Notes tools", () => {
     expect(await f.run("context_notes", { action: "read", name: "note-00" })).not.toContain(
       "UNSUPPORTED DATA",
     );
+  });
+  test("reading a Note returns all of it unless a range is requested, while History reads page", async () => {
+    const f = harness();
+    const content = `${"x".repeat(63_999)}!`;
+    await f.run("context_notes", { action: "write", name: "long", content });
+    expect(await f.structured("context_notes", { action: "read", name: "long" })).toMatchObject({
+      content,
+      total_characters: 64_000,
+      next_offset: null,
+    });
+    expect(
+      await f.structured("context_notes", { action: "read", name: "long", offset: 10, limit: 5 }),
+    ).toMatchObject({ content: "xxxxx", next_offset: 15 });
+
+    const entry = f.manager.appendCustomEntry("bulky", { text: "y".repeat(5000) });
+    const history = await f.structured("context_history", {
+      action: "read",
+      ref: `context:${f.manager.getSessionId()}:${entry}`,
+    });
+    expect(history).toMatchObject({ next_offset: 2000 });
   });
   test("rejects unsafe names and aborted mutations without creating a Note", async () => {
     const f = harness();
@@ -421,7 +438,7 @@ describe("Context Notes tools", () => {
     await f.run("context_notes", { action: "write", name: "big", content: "a".repeat(32_000) });
     await expect(
       f.run("context_notes", { action: "append", name: "big", content: "b".repeat(32_000) }),
-    ).rejects.toThrow("Note exceeds 64000 UTF-16 content units");
+    ).rejects.toThrow("Note exceeds 64000 characters");
     await f.run("context_notes", { action: "append", name: "big", content: "b".repeat(31_999) });
     expect(await f.structured("context_notes", { action: "list" })).toMatchObject({
       notes: [{ name: "big", characters: 64_000 }],

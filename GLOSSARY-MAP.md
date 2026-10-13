@@ -25,6 +25,10 @@ glossary relevant to the work:
 `pi-context-management` implements session-local Notes, selected-branch History retrieval,
 and native Context Checkpoints for capability-compatible Pi runtimes.
 
+`pi-minimal-subagents` writes an Agent Lineage Record, defined by `pi-utils`, into each child
+session; `pi-context-management` reads it to offer Lineage Notes. Neither package requires the
+other ([ADR-0007](docs/adr/0007-agent-lineage-record-in-pi-utils.md)).
+
 `pi-advisor` reviews main Pi sessions and optionally their Minimal Subagents descendants.
 It inherits the observed session's extensions and grants tools separately. When Context
 Management is available and its tools are granted, they address the private Advisor

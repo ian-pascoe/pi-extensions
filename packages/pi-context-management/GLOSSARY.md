@@ -5,11 +5,23 @@ The Context Management context lets an agent continue a Pi session across Contex
 ## Language
 
 **Notes**:
-Agent-maintained working knowledge organized into independently named documents belonging to one Pi session branch, rather than shared knowledge across independent sessions or projects.
-_Avoid_: Project memory, global memory
+Agent-maintained working knowledge organized into independently named documents, written only by the one Pi session branch that owns them; other sessions may read them but never write them.
+_Avoid_: Project memory, global memory, shared notebook
+
+**Lineage Notes**:
+Notes owned by another agent in the reader's Agent Lineage, readable live but never writable by the reader.
+_Avoid_: Shared Notes, parent memory
+
+**Agent Lineage**:
+The ancestors and descendants of an agent within one agent tree, excluding its siblings and other trees.
+_Avoid_: Agent family, session tree
+
+**Search Scope**:
+The set of sessions a Notes or History search covers: Branch, Lineage, Repository (sessions of the same git repository, including its worktrees), or All.
+_Avoid_: Search mode, visibility
 
 **Note Index**:
-The compact catalogue of available Note names carried into a Context Window so the agent can choose which Notes to read.
+The compact catalogue of the agent's own Note names carried into a Context Window so the agent can choose which Notes to read.
 _Avoid_: Full notebook, summary
 
 **History**:

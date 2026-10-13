@@ -136,7 +136,7 @@ test("Notes reads show the header only when collapsed and the content with metad
   expect(textOf(expanded)).toContain("<toolOutput># Decisions</toolOutput>");
   expect(textOf(expanded)).toContain("<toolOutput>Use nat</toolOutput>");
   expect(textOf(expanded)).toContain("<muted>Reference: context:");
-  expect(textOf(expanded)).toContain("<muted>Range: 0–20 of 31 UTF-16 units</muted>");
+  expect(textOf(expanded)).toContain("<muted>Range: 0–20 of 31 characters</muted>");
   expect(textOf(expanded)).toContain("<muted>Next offset: 20</muted>");
   expect(textOf(expanded)).not.toContain("expand");
   expect(expanded.at(-1)).toBe(TOOK);
@@ -190,7 +190,7 @@ test("Notes lists copy ls: 20 names, an Expand Hint, and a continuation line", a
   expect(collapsed[21]).toBe("<muted>25 of 40 · next offset 25</muted>");
   expect(collapsed.at(-1)).toBe(TOOK);
   const expanded = textOf(result(tool, list, renderContext(args, { expanded: true })));
-  expect(expanded).toContain("<toolOutput>note-25 · 5 UTF-16 units</toolOutput>");
+  expect(expanded).toContain("<toolOutput>note-25 · 5 characters</toolOutput>");
   expect(expanded).toContain("<muted>Updated: 2026-09-07T10:00:00Z</muted>");
   expect(expanded).not.toContain("to expand");
   const empty = result(
