@@ -22,6 +22,7 @@ import {
   SettingsManager,
   type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
+import { readAgentLineage } from "@ian-pascoe/pi-utils/agent-lineage";
 import fc from "fast-check";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createChildResourceLoader } from "../src/minimal-subagents-child-resources.js";
@@ -123,6 +124,12 @@ afterEach(() => {
   vi.unstubAllEnvs();
   for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true });
 });
+
+/** The Agent Lineage another package would read from this session file. */
+function lineageOf(sessionFile: string) {
+  const manager = SessionManager.open(sessionFile);
+  return readAgentLineage(manager.getSessionId(), manager.getBranch());
+}
 
 function persistedAgent(): PersistedAgent {
   return {
@@ -739,6 +746,34 @@ describe("minimal subagent sessions", () => {
     expect(contents).toContain('"content":"hello"');
   });
 
+  it("child sessions carry an Agent Lineage Record naming their place in the agent tree", () => {
+    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-lineage-"));
+    temporaryDirectories.push(directory);
+    const options = { importedMessages: [], cwd: directory, sessionDir: directory };
+    const child = createPersistentChildIdentity({
+      ...options,
+      agent: persistedAgent(),
+      rootSessionId: "root-session",
+    });
+    expect(lineageOf(child.sessionFile)).toEqual({
+      sessionId: child.sessionId,
+      rootSessionId: "root-session",
+      agentId: "child",
+      parentAgentId: null,
+    });
+    const nested = createPersistentChildIdentity({
+      ...options,
+      agent: { ...persistedAgent(), agent_id: "child.reader", parent_id: "child" },
+      rootSessionId: "root-session",
+    });
+    expect(lineageOf(nested.sessionFile)).toEqual({
+      sessionId: nested.sessionId,
+      rootSessionId: "root-session",
+      agentId: "child.reader",
+      parentAgentId: "child",
+    });
+  });
+
   it("clones an identity-only child before any assistant response", async () => {
     const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-identity-only-clone-"));
     temporaryDirectories.push(directory);
@@ -923,6 +958,8 @@ describe("minimal subagent sessions", () => {
     expect(() => verifyChildSessionIdentity(cloneSession, forkedAgent, "destination-root")).toThrow(
       "root owner for child",
     );
+    // Until the destination adopts it, the clone's inherited record names another session.
+    expect(lineageOf(clone.sessionFile)).toBeUndefined();
     await expect(
       destinationFactory.adoptForkSessionOwnership(forkedAgent, "wrong-source-root"),
     ).rejects.toThrow("fork provenance for child");
@@ -939,6 +976,19 @@ describe("minimal subagent sessions", () => {
     expect(readFileSync(adopted.sessionFile, "utf8")).toContain(
       '"destination_root_session_id":"destination-root"',
     );
+    expect(lineageOf(adopted.sessionFile)).toEqual({
+      sessionId: adopted.sessionId,
+      rootSessionId: "destination-root",
+      agentId: "child",
+      parentAgentId: null,
+    });
+    // Adopting again writes no further record: the source's inherited one plus this session's own.
+    await destinationFactory.adoptForkSessionOwnership(forkedAgent, "source-root");
+    expect(
+      SessionManager.open(adopted.sessionFile)
+        .getBranch()
+        .filter((entry) => entry.type === "custom" && entry.customType === "pi-agent-lineage"),
+    ).toHaveLength(2);
     adoptedSession.appendMessage(userMessage("generation B task", 3));
     adoptedSession.appendMessage(assistantMessage("generation B answer", 4));
     forkedAgent.session_leaf_id = adoptedSession.getLeafId() ?? undefined;
@@ -968,6 +1018,10 @@ describe("minimal subagent sessions", () => {
       "destination-root",
     );
     secondForkAgent.session_leaf_id = secondAdoption.sessionLeafId;
+    expect(lineageOf(secondAdoption.sessionFile)).toMatchObject({
+      sessionId: secondAdoption.sessionId,
+      rootSessionId: "next-destination-root",
+    });
     const secondAdoptedSession = SessionManager.open(
       secondAdoption.sessionFile,
       directory,

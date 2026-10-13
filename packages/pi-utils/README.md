@@ -21,6 +21,7 @@ The Pi packages and `typebox` are optional peers; Pi's extension loader supplies
 | `./pi-agent-session-discovery` | Nothing; the caller passes `AgentSession` from `@earendil-works/pi-coding-agent` |
 | `./evidence`                   | `@earendil-works/pi-coding-agent` (`convertToLlm`, `estimateTokens`)             |
 | `./token-calibration`          | Nothing                                                                          |
+| `./agent-lineage`              | `typebox`                                                                        |
 | `./layered-settings`           | `typebox`                                                                        |
 | `./null-optional-arguments`    | `typebox`                                                                        |
 | `./tool-testing`               | `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and `typebox`        |
@@ -30,6 +31,10 @@ The Pi packages and `typebox` are optional peers; Pi's extension loader supplies
 | `./ui-testing`                 | `@earendil-works/pi-tui` (`visibleWidth`)                                        |
 
 Type-only imports from `@earendil-works/pi-ai` and `@earendil-works/pi-coding-agent` are erased from the compiled JavaScript, but the published declarations reference them, so TypeScript consumers outside Pi need those packages installed to type-check.
+
+## Agent Lineage Records
+
+`@ian-pascoe/pi-utils/agent-lineage` defines the session entry through which packages share where a Child Agent sits in its agent tree without depending on each other ([ADR-0007](../../docs/adr/0007-agent-lineage-record-in-pi-utils.md)). A package that creates child sessions appends `agentLineageRecord({ sessionId, rootSessionId, agentId, parentAgentId })` as a custom entry of type `AGENT_LINEAGE_ENTRY_TYPE`; `parentAgentId` is `null` when the parent is the root session. Readers call `readAgentLineage(sessionId, entries)` with a session's ID and its branch, or entries parsed from its file, and get the latest valid record that session wrote itself, or `undefined` when it has none. A record copied into another session, as Pi copies entries into a fork, is ignored until that session writes its own.
 
 ## Null for optional tool arguments
 

@@ -433,6 +433,13 @@ process-local fork handoff is lost, recovery reads only the destination's
 selected branch and proceeds only when its canonical `parentSession` proves the
 source file; it never substitutes the source session's newer head.
 
+Every child session also carries an Agent Lineage Record, defined by
+`@ian-pascoe/pi-utils/agent-lineage`, naming its own session, its Root Agent's
+session, its agent ID, and its parent agent. Other extensions read it to find a
+Child Agent's ancestors and descendants without depending on this package; it
+grants them nothing. A fork clone writes its own record when its destination
+adopts it. Children created before the record existed have none.
+
 ## Tool annotations
 
 The coordinator tools declare MCP-style `annotations`, which Pi reports through `pi.getAllTools()` for permission extensions and does not send to model providers. `subagent` is destructive and open-world because a Child Agent can use any tool it is granted. `agent_message` is not read-only but is non-destructive and closed-world. `subagent_cancel` is non-destructive and idempotent; `subagent_delete` is destructive and idempotent. `subagent_status` and `subagent_wait` are read-only (`subagent_wait` consumes queued deliveries, so it is not idempotent).
