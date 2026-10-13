@@ -46,7 +46,7 @@ const NotesParameters = Type.Object(
     content: Type.Optional(Type.String({ maxLength: MAX_NOTE_CHARACTERS })),
     query: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
     offset: Type.Optional(Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })),
-    limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 2000 })),
+    limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_NOTE_CHARACTERS })),
   },
   { additionalProperties: false },
 );
@@ -273,7 +273,7 @@ export function registerContextTools(
     name: "context_history",
     label: "Context History",
     description:
-      "Read-only selected-branch journal. windows/list/search are paginated (max 20); read returns exact serialized entry JSON with zero-based UTF-16 offsets (max 2000 units). Search is case-sensitive literal text, with JSON string escaping handled for you; returned offsets address serialized entry JSON. Optional window limits list/search. Optional type (entry type, e.g. message) and role (message role, e.g. user) filter list/search; by default every entry is included, and list previews describe each entry's text, tool call, or custom type. Search previews are decoded readable text; a direct search call does not match its own tool-call block. References carry their issuing session; a fork can resolve inherited entry IDs only when present on its selected branch. No unrelated session, abandoned sibling, or external spill file is opened.",
+      "Read-only selected-branch journal. windows/list/search are paginated (max 20); read returns exact serialized entry JSON, at most 2000 characters per call from a zero-based offset. Search is case-sensitive literal text, with JSON string escaping handled for you; returned offsets address serialized entry JSON. Optional window limits list/search. Optional type (entry type, e.g. message) and role (message role, e.g. user) filter list/search; by default every entry is included, and list previews describe each entry's text, tool call, or custom type. Search previews are decoded readable text; a direct search call does not match its own tool-call block. References carry their issuing session; a fork can resolve inherited entry IDs only when present on its selected branch. No unrelated session, abandoned sibling, or external spill file is opened.",
     promptGuidelines: [CONTEXT_PROMPT_GUIDELINES.context_history],
     parameters: HistoryParameters,
     annotations: {
@@ -387,7 +387,7 @@ export function registerContextTools(
     name: "context_notes",
     label: "Context Notes",
     description:
-      "Session-branch Markdown Notes. Actions list/read/write/append/delete/search. Names are labels, not paths. Reads use zero-based UTF-16 offsets and return at most 2000 units; lists return at most 20 Notes. Append starts the new text on a new line unless the Note is empty or already ends with one. Search is case-sensitive literal text. Forks inherit Notes; plain context-only child inheritance does not copy the store.",
+      "Session-branch Markdown Notes. Actions list/read/write/append/delete/search. Names are labels, not paths. read returns the whole Note unless offset/limit select a character range; lists return at most 20 Notes. Append starts the new text on a new line unless the Note is empty or already ends with one. Search is case-sensitive literal text. Forks inherit Notes; plain context-only child inheritance does not copy the store.",
     promptGuidelines: [CONTEXT_PROMPT_GUIDELINES.context_notes],
     parameters: NotesParameters,
     annotations: {
@@ -408,7 +408,7 @@ export function registerContextTools(
       if (!Value.Check(NotesParameters, params)) throw new Error("Invalid context_notes arguments");
       const notes = readNotes(ctx.sessionManager);
       const offset = params.offset ?? 0;
-      const limit = params.limit ?? (params.action === "read" ? 2000 : 20);
+      const limit = params.limit ?? (params.action === "read" ? MAX_NOTE_CHARACTERS : 20);
       if (params.action === "list") {
         const page = notes
           .slice(offset, offset + Math.min(limit, 20))
@@ -465,7 +465,7 @@ export function registerContextTools(
             ? joinAppend(note?.content ?? "", params.content ?? "")
             : (params.content ?? "");
       if (content !== null && content.length > MAX_NOTE_CHARACTERS)
-        throw new Error("Note exceeds 64000 UTF-16 content units");
+        throw new Error(`Note exceeds ${MAX_NOTE_CHARACTERS} characters`);
       signal?.throwIfAborted();
       try {
         appendNote(pi, ctx.sessionManager, params.name, content);

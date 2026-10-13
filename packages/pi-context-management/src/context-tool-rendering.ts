@@ -270,7 +270,7 @@ function detailBody(
       ...(index > 0 ? [""] : []),
       ...(match.name ? [field(theme, "Note", match.name)] : []),
       field(theme, "Reference", match.ref),
-      field(theme, "Offset", `${match.offset} UTF-16 units`),
+      field(theme, "Offset", `${match.offset} characters`),
       theme.fg("toolOutput", safeText(match.preview)),
     ]);
     return rowsBody(theme, options, COLLAPSED_LINES.fallback, collapsed, detailed, "No matches", [
@@ -316,7 +316,7 @@ function detailBody(
     const { notes, total } = details;
     const detailed = notes.flatMap((note, index) => [
       ...(index > 0 ? [""] : []),
-      theme.fg("toolOutput", `${safeText(note.name)}${SEPARATOR}${note.characters} UTF-16 units`),
+      theme.fg("toolOutput", `${safeText(note.name)}${SEPARATOR}${note.characters} characters`),
       field(theme, "Updated", note.updatedAt),
       field(theme, "Reference", note.ref),
     ]);
@@ -348,7 +348,7 @@ function detailBody(
     field(
       theme,
       "Range",
-      `${details.offset}–${details.offset + details.content.length} of ${details.totalCharacters} UTF-16 units`,
+      `${details.offset}–${details.offset + details.content.length} of ${details.totalCharacters} characters`,
     ),
     field(theme, "Next offset", details.nextOffset ?? "none"),
     "",

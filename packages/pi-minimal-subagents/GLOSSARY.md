@@ -27,6 +27,7 @@ Provide persistent, capability-bounded nested agents whose hierarchy, conversati
 - **Active Turn Tail** — the latest assistant messages and their tool results from the running turn a direct parent is waiting on, shown live in that parent's wait. Unlike the Child Session Transcript, it is a recent tail of one turn.
 - **Wait Event** — one `subagent_wait` result; it is an intermediate Coordination Message, a terminal turn result, or an observational timeout with a compact Child Agent progress snapshot (state, elapsed time, latest activity time, total tokens, and the last few Recent Activity labels as `recent_activity_labels`). A default wait reports an already delivered terminal result as `already_delivered` instead of repeating its output.
 - **Child Session Position** — the verified child-session leaf recorded for the active Root Agent branch.
+- **Agent Lineage Record** — the versioned entry, defined by `@ian-pascoe/pi-utils`, that a child session or fork clone carries to name its parent agent's session, so other packages can learn an agent's ancestors and descendants without reading the Registry.
 - **Fork Snapshot** — the selected branch's Registry state plus independently cloned child sessions carrying verified source provenance and destination-root ownership.
 
 ## Delivery ordering

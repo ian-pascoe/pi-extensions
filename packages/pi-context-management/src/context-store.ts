@@ -197,7 +197,7 @@ export function appendNote(
   const record = { version: 1, name, content, sourceSession: manager.getSessionId() };
   if (!Value.Check(NoteRecord, record))
     throw new Error(
-      "Invalid Note: use a 1–64 character name and at most 64000 UTF-16 content units.",
+      `Invalid Note: use a 1–64 character name and at most ${MAX_NOTE_CHARACTERS} characters of content.`,
     );
   try {
     pi.appendEntry(NOTE_ENTRY, record);
