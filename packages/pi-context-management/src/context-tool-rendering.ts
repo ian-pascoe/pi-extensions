@@ -26,7 +26,13 @@ export type ContextToolDetails =
   | { action: string; name: string; saved: boolean }
   | { requested: boolean }
   | {
-      notes: Array<{ name: string; ref: string; updatedAt: string; characters: number }>;
+      notes: Array<{
+        name: string;
+        ref: string;
+        updatedAt: string;
+        characters: number;
+        agent?: string;
+      }>;
       total: number;
       nextOffset: number | null;
     }
@@ -37,7 +43,13 @@ export type ContextToolDetails =
       nextOffset: number | null;
     }
   | {
-      matches: Array<{ ref: string; name?: string | undefined; offset: number; preview: string }>;
+      matches: Array<{
+        ref: string;
+        name?: string | undefined;
+        agent?: string;
+        offset: number;
+        preview: string;
+      }>;
       nextOffset: number | null;
     }
   | {
@@ -94,6 +106,7 @@ export type ContextToolName = "context_notes" | "context_history" | "context_rol
 
 interface ContextToolArguments {
   action?: string;
+  scope?: string;
   query?: string;
   name?: string;
   ref?: string;
@@ -145,13 +158,15 @@ function callTarget(args: ContextToolArguments): string {
   const named = args.name ?? args.query;
   const subject =
     named !== undefined ? `“${preview(named)}”` : preview(args.ref?.split(":").at(-1) ?? "");
-  return [subject, windowTarget(args)].filter(Boolean).join(SEPARATOR);
+  const scope = args.scope && args.scope !== "branch" ? preview(args.scope) : "";
+  return [subject, windowTarget(args), scope].filter(Boolean).join(SEPARATOR);
 }
 
 /** Arguments one per line, like Pi's generic header, for the Expanded View. */
 function argumentLines(theme: RenderTheme, args: ContextToolArguments): string[] {
   const entries: Array<[string, string | number | undefined]> = [
     ["action", args.action],
+    ["scope", args.scope],
     ["name", args.name],
     ["query", args.query],
     ["ref", args.ref],
@@ -259,6 +274,7 @@ function detailBody(
   if ("matches" in details) {
     const collapsed = details.matches.map((match) =>
       [
+        match.agent ? safeText(match.agent) : undefined,
         match.name ? safeText(match.name) : undefined,
         `offset ${match.offset}`,
         rowPreview(match.preview),
@@ -268,6 +284,7 @@ function detailBody(
     );
     const detailed = details.matches.flatMap((match, index) => [
       ...(index > 0 ? [""] : []),
+      ...(match.agent ? [field(theme, "Agent", match.agent)] : []),
       ...(match.name ? [field(theme, "Note", match.name)] : []),
       field(theme, "Reference", match.ref),
       field(theme, "Offset", `${match.offset} characters`),
@@ -317,6 +334,7 @@ function detailBody(
     const detailed = notes.flatMap((note, index) => [
       ...(index > 0 ? [""] : []),
       theme.fg("toolOutput", `${safeText(note.name)}${SEPARATOR}${note.characters} characters`),
+      ...(note.agent ? [field(theme, "Agent", note.agent)] : []),
       field(theme, "Updated", note.updatedAt),
       field(theme, "Reference", note.ref),
     ]);
@@ -324,7 +342,11 @@ function detailBody(
       theme,
       options,
       COLLAPSED_LINES.list,
-      notes.map((note) => safeText(note.name)),
+      notes.map((note) =>
+        note.agent
+          ? `${safeText(note.agent)}${SEPARATOR}${safeText(note.name)}`
+          : safeText(note.name),
+      ),
       detailed,
       "No Notes",
       expanded

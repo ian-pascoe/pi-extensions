@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
@@ -130,14 +130,27 @@ function invalidReferenceMessage(manager: ReadonlySessionManager, ref: string): 
   return `Invalid reference ${JSON.stringify(shown)}: expected a source-qualified context:<session>:<entry> reference, for example ${example}. Copy refs verbatim from context_history windows, list, or search results (or context_notes list or search results); do not construct them.`;
 }
 
-/** Validates that a reference issuer is proven on the selected branch before resolving its entry ID. */
-export function resolveContextReference(manager: ReadonlySessionManager, ref: string): string {
+/** A well-formed reference split into its parts, not yet proven to resolve anywhere. */
+export interface ParsedContextReference {
+  sourceSession: string;
+  entryId: string;
+}
+
+/** Splits a well-formed reference into its issuing session and entry ID, without resolving it. */
+export function parseContextReference(
+  manager: ReadonlySessionManager,
+  ref: string,
+): ParsedContextReference {
   const match = /^context:([A-Za-z0-9-]{1,128}):([A-Za-z0-9-]{1,128})$/.exec(ref);
   const sourceSession = match?.[1];
   const entryId = match?.[2];
-  if (!sourceSession || !entryId) {
-    throw new Error(invalidReferenceMessage(manager, ref));
-  }
+  if (!sourceSession || !entryId) throw new Error(invalidReferenceMessage(manager, ref));
+  return { sourceSession, entryId };
+}
+
+/** Validates that a reference issuer is proven on the selected branch before resolving its entry ID. */
+export function resolveContextReference(manager: ReadonlySessionManager, ref: string): string {
+  const { sourceSession, entryId } = parseContextReference(manager, ref);
   assertContextJournalReadable(manager);
   if (sourceSession === manager.getSessionId()) return entryId;
   const branch = manager.getBranch();
@@ -166,9 +179,29 @@ export function resolveContextReference(manager: ReadonlySessionManager, ref: st
 /** Replays the selected branch, including Notes inherited by a native journal fork. */
 export function readNotes(manager: ReadonlySessionManager): ContextNote[] {
   assertContextJournalReadable(manager);
+  return replayNotes(manager.getBranch());
+}
+
+/** The Note name a recorded Note entry addresses, or undefined if the entry is not a Note. */
+export function noteNameOf(entry: SessionEntry | undefined): string | undefined {
+  return entry?.type === "custom" &&
+    entry.customType === NOTE_ENTRY &&
+    Value.Check(NoteRecord, entry.data)
+    ? entry.data.name
+    : undefined;
+}
+
+/**
+ * The current Notes on a branch. `holderSession` re-issues references from the session holding
+ * the branch, for branches read from another session's file rather than the caller's own.
+ */
+export function replayNotes(
+  branch: readonly SessionEntry[],
+  holderSession?: string,
+): ContextNote[] {
   const notes = new Map<string, ContextNote>();
   // ponytail: replay is O(branch length); add an invalidated index only if measured retrieval latency warrants it.
-  for (const entry of manager.getBranch()) {
+  for (const entry of branch) {
     if (
       entry.type !== "custom" ||
       entry.customType !== NOTE_ENTRY ||
@@ -181,7 +214,7 @@ export function readNotes(manager: ReadonlySessionManager): ContextNote[] {
         name: entry.data.name,
         content: entry.data.content,
         updatedAt: entry.timestamp,
-        ref: `context:${entry.data.sourceSession}:${entry.id}`,
+        ref: `context:${holderSession ?? entry.data.sourceSession}:${entry.id}`,
       });
   }
   return [...notes.values()].sort((a, b) => a.name.localeCompare(b.name));

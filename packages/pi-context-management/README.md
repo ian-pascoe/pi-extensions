@@ -18,7 +18,7 @@ pi -e ./packages/pi-context-management/src/index.ts
 
 | Surface            | Purpose                                                                                                                  |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| `context_notes`    | List, read, write, append, delete, or literally search named Markdown Notes.                                             |
+| `context_notes`    | List, read, write, append, delete, copy, or literally search named Markdown Notes.                                       |
 | `context_history`  | Browse Context Windows and entries, read exact recorded entry JSON, or perform case-sensitive literal search.            |
 | `context_rollover` | Save an explicit agent-written Handoff and request an immediate native Context Checkpoint after the complete tool batch. |
 | `/context`         | Inspect Pi's native context usage and compaction settings, Notes, and recent Context Windows.                            |
@@ -31,10 +31,10 @@ pi -e ./packages/pi-context-management/src/index.ts
 
 | Tool / action                              | Script value                                                                                         |
 | ------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
-| `context_notes` list                       | `{ notes: [{ name, updated_at, ref, characters }], total, next_offset }`                             |
-| `context_notes` read                       | `{ name, ref, content, offset, total_characters, next_offset }`                                      |
-| `context_notes` write/append/delete        | `{ action, name, saved: true }`                                                                      |
-| `context_notes` / `context_history` search | `{ matches: [{ ref, name?, offset, preview }], next_offset }`                                        |
+| `context_notes` list                       | `{ notes: [{ name, updated_at, ref, characters, agent?, session? }], total, next_offset }`           |
+| `context_notes` read                       | `{ name, ref, content, offset, total_characters, next_offset, agent?, session? }`                    |
+| `context_notes` write/append/delete/copy   | `{ action, name, saved: true }`                                                                      |
+| `context_notes` / `context_history` search | `{ matches: [{ ref, name?, agent?, session?, offset, preview }], next_offset }`                      |
 | `context_history` windows                  | `{ windows: [{ ref, items }], total, next_offset }`                                                  |
 | `context_history` list                     | `{ items: [{ ref, type, timestamp, preview }], total, next_offset }`                                 |
 | `context_history` read                     | `{ ref, resolved_in_session, format, content, offset, total_characters, next_offset, availability }` |
@@ -45,7 +45,13 @@ Notes use labels rather than filesystem paths. A session branch may hold up to 1
 
 `context_history` `list` previews describe each entry instead of its JSON envelope: `user: <text…>`, `assistant: <text…>` or `assistant → bash(<command…>)`, `toolResult(read): <text…>`, `custom(<customType>)`, `thinking_level_change(<level>)`. Previews are one line of at most 120 characters. `list` and `search` accept optional `type` (recorded entry type such as `message`, `custom`, or `compaction`) and `role` (message role such as `user`, `assistant`, or `toolResult`, which implies `message`) filters; both default to no filter, so every entry is returned, and `total`/`next_offset` count the filtered entries. Search previews show the decoded text around a match, while `offset` still addresses the serialized entry JSON that `read` returns. A direct `search` call skips its own assistant tool-call block, so its query does not match itself; a `search` run from a `codemode` script has no such block, so the script's text can match.
 
-History is read-only and limited to recorded entries on the selected branch. Forks inherit entries on their selected path and then diverge; abandoned siblings and unrelated sessions are excluded. Context-only Child Agent inheritance does not copy the source Notes/History store, so an inherited reference may be unavailable locally. Foreign references resolve only when a persisted owned record proves the issuer had that entry; otherwise browse the current branch for a fresh reference. Reads do not open arbitrary external spill paths or reconstruct unavailable originals.
+## Lineage scope
+
+`context_notes` `list` and `search`, and `context_history` `search`, accept `scope`: `"branch"` (the default) covers this session's selected branch, as before; `"lineage"` adds the sessions of the agents that spawned this agent and that it spawned, at any depth, but not its siblings. Scoped results carry `agent` (the owning agent's ID, or `root`) and `session`. Other sessions are read from their files as their latest branch, live and read-only: they are never written, never opened through Pi's session manager (which can rewrite a file), and a half-written final line from a running session is skipped. A ref from a scoped result works with `context_notes` `read` (the current version of that Note) and `copy` (an unlinked snapshot saved under the same name, or `name`; it fails rather than overwrite an existing Note), and with `context_history` `read`. History `windows` and `list` browse this session only.
+
+Lineage comes from the Agent Lineage Record that `@ian-pascoe/pi-utils/agent-lineage` defines and a subagent extension such as `@ian-pascoe/pi-minimal-subagents` writes into each child session; children live in their root agent's session folder, which the lineage scope reads. Without such an extension, or for children created before it wrote records, the lineage scope covers only this session. The Note Index lists only this session's own Notes.
+
+History is read-only and limited to recorded entries on the selected branch, unless a scope says otherwise. Forks inherit entries on their selected path and then diverge; abandoned siblings are excluded, and other sessions are covered only by a scope. Context-only Child Agent inheritance does not copy the source Notes/History store, so an inherited reference may be unavailable locally. Foreign references resolve only when a persisted owned record proves the issuer had that entry; otherwise browse the current branch for a fresh reference. Reads do not open arbitrary external spill paths or reconstruct unavailable originals.
 
 Tool `annotations` (MCP semantics, reported by `pi.getAllTools()` and never sent to model providers) are all closed-world. `context_history` is read-only. `context_notes` and `context_rollover` are not read-only, but are non-destructive and not idempotent: Notes and Handoffs append to the session journal and earlier values stay readable through History.
 

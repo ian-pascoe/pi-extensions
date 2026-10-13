@@ -13,15 +13,17 @@ import {
 import { chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { TSchema } from "typebox";
+import { Type, type TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { describe, expect, onTestFinished, test } from "vitest";
+import { AGENT_LINEAGE_ENTRY_TYPE, agentLineageRecord } from "@ian-pascoe/pi-utils/agent-lineage";
 import { ensureReferenceOrigin } from "../src/context-store.js";
 import { registerContextTools } from "../src/context-tools.js";
 import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 
 interface ToolInput {
   action: string;
+  scope?: string;
   name?: string;
   content?: string;
   query?: string;
@@ -669,6 +671,177 @@ describe("History previews and filters", () => {
       }),
     );
     expect(own.matches).toEqual([]);
+  });
+});
+
+/** Persisted sessions in one session folder: a root agent and children carrying lineage records. */
+function agentTree() {
+  const dir = mkdtempSync(join(tmpdir(), "pi-context-lineage-"));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+  const persisted = (manager: SessionManager) => {
+    // Pi writes a session file only once it has an assistant message.
+    manager.appendMessage(fauxAssistantMessage("ready"));
+    return harness(manager);
+  };
+  const root = persisted(SessionManager.create(dir, dir));
+  const rootSessionId = root.manager.getSessionId();
+  const child = (agentId: string, parentAgentId: string | null = null) => {
+    const manager = SessionManager.create(dir, dir);
+    manager.appendCustomEntry(
+      AGENT_LINEAGE_ENTRY_TYPE,
+      agentLineageRecord({
+        sessionId: manager.getSessionId(),
+        rootSessionId,
+        agentId,
+        parentAgentId,
+      }),
+    );
+    return persisted(manager);
+  };
+  const unrelated = () => persisted(SessionManager.create(dir, dir));
+  return { root, child, unrelated };
+}
+
+describe("Lineage Notes", () => {
+  test("a child lists its root agent's Notes, labelled by owner", async () => {
+    const tree = agentTree();
+    await tree.root.run("context_notes", { action: "write", name: "plan", content: "Ship it" });
+    const explorer = tree.child("explorer");
+    await explorer.run("context_notes", { action: "write", name: "found", content: "a bug" });
+
+    expect(await explorer.structured("context_notes", { action: "list" })).toMatchObject({
+      notes: [{ name: "found" }],
+    });
+    const lineage = await explorer.structured("context_notes", {
+      action: "list",
+      scope: "lineage",
+    });
+    expect(lineage).toMatchObject({
+      notes: [
+        { name: "found", agent: "explorer", session: explorer.manager.getSessionId() },
+        { name: "plan", agent: "root", session: tree.root.manager.getSessionId() },
+      ],
+      total: 2,
+    });
+  });
+
+  test("lineage covers ancestors and descendants at every depth, never siblings or unrelated sessions", async () => {
+    const tree = agentTree();
+    const explorer = tree.child("explorer");
+    const reader = tree.child("explorer.reader", "explorer");
+    const sibling = tree.child("reviewer");
+    const unrelated = tree.unrelated();
+    for (const [agent, f] of Object.entries({
+      root: tree.root,
+      explorer,
+      reader,
+      sibling,
+      unrelated,
+    }))
+      await f.run("context_notes", {
+        action: "write",
+        name: agent,
+        content: `marker from ${agent}`,
+      });
+    const owners = async (f: ReturnType<typeof harness>) => {
+      const found = await f.structured("context_notes", {
+        action: "search",
+        scope: "lineage",
+        query: "marker",
+      });
+      return Value.Parse(
+        Type.Object({ matches: Type.Array(Type.Object({ agent: Type.String() })) }),
+        found,
+      )
+        .matches.map((match) => match.agent)
+        .sort();
+    };
+    expect(await owners(tree.root)).toEqual(["explorer", "explorer.reader", "reviewer", "root"]);
+    expect(await owners(explorer)).toEqual(["explorer", "explorer.reader", "root"]);
+    expect(await owners(reader)).toEqual(["explorer", "explorer.reader", "root"]);
+    // A session without a lineage record has no lineage, as children created before records had.
+    expect(await owners(unrelated)).toEqual(["root"]);
+  });
+
+  test("a Lineage Note reads live by ref, and copy keeps an unlinked snapshot", async () => {
+    const tree = agentTree();
+    await tree.root.run("context_notes", { action: "write", name: "plan", content: "v1" });
+    const explorer = tree.child("explorer");
+    const listed = Value.Parse(
+      Type.Object({ notes: Type.Array(Type.Object({ name: Type.String(), ref: Type.String() })) }),
+      await explorer.structured("context_notes", { action: "list", scope: "lineage" }),
+    );
+    const ref = listed.notes.find((note) => note.name === "plan")?.ref;
+    if (!ref) throw new Error("The root's Note was not listed");
+
+    expect(await explorer.structured("context_notes", { action: "read", ref })).toMatchObject({
+      name: "plan",
+      content: "v1",
+    });
+    await explorer.run("context_notes", { action: "copy", ref });
+    await tree.root.run("context_notes", { action: "append", name: "plan", content: "v2" });
+    expect(await explorer.structured("context_notes", { action: "read", ref })).toMatchObject({
+      content: "v1\nv2",
+    });
+    expect(
+      await explorer.structured("context_notes", { action: "read", name: "plan" }),
+    ).toMatchObject({ content: "v1" });
+
+    await expect(explorer.run("context_notes", { action: "copy", ref })).rejects.toThrow(
+      /already exists/,
+    );
+    await explorer.run("context_notes", { action: "copy", ref, name: "plan-latest" });
+    expect(
+      await explorer.structured("context_notes", { action: "read", name: "plan-latest" }),
+    ).toMatchObject({ content: "v1\nv2" });
+
+    await tree.root.run("context_notes", { action: "delete", name: "plan" });
+    await expect(explorer.run("context_notes", { action: "read", ref })).rejects.toThrow(
+      /not found/,
+    );
+  });
+
+  test("a parent searches a child's History and reads the match from the child's session", async () => {
+    const tree = agentTree();
+    const explorer = tree.child("explorer");
+    explorer.manager.appendMessage({ role: "user", content: "needle in child", timestamp: 1 });
+    expect(
+      await tree.root.structured("context_history", { action: "search", query: "needle in" }),
+    ).toMatchObject({ matches: [] });
+    const found = Value.Parse(
+      Type.Object({
+        matches: Type.Array(Type.Object({ ref: Type.String(), agent: Type.String() })),
+      }),
+      await tree.root.structured("context_history", {
+        action: "search",
+        scope: "lineage",
+        query: "needle in",
+      }),
+    );
+    expect(found.matches.map((match) => match.agent)).toEqual(["explorer"]);
+    const ref = found.matches[0]?.ref ?? "";
+    expect(await tree.root.structured("context_history", { action: "read", ref })).toMatchObject({
+      resolved_in_session: explorer.manager.getSessionId(),
+      content: expect.stringContaining("needle in child"),
+    });
+    await expect(
+      tree.root.run("context_history", { action: "list", scope: "lineage" }),
+    ).rejects.toThrow(/search/);
+  });
+
+  test("refs outside the lineage do not resolve", async () => {
+    const tree = agentTree();
+    const outsider = tree.unrelated();
+    await outsider.run("context_notes", { action: "write", name: "secret", content: "x" });
+    const listed = Value.Parse(
+      Type.Object({ notes: Type.Array(Type.Object({ ref: Type.String() })) }),
+      await outsider.structured("context_notes", { action: "list" }),
+    );
+    const ref = listed.notes[0]?.ref ?? "";
+    const explorer = tree.child("explorer");
+    await expect(explorer.run("context_notes", { action: "read", ref })).rejects.toThrow(
+      /not in this agent's lineage/,
+    );
   });
 });
 
