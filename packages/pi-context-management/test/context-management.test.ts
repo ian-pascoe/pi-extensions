@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { chmodSync } from "node:fs";
 import { Type } from "typebox";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -7,6 +7,22 @@ import contextManagement from "../src/context-management-extension.js";
 import { createSdkHarness, overflow, reply, toolCall } from "./sdk-harness.js";
 
 describe("Context Windows through the Pi SDK", () => {
+  it("records the session's repository once the session starts", async () => {
+    const f = await createSdkHarness([contextManagement]);
+    // The harness folder is a fresh temporary folder, in no git repository.
+    await vi.waitFor(() =>
+      expect(
+        f.manager
+          .getBranch()
+          .flatMap((entry) =>
+            entry.type === "custom" && entry.customType === "pi-context-repository"
+              ? [entry.data]
+              : [],
+          ),
+      ).toEqual([{ version: 1, cwd: f.dir, repository: null }]),
+    );
+  });
+
   it("does not undo a durable native checkpoint when the subsequent live-state update fails", async () => {
     const f = await createSdkHarness([contextManagement]);
     f.responses.push(reply("Ready."));

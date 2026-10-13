@@ -14,7 +14,14 @@ import {
   type ContextToolDetails,
 } from "./context-tool-rendering.js";
 import { describeEntry } from "./entry-preview.js";
-import { lineageSessions, SEARCH_SCOPES } from "./session-scope.js";
+import {
+  lineageSessions,
+  SEARCH_SCOPES,
+  sessionById,
+  wideSessions,
+  type ScopedSession,
+  type SearchScope,
+} from "./session-scope.js";
 import {
   appendNote,
   assertContextJournalReadableForModel,
@@ -47,7 +54,7 @@ export const CONTEXT_PROMPT_GUIDELINES = {
 
 const Scope = StringEnum(SEARCH_SCOPES, {
   description:
-    'Sessions covered: "branch" (default) is this session; "lineage" adds the agents this agent was spawned by and spawned, read-only',
+    'Sessions covered, read-only beyond this one: "branch" (default) is this session; "lineage" adds the agents this agent was spawned by and spawned; "repository" adds every session in this git repository, across worktrees; "all" adds every session Pi keeps. Newest session first',
 });
 
 const NotesParameters = Type.Object(
@@ -247,12 +254,17 @@ function encodedOffset(encoded: string, offset: number): number {
   return cursor;
 }
 
-function search(items: Iterable<SearchItem>, query: string, offset: number, limit: number) {
+async function search(
+  items: Iterable<SearchItem> | AsyncIterable<SearchItem>,
+  query: string,
+  offset: number,
+  limit: number,
+) {
   const matches: Array<
     Labelled<{ ref: string; name: string | undefined; offset: number; preview: string }>
   > = [];
   let skipped = 0;
-  for (const item of items) {
+  for await (const item of items) {
     for (const part of searchableText(item)) {
       let position = part.content.indexOf(query);
       while (position !== -1) {
@@ -317,7 +329,7 @@ export function registerContextTools(
     name: "context_history",
     label: "Context History",
     description:
-      'Read-only selected-branch journal. search also accepts scope "lineage" to cover the sessions of agents that spawned this agent or that it spawned; read accepts any ref search returns. windows/list/search are paginated (max 20); read returns exact serialized entry JSON, at most 2000 characters per call from a zero-based offset. Search is case-sensitive literal text, with JSON string escaping handled for you; returned offsets address serialized entry JSON. Optional window limits list/search. Optional type (entry type, e.g. message) and role (message role, e.g. user) filter list/search; by default every entry is included, and list previews describe each entry\'s text, tool call, or custom type. Search previews are decoded readable text; a direct search call does not match its own tool-call block. References carry their issuing session; a fork can resolve inherited entry IDs only when present on its selected branch. Other sessions are never written, and no abandoned sibling or external spill file is opened.',
+      'Read-only selected-branch journal. search also accepts scope "lineage", "repository", or "all" to cover other sessions\' latest branches, labelled by agent and session; read accepts any ref search returns. windows/list/search are paginated (max 20); read returns exact serialized entry JSON, at most 2000 characters per call from a zero-based offset. Search is case-sensitive literal text, with JSON string escaping handled for you; returned offsets address serialized entry JSON. Optional window limits list/search. Optional type (entry type, e.g. message) and role (message role, e.g. user) filter list/search; by default every entry is included, and list previews describe each entry\'s text, tool call, or custom type. Search previews are decoded readable text; a direct search call does not match its own tool-call block. References carry their issuing session; a fork can resolve inherited entry IDs only when present on its selected branch. Other sessions are never written, and no abandoned sibling or external spill file is opened.',
     promptGuidelines: [CONTEXT_PROMPT_GUIDELINES.context_history],
     parameters: HistoryParameters,
     annotations: {
@@ -366,7 +378,7 @@ export function registerContextTools(
       }
       if (params.action === "read") {
         if (!params.ref) throw new Error("An item reference is required");
-        const { entry, sessionId } = historyEntryAt(manager, params.ref, signal);
+        const { entry, sessionId } = await historyEntryAt(manager, params.ref, signal);
         const recorded = JSON.stringify(entry);
         const content = recorded.slice(offset, offset + (params.limit ?? 2000));
         return result({
@@ -417,11 +429,12 @@ export function registerContextTools(
       const running = branch.findLast(
         (entry) => entry.type === "message" && entry.message.role === "assistant",
       );
-      const sessions = scoped
-        ? lineageSessions(manager, signal)
-        : [{ sessionId: manager.getSessionId(), agent: undefined, current: true, branch }];
-      function* recordedEntries(): Generator<SearchItem> {
-        for (const session of sessions) {
+      const sessions =
+        params.scope === undefined || params.scope === "branch"
+          ? [{ sessionId: manager.getSessionId(), agent: undefined, current: true, branch }]
+          : sessionsInScope(manager, params.scope, signal);
+      async function* recordedEntries(): AsyncGenerator<SearchItem> {
+        for await (const session of sessions) {
           for (const entry of session.current ? entries : filter(session.branch)) {
             signal?.throwIfAborted();
             const content = JSON.stringify(entry);
@@ -444,7 +457,7 @@ export function registerContextTools(
           }
         }
       }
-      return result(search(recordedEntries(), params.query, offset, limit));
+      return result(await search(recordedEntries(), params.query, offset, limit));
     },
   });
   pi.registerTool(acceptNullForOptionalArguments(historyTool));
@@ -452,7 +465,7 @@ export function registerContextTools(
     name: "context_notes",
     label: "Context Notes",
     description:
-      'Session-branch Markdown Notes. Actions list/read/write/append/delete/search/copy. Names are labels, not paths. list/search with scope "lineage" also cover the current Notes of agents that spawned this agent or that it spawned, labelled by agent; those are read-only. read takes a name for your own Notes or a ref from list/search for any; copy saves the Note a ref names into your Notes, under name if given, as an unlinked snapshot. read returns the whole Note unless offset/limit select a character range; lists return at most 20 Notes. Append starts the new text on a new line unless the Note is empty or already ends with one. Search is case-sensitive literal text. Forks inherit Notes.',
+      'Session-branch Markdown Notes. Actions list/read/write/append/delete/search/copy. Names are labels, not paths. list/search with scope "lineage", "repository", or "all" also cover the current Notes of other sessions, labelled by agent and session; those are read-only. read takes a name for your own Notes or a ref from list/search for any; copy saves the Note a ref names into your Notes, under name if given, as an unlinked snapshot. read returns the whole Note unless offset/limit select a character range; lists return at most 20 Notes. Append starts the new text on a new line unless the Note is empty or already ends with one. Search is case-sensitive literal text. Forks inherit Notes.',
     promptGuidelines: [CONTEXT_PROMPT_GUIDELINES.context_notes],
     parameters: NotesParameters,
     annotations: {
@@ -474,14 +487,14 @@ export function registerContextTools(
       const notes = readNotes(ctx.sessionManager);
       const offset = params.offset ?? 0;
       const limit = params.limit ?? (params.action === "read" ? MAX_NOTE_CHARACTERS : 20);
-      const scoped: ScopedNote[] =
-        params.scope === undefined || params.scope === "branch"
-          ? notes
-          : lineageSessions(ctx.sessionManager, signal).flatMap((session) =>
-              (session.current ? notes : replayNotes(session.branch, session.sessionId)).map(
-                (note) => ({ ...note, agent: session.agent, session: session.sessionId }),
-              ),
-            );
+      const scoped: ScopedNote[] = [];
+      if (params.scope === undefined || params.scope === "branch") scoped.push(...notes);
+      else
+        for await (const session of sessionsInScope(ctx.sessionManager, params.scope, signal))
+          for (const note of session.current
+            ? notes
+            : replayNotes(session.branch, session.sessionId))
+            scoped.push({ ...note, agent: session.agent, session: session.sessionId });
       if (params.action === "list") {
         const page = scoped.slice(offset, offset + Math.min(limit, 20)).map((note) =>
           labelled(
@@ -503,7 +516,7 @@ export function registerContextTools(
       if (params.action === "search") {
         if (!params.query) throw new Error("A non-empty literal query is required");
         return result(
-          search(
+          await search(
             params.name ? scoped.filter((n) => n.name === params.name) : scoped,
             params.query,
             offset,
@@ -513,7 +526,7 @@ export function registerContextTools(
       }
       if (params.action === "read") {
         const note: ScopedNote | undefined = params.ref
-          ? noteAt(ctx.sessionManager, params.ref, signal)
+          ? await noteAt(ctx.sessionManager, params.ref, signal)
           : notes.find((item) => item.name === params.name);
         if (!params.ref && !params.name) throw new Error("A Note name or ref is required");
         if (!note) throw new Error("Note not found on the selected branch");
@@ -535,7 +548,7 @@ export function registerContextTools(
       }
       const source =
         params.action === "copy"
-          ? noteAt(ctx.sessionManager, requireRef(params.ref), signal)
+          ? await noteAt(ctx.sessionManager, requireRef(params.ref), signal)
           : undefined;
       const name = params.name ?? source?.name;
       if (!name) throw new Error("A Note name is required");
@@ -578,15 +591,26 @@ interface HeldEntry {
   sessionId: string;
 }
 
+/** The sessions a scope beyond this branch covers, this session first. */
+function sessionsInScope(
+  manager: ReadonlySessionManager,
+  scope: Exclude<SearchScope, "branch">,
+  signal?: AbortSignal,
+): Iterable<ScopedSession> | AsyncIterable<ScopedSession> {
+  return scope === "lineage"
+    ? lineageSessions(manager, signal)
+    : wideSessions(manager, scope, signal);
+}
+
 /**
  * The recorded entry a History ref names: on this selected branch (including entries a native
- * fork inherited), or otherwise in another lineage agent's session.
+ * fork inherited), or otherwise in another session Pi keeps.
  */
-function historyEntryAt(
+async function historyEntryAt(
   manager: ReadonlySessionManager,
   ref: string,
   signal?: AbortSignal,
-): HeldEntry {
+): Promise<HeldEntry> {
   const { sourceSession, entryId } = parseContextReference(manager, ref);
   let ownFailure: Error;
   try {
@@ -600,9 +624,7 @@ function historyEntryAt(
     ownFailure = cause instanceof Error ? cause : new Error(String(cause));
   }
   if (sourceSession === manager.getSessionId()) throw ownFailure;
-  const session = lineageSessions(manager, signal).find(
-    (item) => !item.current && item.sessionId === sourceSession,
-  );
+  const session = await sessionById(manager, sourceSession, signal);
   const entry = session?.branch.find((item) => item.id === entryId);
   if (!session || !entry) throw ownFailure;
   return { entry, sessionId: session.sessionId };
@@ -615,9 +637,13 @@ function requireRef(ref: string | undefined): string {
 
 /**
  * The current version of the Note a ref names: the caller's own (including Notes a native fork
- * inherited), or another lineage agent's, read live from its session.
+ * inherited), or another session's, read live from its file.
  */
-function noteAt(manager: ReadonlySessionManager, ref: string, signal?: AbortSignal): ScopedNote {
+async function noteAt(
+  manager: ReadonlySessionManager,
+  ref: string,
+  signal?: AbortSignal,
+): Promise<ScopedNote> {
   const { sourceSession, entryId } = parseContextReference(manager, ref);
   let ownEntryId: string | undefined;
   try {
@@ -632,10 +658,8 @@ function noteAt(manager: ReadonlySessionManager, ref: string, signal?: AbortSign
     if (!note) throw new Error("Note not found on the selected branch");
     return note;
   }
-  const session = lineageSessions(manager, signal).find(
-    (item) => !item.current && item.sessionId === sourceSession,
-  );
-  if (!session) throw new Error("Reference is not in this agent's lineage");
+  const session = await sessionById(manager, sourceSession, signal);
+  if (!session) throw new Error(`No session ${sourceSession} among the sessions Pi keeps`);
   const name = noteNameOf(session.branch.find((entry) => entry.id === entryId));
   const note = replayNotes(session.branch, session.sessionId).find((item) => item.name === name);
   if (!note) throw new Error(`Note not found in ${session.agent}'s session`);

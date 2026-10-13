@@ -32,6 +32,7 @@ import {
 } from "./context-window.js";
 
 import { hasLegacyContextSettings } from "./context-settings.js";
+import { recordRepository } from "./session-scope.js";
 import { acceptNullForOptionalArguments } from "@ian-pascoe/pi-utils/null-optional-arguments";
 import { expandMessageOnClick, noticeText } from "@ian-pascoe/pi-utils/ui";
 
@@ -50,6 +51,8 @@ export default function contextManagement(pi: ExtensionAPI): void {
   let pending: { handoff: string; signal: AbortSignal | undefined; terminate: boolean } | undefined;
   let manualRollover: { instructions: string; signal: AbortSignal } | undefined;
   let failure: Error | undefined;
+  /** Counts session starts and shutdowns, so late work can tell its session was replaced. */
+  let sessionGeneration = 0;
   let preparation: "ready" | "pending" | "unfinished" = "ready";
   let pauseAfterRollover = false;
   let pendingManualInstructions: string | undefined;
@@ -117,11 +120,17 @@ export default function contextManagement(pi: ExtensionAPI): void {
         );
       requireAdapter();
       ensureReferenceOrigin(pi, ctx.sessionManager);
+      const started = ++sessionGeneration;
+      // Git answers after startup; the record is skipped if the session was replaced meanwhile.
+      void recordRepository(pi, ctx.sessionManager, () => started === sessionGeneration).catch(
+        () => undefined, // A missing record only narrows the repository scope later.
+      );
     } catch (cause) {
       fail(cause instanceof Error ? cause : new Error(String(cause)), ctx);
     }
   });
   pi.on("session_shutdown", () => {
+    sessionGeneration++;
     adapter?.dispose();
     adapter = undefined;
     pending = undefined;

@@ -10,16 +10,36 @@ import {
   fauxToolCall,
   type JsonValue,
 } from "@earendil-works/pi-ai";
-import { chmodSync, mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  appendFileSync,
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  utimesSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type, type TSchema } from "typebox";
 import { Value } from "typebox/value";
-import { describe, expect, onTestFinished, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import { AGENT_LINEAGE_ENTRY_TYPE, agentLineageRecord } from "@ian-pascoe/pi-utils/agent-lineage";
 import { ensureReferenceOrigin } from "../src/context-store.js";
 import { registerContextTools } from "../src/context-tools.js";
+import { recordRepository, REPOSITORY_ENTRY_TYPE } from "../src/session-scope.js";
 import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
+
+// Scopes and refs read Pi's sessions folder; keep every test out of the real agent directory.
+beforeEach(() => {
+  const agentDir = mkdtempSync(join(tmpdir(), "pi-context-agent-"));
+  vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
+  onTestFinished(() => rmSync(agentDir, { recursive: true, force: true }));
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 interface ToolInput {
   action: string;
@@ -77,6 +97,7 @@ function harness(manager = SessionManager.inMemory(), onFailure?: (error: Error)
   // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: The tools consume only sessionManager from this framework context; no internal storage collaborator is mocked.
   const ctx = { sessionManager: manager } as unknown as ExtensionContext;
   return {
+    api,
     manager,
     tools,
     ensureOrigin() {
@@ -829,19 +850,248 @@ describe("Lineage Notes", () => {
     ).rejects.toThrow(/search/);
   });
 
-  test("refs outside the lineage do not resolve", async () => {
-    const tree = agentTree();
-    const outsider = tree.unrelated();
-    await outsider.run("context_notes", { action: "write", name: "secret", content: "x" });
-    const listed = Value.Parse(
-      Type.Object({ notes: Type.Array(Type.Object({ ref: Type.String() })) }),
-      await outsider.structured("context_notes", { action: "list" }),
+  test("a ref naming no session Pi keeps does not resolve", async () => {
+    const explorer = agentTree().child("explorer");
+    await expect(
+      explorer.run("context_notes", { action: "read", ref: "context:missing-session:entry" }),
+    ).rejects.toThrow(/No session missing-session/);
+    await expect(
+      explorer.run("context_history", { action: "read", ref: "context:missing-session:entry" }),
+    ).rejects.toThrow(/Reference/);
+  });
+});
+
+const NotesPage = Type.Object({
+  notes: Type.Array(
+    Type.Object({ name: Type.String(), ref: Type.String(), agent: Type.Optional(Type.String()) }),
+  ),
+  total: Type.Number(),
+});
+
+function git(cwd: string, ...args: string[]) {
+  // Hooks export GIT_DIR and friends; a test repository must not inherit them.
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")),
+  );
+  execFileSync("git", ["-C", cwd, ...args], { env, stdio: "ignore" });
+}
+
+/**
+ * Folders on disk and sessions in Pi's default per-folder layout under the stubbed agent
+ * directory: `repo` with a linked worktree `worktree`, an unrelated `other` repository, and
+ * `plain`, which is in no repository.
+ */
+function workspace() {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "pi-context-repos-")));
+  onTestFinished(() => rmSync(base, { recursive: true, force: true }));
+  const folder = (name: string) => {
+    const path = join(base, name);
+    mkdirSync(path);
+    return path;
+  };
+  const repo = folder("repo");
+  git(repo, "init", "-q", "-b", "main");
+  git(
+    repo,
+    "-c",
+    "user.name=t",
+    "-c",
+    "user.email=t@t",
+    "commit",
+    "-q",
+    "--allow-empty",
+    "-m",
+    "i",
+  );
+  const worktree = join(base, "worktree");
+  git(repo, "worktree", "add", "-q", worktree, "-b", "feature");
+  const other = folder("other");
+  git(other, "init", "-q");
+  const plain = folder("plain");
+  let clock = Date.parse("2026-01-01T00:00:00Z") / 1000;
+  /** A persisted session in `cwd`; each one is newer than the last. */
+  const session = async (cwd: string, note: string, record = true) => {
+    const manager = SessionManager.create(cwd);
+    manager.appendMessage(fauxAssistantMessage("ready"));
+    const f = harness(manager);
+    if (record) await recordRepository(f.api, manager, () => true);
+    await f.run("context_notes", { action: "write", name: note, content: `${note} body` });
+    const file = manager.getSessionFile() ?? "";
+    clock += 60;
+    utimesSync(file, clock, clock);
+    return { ...f, file };
+  };
+  return { repo, worktree, other, plain, session };
+}
+
+async function scopedNotes(f: ReturnType<typeof harness>, scope: string) {
+  const page = Value.Parse(
+    NotesPage,
+    await f.structured("context_notes", { action: "list", scope }),
+  );
+  return page.notes.map((note) => note.name);
+}
+
+describe("Repository and all scopes", () => {
+  test("a session records its repository once: the main worktree folder, or null outside git", async () => {
+    const { repo, worktree, plain } = workspace();
+    const records = async (cwd: string) => {
+      const manager = SessionManager.inMemory(cwd);
+      const f = harness(manager);
+      await recordRepository(f.api, manager, () => true);
+      await recordRepository(f.api, manager, () => true);
+      return manager
+        .getBranch()
+        .flatMap((entry) =>
+          entry.type === "custom" && entry.customType === REPOSITORY_ENTRY_TYPE ? [entry.data] : [],
+        );
+    };
+    expect(await records(worktree)).toEqual([{ version: 1, cwd: worktree, repository: repo }]);
+    expect(await records(plain)).toEqual([{ version: 1, cwd: plain, repository: null }]);
+    const replaced = SessionManager.inMemory(repo);
+    await recordRepository(harness(replaced).api, replaced, () => false);
+    expect(replaced.getBranch()).toEqual([]);
+  });
+
+  test("repository covers every worktree's sessions, newest first; all covers every session", async () => {
+    const { repo, worktree, other, plain, session } = workspace();
+    await session(repo, "main-old");
+    await session(worktree, "worktree");
+    await session(other, "other");
+    await session(plain, "plain");
+    // Sessions written before repositories were recorded are matched through their folder.
+    await session(worktree, "worktree-unrecorded", false);
+    const current = await session(repo, "current");
+
+    expect(await scopedNotes(current, "repository")).toEqual([
+      "current",
+      "worktree-unrecorded",
+      "worktree",
+      "main-old",
+    ]);
+    expect(await scopedNotes(current, "all")).toEqual([
+      "current",
+      "worktree-unrecorded",
+      "plain",
+      "other",
+      "worktree",
+      "main-old",
+    ]);
+    expect(await scopedNotes(await session(plain, "lonely"), "repository")).toEqual(["lonely"]);
+  });
+
+  test("a removed worktree's sessions stay in the repository only when they recorded it", async () => {
+    const { repo, worktree, session } = workspace();
+    await session(worktree, "recorded");
+    await session(worktree, "unrecorded", false);
+    git(repo, "worktree", "remove", "--force", worktree);
+    const current = await session(repo, "current");
+    expect(await scopedNotes(current, "repository")).toEqual(["current", "recorded"]);
+    expect(await scopedNotes(current, "all")).toEqual(["current", "unrecorded", "recorded"]);
+  });
+
+  test("other sessions are read as their latest branch, even with a half-written final line", async () => {
+    const { repo, session } = workspace();
+    const writer = await session(repo, "kept");
+    const before = writer.manager.getLeafId() ?? "";
+    await writer.run("context_notes", { action: "write", name: "abandoned", content: "x" });
+    writer.manager.branch(before);
+    await writer.run("context_notes", { action: "write", name: "latest", content: "y" });
+    appendFileSync(writer.file, '{"type":"custom","customType":"pi-context-no');
+    const current = await session(repo, "current");
+    expect(await scopedNotes(current, "repository")).toEqual(["current", "kept", "latest"]);
+  });
+
+  test("child sessions carry their agent label, and scoped refs read and copy", async () => {
+    const { repo, session } = workspace();
+    const root = await session(repo, "plan");
+    const child = SessionManager.create(repo);
+    child.appendCustomEntry(
+      AGENT_LINEAGE_ENTRY_TYPE,
+      agentLineageRecord({
+        sessionId: child.getSessionId(),
+        rootSessionId: root.manager.getSessionId(),
+        agentId: "explorer",
+        parentAgentId: null,
+      }),
     );
-    const ref = listed.notes[0]?.ref ?? "";
-    const explorer = tree.child("explorer");
-    await expect(explorer.run("context_notes", { action: "read", ref })).rejects.toThrow(
-      /not in this agent's lineage/,
+    child.appendMessage(fauxAssistantMessage("ready"));
+    await harness(child).run("context_notes", { action: "write", name: "found", content: "bug" });
+    const current = await session(repo, "current");
+    const page = Value.Parse(
+      NotesPage,
+      await current.structured("context_notes", { action: "list", scope: "repository" }),
     );
+    expect(page.notes.map(({ name, agent }) => [name, agent])).toEqual([
+      ["current", "root"],
+      ["found", "explorer"],
+      ["plan", "root"],
+    ]);
+    const found = page.notes.find((note) => note.name === "found")?.ref ?? "";
+    expect(await current.structured("context_notes", { action: "read", ref: found })).toMatchObject(
+      { content: "bug", agent: "explorer", session: child.getSessionId() },
+    );
+    await current.run("context_notes", { action: "copy", ref: found });
+    expect(await scopedNotes(current, "branch")).toEqual(["current", "found"]);
+  });
+
+  test("History search pages across sessions newest first, reads matches, and honors cancellation", async () => {
+    const { repo, worktree, other, session } = workspace();
+    const sessions = [
+      [repo, "first"],
+      [worktree, "second"],
+      [other, "elsewhere"],
+      [repo, "third"],
+    ] as const;
+    for (const [index, [cwd, label]] of sessions.entries()) {
+      const f = await session(cwd, label);
+      f.manager.appendMessage({ role: "user", content: `marker ${label}`, timestamp: 1 });
+      // Appending touched the file; restore the order the sessions were written in.
+      const modified = Date.parse("2027-01-01T00:00:00Z") / 1000 + index * 60;
+      utimesSync(f.file, modified, modified);
+    }
+    const current = await session(repo, "current");
+    const Matches = Type.Object({
+      matches: Type.Array(Type.Object({ ref: Type.String(), preview: Type.String() })),
+      next_offset: Type.Union([Type.Number(), Type.Null()]),
+    });
+    const searchPage = async (offset: number) =>
+      Value.Parse(
+        Matches,
+        await current.structured("context_history", {
+          action: "search",
+          scope: "repository",
+          query: "marker ",
+          limit: 2,
+          offset,
+        }),
+      );
+    const first = await searchPage(0);
+    expect(first.matches.map((match) => match.preview)).toEqual([
+      expect.stringContaining("marker third"),
+      expect.stringContaining("marker second"),
+    ]);
+    expect(first.next_offset).toBe(2);
+    const second = await searchPage(2);
+    expect(second.matches.map((match) => match.preview)).toEqual([
+      expect.stringContaining("marker first"),
+    ]);
+    expect(second.next_offset).toBeNull();
+    expect(
+      await current.structured("context_history", {
+        action: "read",
+        ref: second.matches[0]?.ref ?? "",
+      }),
+    ).toMatchObject({ content: expect.stringContaining("marker first") });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      current.run(
+        "context_history",
+        { action: "search", scope: "all", query: "marker" },
+        controller.signal,
+      ),
+    ).rejects.toThrow();
   });
 });
 
