@@ -11,15 +11,7 @@ import {
   type JsonValue,
 } from "@earendil-works/pi-ai";
 import { execFileSync } from "node:child_process";
-import {
-  appendFileSync,
-  chmodSync,
-  mkdirSync,
-  mkdtempSync,
-  realpathSync,
-  rmSync,
-  utimesSync,
-} from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type, type TSchema } from "typebox";
@@ -908,18 +900,18 @@ function workspace() {
   const other = folder("other");
   git(other, "init", "-q");
   const plain = folder("plain");
-  let clock = Date.parse("2026-01-01T00:00:00Z") / 1000;
-  /** A persisted session in `cwd`; each one is newer than the last. */
+  /**
+   * A persisted session in `cwd`; each one is newer than the last. Pi names a session file after
+   * the millisecond it was created, so sessions start at least one millisecond apart.
+   */
   const session = async (cwd: string, note: string, record = true) => {
+    await new Promise((resolve) => setTimeout(resolve, 2));
     const manager = SessionManager.create(cwd);
     manager.appendMessage(fauxAssistantMessage("ready"));
     const f = harness(manager);
     if (record) await recordRepository(f.api, manager, () => true);
     await f.run("context_notes", { action: "write", name: note, content: `${note} body` });
-    const file = manager.getSessionFile() ?? "";
-    clock += 60;
-    utimesSync(file, clock, clock);
-    return { ...f, file };
+    return { ...f, file: manager.getSessionFile() ?? "" };
   };
   return { repo, worktree, other, plain, session };
 }
@@ -948,6 +940,8 @@ describe("Repository and all scopes", () => {
     };
     expect(await records(worktree)).toEqual([{ version: 1, cwd: worktree, repository: repo }]);
     expect(await records(plain)).toEqual([{ version: 1, cwd: plain, repository: null }]);
+    // When git cannot answer, nothing is recorded, so a later start can try again.
+    expect(await records(join(plain, "missing"))).toEqual([]);
     const replaced = SessionManager.inMemory(repo);
     await recordRepository(harness(replaced).api, replaced, () => false);
     expect(replaced.getBranch()).toEqual([]);
@@ -1043,13 +1037,15 @@ describe("Repository and all scopes", () => {
       [other, "elsewhere"],
       [repo, "third"],
     ] as const;
-    for (const [index, [cwd, label]] of sessions.entries()) {
-      const f = await session(cwd, label);
-      f.manager.appendMessage({ role: "user", content: `marker ${label}`, timestamp: 1 });
-      // Appending touched the file; restore the order the sessions were written in.
-      const modified = Date.parse("2027-01-01T00:00:00Z") / 1000 + index * 60;
-      utimesSync(f.file, modified, modified);
-    }
+    const written = [];
+    for (const [cwd, label] of sessions) written.push(await session(cwd, label));
+    // Writing to older sessions afterwards does not reorder them between pages.
+    for (const [index, f] of written.entries())
+      f.manager.appendMessage({
+        role: "user",
+        content: `marker ${sessions[index]?.[1]}`,
+        timestamp: 1,
+      });
     const current = await session(repo, "current");
     const Matches = Type.Object({
       matches: Type.Array(Type.Object({ ref: Type.String(), preview: Type.String() })),

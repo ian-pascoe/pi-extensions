@@ -14,14 +14,7 @@ import {
   type ContextToolDetails,
 } from "./context-tool-rendering.js";
 import { describeEntry } from "./entry-preview.js";
-import {
-  lineageSessions,
-  SEARCH_SCOPES,
-  sessionById,
-  wideSessions,
-  type ScopedSession,
-  type SearchScope,
-} from "./session-scope.js";
+import { isWideScope, SEARCH_SCOPES, sessionById, sessionsInScope } from "./session-scope.js";
 import {
   appendNote,
   assertContextJournalReadableForModel,
@@ -200,7 +193,7 @@ interface OwnerLabel {
 type Labelled<T> = T & OwnerLabel;
 type ScopedNote = Labelled<ContextNote>;
 
-/** Copies the owner labels onto a result, leaving unscoped results byte-identical to before. */
+/** Adds the owner labels to a result in place, leaving unscoped results byte-identical to before. */
 function labelled<T extends object>(value: T, owner: OwnerLabel): Labelled<T> {
   const result: Labelled<T> = value;
   if (owner.agent !== undefined) result.agent = owner.agent;
@@ -358,7 +351,8 @@ export function registerContextTools(
       });
       const offset = params.offset ?? 0;
       const limit = Math.min(params.limit ?? 20, 20);
-      const scoped = params.scope !== undefined && params.scope !== "branch";
+      const { scope } = params;
+      const scoped = isWideScope(scope);
       if (scoped && (params.action === "windows" || params.action === "list"))
         throw new Error(
           "windows and list browse this session only; use search with scope to find entries in other sessions, then read their refs",
@@ -429,10 +423,9 @@ export function registerContextTools(
       const running = branch.findLast(
         (entry) => entry.type === "message" && entry.message.role === "assistant",
       );
-      const sessions =
-        params.scope === undefined || params.scope === "branch"
-          ? [{ sessionId: manager.getSessionId(), agent: undefined, current: true, branch }]
-          : sessionsInScope(manager, params.scope, signal);
+      const sessions = isWideScope(scope)
+        ? sessionsInScope(manager, scope, signal)
+        : [{ sessionId: manager.getSessionId(), agent: undefined, current: true, branch }];
       async function* recordedEntries(): AsyncGenerator<SearchItem> {
         for await (const session of sessions) {
           for (const entry of session.current ? entries : filter(session.branch)) {
@@ -487,15 +480,18 @@ export function registerContextTools(
       const notes = readNotes(ctx.sessionManager);
       const offset = params.offset ?? 0;
       const limit = params.limit ?? (params.action === "read" ? MAX_NOTE_CHARACTERS : 20);
-      const scoped: ScopedNote[] = [];
-      if (params.scope === undefined || params.scope === "branch") scoped.push(...notes);
-      else
-        for await (const session of sessionsInScope(ctx.sessionManager, params.scope, signal))
+      const { scope } = params;
+      /** The Notes in scope, session by session, so a search can stop once its page is full. */
+      async function* notesInScope(): AsyncGenerator<ScopedNote> {
+        if (!isWideScope(scope)) return yield* notes;
+        for await (const session of sessionsInScope(ctx.sessionManager, scope, signal))
           for (const note of session.current
             ? notes
             : replayNotes(session.branch, session.sessionId))
-            scoped.push({ ...note, agent: session.agent, session: session.sessionId });
+            yield { ...note, agent: session.agent, session: session.sessionId };
+      }
       if (params.action === "list") {
+        const scoped = await Array.fromAsync(notesInScope());
         const page = scoped.slice(offset, offset + Math.min(limit, 20)).map((note) =>
           labelled(
             {
@@ -515,20 +511,17 @@ export function registerContextTools(
       }
       if (params.action === "search") {
         if (!params.query) throw new Error("A non-empty literal query is required");
-        return result(
-          await search(
-            params.name ? scoped.filter((n) => n.name === params.name) : scoped,
-            params.query,
-            offset,
-            Math.min(limit, 20),
-          ),
-        );
+        const { name } = params;
+        async function* named() {
+          for await (const note of notesInScope()) if (!name || note.name === name) yield note;
+        }
+        return result(await search(named(), params.query, offset, Math.min(limit, 20)));
       }
       if (params.action === "read") {
+        if (!params.ref && !params.name) throw new Error("A Note name or ref is required");
         const note: ScopedNote | undefined = params.ref
           ? await noteAt(ctx.sessionManager, params.ref, signal)
           : notes.find((item) => item.name === params.name);
-        if (!params.ref && !params.name) throw new Error("A Note name or ref is required");
         if (!note) throw new Error("Note not found on the selected branch");
         const content = note.content.slice(offset, offset + limit);
         return result(
@@ -589,17 +582,6 @@ export function registerContextTools(
 interface HeldEntry {
   entry: SessionEntry;
   sessionId: string;
-}
-
-/** The sessions a scope beyond this branch covers, this session first. */
-function sessionsInScope(
-  manager: ReadonlySessionManager,
-  scope: Exclude<SearchScope, "branch">,
-  signal?: AbortSignal,
-): Iterable<ScopedSession> | AsyncIterable<ScopedSession> {
-  return scope === "lineage"
-    ? lineageSessions(manager, signal)
-    : wideSessions(manager, scope, signal);
 }
 
 /**
