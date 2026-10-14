@@ -1,5 +1,17 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.19.0
+
+### Minor Changes
+
+- 3ef03e0: Add Agent Lineage Records. `@ian-pascoe/pi-utils/agent-lineage` defines a versioned session entry naming a Child Agent's session, its Root Agent's session, its agent ID, and its parent agent, plus `agentLineageRecord` and `readAgentLineage`. Minimal Subagents writes one into every new child session and into each fork clone when its destination adopts it, so other extensions can find a Child Agent's ancestors and descendants without depending on Minimal Subagents.
+
+### Patch Changes
+
+- be5129d: Support the mouse in the subagents status panel: the wheel moves the tree selection like the arrow keys and scrolls the Child Session Transcript line by line, and pressing a tree row selects it while clicking it opens its transcript.
+- Updated dependencies [3ef03e0]
+  - @ian-pascoe/pi-utils@0.7.0
+
 ## 0.18.0
 
 ### Minor Changes

@@ -1,5 +1,18 @@
 # @ian-pascoe/pi-context-management
 
+## 0.6.0
+
+### Minor Changes
+
+- 966579f: Read the Notes and History of the agents in this agent's lineage. `context_notes` `list`/`search` and `context_history` `search` accept `scope: "lineage"`, covering the sessions of the agents that spawned this agent and that it spawned, labelled by agent. Refs from those results work with `read`, and the new `context_notes` `copy` action saves another agent's Note into your own Notes as an unlinked snapshot. Other sessions are read live from their files and never written. Lineage comes from the Agent Lineage Record in `@ian-pascoe/pi-utils`, which `@ian-pascoe/pi-minimal-subagents` writes; without it the scope covers only the current session.
+- feaea9f: Return the whole Note from `context_notes` `read` unless `offset`/`limit` select a range, instead of stopping at 2,000 characters. History reads still return at most 2,000 characters per call. Tool descriptions, errors, and transcript rows now say "characters" instead of "UTF-16 units".
+
+### Patch Changes
+
+- 4280a64: Read Lineage sessions without blocking Pi, and skip a session file that is deleted or unreadable mid-scan instead of failing the `context_notes` or `context_history` call. A Notes `read` with neither `name` nor `ref` now reports that one is required before looking anything up.
+- Updated dependencies [3ef03e0]
+  - @ian-pascoe/pi-utils@0.7.0
+
 ## 0.5.3
 
 ### Patch Changes

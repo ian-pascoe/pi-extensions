@@ -1,5 +1,12 @@
 # @ian-pascoe/pi-advisor
 
+## 0.8.1
+
+### Patch Changes
+
+- Updated dependencies [3ef03e0]
+  - @ian-pascoe/pi-utils@0.7.0
+
 ## 0.8.0
 
 ### Minor Changes
