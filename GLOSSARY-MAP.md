@@ -22,8 +22,9 @@ glossary relevant to the work:
 | `@ian-pascoe/pi-guardian`           | [`packages/pi-guardian/GLOSSARY.md`](packages/pi-guardian/GLOSSARY.md)                     | Model-reviewed tool-call gating         |
 | `@ian-pascoe/pi-utils`              | [`packages/pi-utils/GLOSSARY.md`](packages/pi-utils/GLOSSARY.md)                           | Shared extension UI conventions         |
 
-`pi-context-management` implements session-local Notes, selected-branch History retrieval,
-and native Context Checkpoints for capability-compatible Pi runtimes.
+`pi-context-management` implements session-owned Notes, selected-branch History retrieval with
+a read-only Lineage scope over related agents' sessions, and native Context Checkpoints for
+capability-compatible Pi runtimes.
 
 `pi-minimal-subagents` writes an Agent Lineage Record, defined by `pi-utils`, into each child
 session; `pi-context-management` reads it to offer Lineage Notes. Neither package requires the

@@ -10,7 +10,7 @@ import {
   fauxToolCall,
   type JsonValue,
 } from "@earendil-works/pi-ai";
-import { chmodSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type, type TSchema } from "typebox";
@@ -723,6 +723,19 @@ describe("Lineage Notes", () => {
       ],
       total: 2,
     });
+  });
+
+  test("a session file that disappears after it is listed is skipped", async () => {
+    const tree = agentTree();
+    await tree.root.run("context_notes", { action: "write", name: "plan", content: "Ship it" });
+    const explorer = tree.child("explorer");
+    // Listed by the folder scan, but opening it fails as if it was deleted in between.
+    const dir = explorer.manager.getSessionDir() ?? "";
+    symlinkSync(join(dir, "deleted.jsonl"), join(dir, "zzzz-gone.jsonl"));
+
+    expect(
+      await explorer.structured("context_notes", { action: "list", scope: "lineage" }),
+    ).toMatchObject({ notes: [{ name: "plan", agent: "root" }], total: 1 });
   });
 
   test("lineage covers ancestors and descendants at every depth, never siblings or unrelated sessions", async () => {
