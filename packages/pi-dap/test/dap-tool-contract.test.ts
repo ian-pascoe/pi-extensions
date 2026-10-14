@@ -277,6 +277,14 @@ describe("DAP tool family", () => {
     );
   });
 
+  test("serializes parameters without TypeBox modifier markers", () => {
+    // Gemini rejects unknown schema keywords such as `~optional`, which TypeBox
+    // leaves enumerable when a modifier wraps a plain object literal.
+    for (const { name, parameters } of tools) {
+      expect(JSON.stringify(parameters), name).not.toMatch(/"~/u);
+    }
+  });
+
   test("keeps variables selector exclusivity inside the tool", () => {
     const variables = tool("dap_variables");
     // The provider-facing object admits both selectors; the strict ingress parser does not.
