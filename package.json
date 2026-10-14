@@ -35,7 +35,7 @@
     "@earendil-works/pi-coding-agent": "1.1.0",
     "@earendil-works/pi-tui": "^1.1.0",
     "@oxlint/plugins": "^1.87.0",
-    "@types/node": "^26.6.4",
+    "@types/node": "^26.6.5",
     "fast-check": "^4.10.2",
     "husky": "^9.1.7",
     "lint-staged": "^17.6.0",
