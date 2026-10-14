@@ -366,7 +366,7 @@ export function registerContextTools(
       }
       if (params.action === "read") {
         if (!params.ref) throw new Error("An item reference is required");
-        const { entry, sessionId } = historyEntryAt(manager, params.ref, signal);
+        const { entry, sessionId } = await historyEntryAt(manager, params.ref, signal);
         const recorded = JSON.stringify(entry);
         const content = recorded.slice(offset, offset + (params.limit ?? 2000));
         return result({
@@ -418,7 +418,7 @@ export function registerContextTools(
         (entry) => entry.type === "message" && entry.message.role === "assistant",
       );
       const sessions = scoped
-        ? lineageSessions(manager, signal)
+        ? await lineageSessions(manager, signal)
         : [{ sessionId: manager.getSessionId(), agent: undefined, current: true, branch }];
       function* recordedEntries(): Generator<SearchItem> {
         for (const session of sessions) {
@@ -477,7 +477,7 @@ export function registerContextTools(
       const scoped: ScopedNote[] =
         params.scope === undefined || params.scope === "branch"
           ? notes
-          : lineageSessions(ctx.sessionManager, signal).flatMap((session) =>
+          : (await lineageSessions(ctx.sessionManager, signal)).flatMap((session) =>
               (session.current ? notes : replayNotes(session.branch, session.sessionId)).map(
                 (note) => ({ ...note, agent: session.agent, session: session.sessionId }),
               ),
@@ -512,10 +512,10 @@ export function registerContextTools(
         );
       }
       if (params.action === "read") {
-        const note: ScopedNote | undefined = params.ref
-          ? noteAt(ctx.sessionManager, params.ref, signal)
-          : notes.find((item) => item.name === params.name);
         if (!params.ref && !params.name) throw new Error("A Note name or ref is required");
+        const note: ScopedNote | undefined = params.ref
+          ? await noteAt(ctx.sessionManager, params.ref, signal)
+          : notes.find((item) => item.name === params.name);
         if (!note) throw new Error("Note not found on the selected branch");
         const content = note.content.slice(offset, offset + limit);
         return result(
@@ -535,7 +535,7 @@ export function registerContextTools(
       }
       const source =
         params.action === "copy"
-          ? noteAt(ctx.sessionManager, requireRef(params.ref), signal)
+          ? await noteAt(ctx.sessionManager, requireRef(params.ref), signal)
           : undefined;
       const name = params.name ?? source?.name;
       if (!name) throw new Error("A Note name is required");
@@ -582,11 +582,11 @@ interface HeldEntry {
  * The recorded entry a History ref names: on this selected branch (including entries a native
  * fork inherited), or otherwise in another lineage agent's session.
  */
-function historyEntryAt(
+async function historyEntryAt(
   manager: ReadonlySessionManager,
   ref: string,
   signal?: AbortSignal,
-): HeldEntry {
+): Promise<HeldEntry> {
   const { sourceSession, entryId } = parseContextReference(manager, ref);
   let ownFailure: Error;
   try {
@@ -600,7 +600,7 @@ function historyEntryAt(
     ownFailure = cause instanceof Error ? cause : new Error(String(cause));
   }
   if (sourceSession === manager.getSessionId()) throw ownFailure;
-  const session = lineageSessions(manager, signal).find(
+  const session = (await lineageSessions(manager, signal)).find(
     (item) => !item.current && item.sessionId === sourceSession,
   );
   const entry = session?.branch.find((item) => item.id === entryId);
@@ -617,7 +617,11 @@ function requireRef(ref: string | undefined): string {
  * The current version of the Note a ref names: the caller's own (including Notes a native fork
  * inherited), or another lineage agent's, read live from its session.
  */
-function noteAt(manager: ReadonlySessionManager, ref: string, signal?: AbortSignal): ScopedNote {
+async function noteAt(
+  manager: ReadonlySessionManager,
+  ref: string,
+  signal?: AbortSignal,
+): Promise<ScopedNote> {
   const { sourceSession, entryId } = parseContextReference(manager, ref);
   let ownEntryId: string | undefined;
   try {
@@ -632,7 +636,7 @@ function noteAt(manager: ReadonlySessionManager, ref: string, signal?: AbortSign
     if (!note) throw new Error("Note not found on the selected branch");
     return note;
   }
-  const session = lineageSessions(manager, signal).find(
+  const session = (await lineageSessions(manager, signal)).find(
     (item) => !item.current && item.sessionId === sourceSession,
   );
   if (!session) throw new Error("Reference is not in this agent's lineage");

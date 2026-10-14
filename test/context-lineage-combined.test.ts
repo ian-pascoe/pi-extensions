@@ -275,12 +275,24 @@ function firstUserText(context: Context): string {
   return message?.role === "user" ? textOf(message.content) : "";
 }
 
-/** The model-visible declarations of the named tools, in registration order, as one JSON string. */
+/**
+ * What the named tools put before the model, in registration order, as one JSON string: each
+ * declaration, and the prompt snippet and guidelines it adds to the system prompt.
+ */
 function declarations(session: AgentSession, names: readonly string[]): string {
   const tools = session.getAllTools().filter((tool) => names.includes(tool.name));
   expect(tools.map((tool) => tool.name).toSorted()).toEqual(names.toSorted());
   return JSON.stringify(
-    tools.map(({ name, description, parameters }) => ({ name, description, parameters })),
+    tools.map(({ name, description, parameters }) => {
+      const definition = session.getToolDefinition(name);
+      return {
+        name,
+        description,
+        parameters,
+        promptSnippet: definition?.promptSnippet ?? null,
+        promptGuidelines: definition?.promptGuidelines ?? null,
+      };
+    }),
   );
 }
 

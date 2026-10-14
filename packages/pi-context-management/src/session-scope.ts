@@ -1,4 +1,4 @@
-import { closeSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
+import { open, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   parseSessionEntries,
@@ -32,13 +32,19 @@ export interface ScopedSession {
 /** Lineage records sit near the start of a child session, before its conversation. */
 const HEAD_BYTES = 16 * 1024;
 
-function readHead(path: string): string {
-  const fd = openSync(path, "r");
+/** The first bytes of a session file, or "" if it is gone or unreadable. */
+async function readHead(path: string): Promise<string> {
   try {
-    const buffer = Buffer.alloc(HEAD_BYTES);
-    return buffer.toString("utf8", 0, readSync(fd, buffer, 0, HEAD_BYTES, 0));
-  } finally {
-    closeSync(fd);
+    const handle = await open(path, "r");
+    try {
+      const buffer = Buffer.alloc(HEAD_BYTES);
+      const { bytesRead } = await handle.read(buffer, 0, HEAD_BYTES, 0);
+      return buffer.toString("utf8", 0, bytesRead);
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return ""; // Deleted since it was listed, or unreadable.
   }
 }
 
@@ -47,10 +53,19 @@ interface SessionFile {
   readonly branch: readonly SessionEntry[];
 }
 
-/** Parses a session file without SessionManager.open, which can migrate and rewrite it. */
-function readSessionFile(path: string): SessionFile | undefined {
+/**
+ * Parses a session file without SessionManager.open, which can migrate and rewrite it; undefined
+ * if it is gone, unreadable, or not a session.
+ */
+async function readSessionFile(path: string): Promise<SessionFile | undefined> {
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch {
+    return undefined; // Deleted since it was listed, or unreadable.
+  }
   // A live session may end in a half-written line; Pi's parser skips malformed lines.
-  const entries = parseSessionEntries(readFileSync(path, "utf8"));
+  const entries = parseSessionEntries(text);
   const header = entries[0];
   if (header?.type !== "session") return undefined;
   const manager = SessionManager.inMemory(header.cwd, undefined, entries);
@@ -67,9 +82,10 @@ function headerId(head: string): string | undefined {
   return Value.Check(SessionHeader, header) ? header.id : undefined;
 }
 
-function sessionFiles(dir: string): string[] {
+/** The session files in `dir`, newest first: Pi names each after its creation time. */
+async function sessionFiles(dir: string): Promise<string[]> {
   try {
-    return readdirSync(dir)
+    return (await readdir(dir))
       .filter((file) => file.endsWith(".jsonl"))
       .sort()
       .reverse()
@@ -83,10 +99,10 @@ function sessionFiles(dir: string): string[] {
  * The calling session, then its ancestors nearest first, then its descendants newest first.
  * Every agent in one tree keeps its session in the root agent's session folder.
  */
-export function lineageSessions(
+export async function lineageSessions(
   manager: ReadonlySessionManager,
   signal?: AbortSignal,
-): ScopedSession[] {
+): Promise<ScopedSession[]> {
   const ownId = manager.getSessionId();
   const ownBranch = manager.getBranch();
   const own = readAgentLineage(ownId, ownBranch);
@@ -103,15 +119,15 @@ export function lineageSessions(
   const ownFile = manager.getSessionFile();
   let root: SessionFile | undefined;
   const agents = new Map<string, { lineage: AgentLineage; session: SessionFile }>();
-  for (const path of sessionFiles(dir)) {
+  for (const path of await sessionFiles(dir)) {
     signal?.throwIfAborted();
     if (path === ownFile) continue;
-    const head = readHead(path);
+    const head = await readHead(path);
     const id = headerId(head);
     if (id === undefined || id === ownId) continue;
-    if (id === rootSessionId) root = readSessionFile(path);
+    if (id === rootSessionId) root = await readSessionFile(path);
     else if (head.includes(`"customType":"${AGENT_LINEAGE_ENTRY_TYPE}"`)) {
-      const session = readSessionFile(path);
+      const session = await readSessionFile(path);
       const lineage = session && readAgentLineage(session.sessionId, session.branch);
       if (session && lineage?.rootSessionId === rootSessionId && !agents.has(lineage.agentId))
         agents.set(lineage.agentId, { lineage, session });

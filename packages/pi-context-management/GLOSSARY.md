@@ -17,7 +17,7 @@ The ancestors and descendants of an agent within one agent tree, excluding its s
 _Avoid_: Agent family, session tree
 
 **Search Scope**:
-The set of sessions a Notes or History search covers: Branch, Lineage, Repository (sessions of the same git repository, including its worktrees), or All.
+The set of sessions a Notes or History search covers: Branch (the default) or Lineage.
 _Avoid_: Search mode, visibility
 
 **Note Index**:
