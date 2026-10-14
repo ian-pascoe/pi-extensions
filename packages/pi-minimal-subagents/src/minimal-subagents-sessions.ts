@@ -21,6 +21,12 @@ import {
   type SessionEntry,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import {
+  AGENT_LINEAGE_ENTRY_TYPE,
+  agentLineageRecord,
+  readAgentLineage,
+  type AgentLineage,
+} from "@ian-pascoe/pi-utils/agent-lineage";
 import type { Static, TSchema } from "typebox";
 import { Value } from "typebox/value";
 import {
@@ -284,6 +290,20 @@ function appendImportedMessage(sessionManager: SessionManager, message: AgentMes
   sessionManager.appendMessage(message as Parameters<SessionManager["appendMessage"]>[0]);
 }
 
+/** The shared Agent Lineage of a child session, readable by packages that do not import this one. */
+function agentLineage(
+  agent: PersistedAgent,
+  rootSessionId: string,
+  sessionId: string,
+): AgentLineage {
+  return {
+    sessionId,
+    rootSessionId,
+    agentId: agent.agent_id,
+    parentAgentId: agent.parent_id === "root" ? null : agent.parent_id,
+  };
+}
+
 /** Create and force-flush a writable child JSONL identity before its first model response. */
 export function createPersistentChildIdentity(
   options: PersistentIdentityOptions,
@@ -296,6 +316,12 @@ export function createPersistentChildIdentity(
     direct_parent_id: options.agent.parent_id,
     created_at: options.agent.created_at,
   });
+  sessionManager.appendCustomEntry(
+    AGENT_LINEAGE_ENTRY_TYPE,
+    agentLineageRecord(
+      agentLineage(options.agent, options.rootSessionId, sessionManager.getSessionId()),
+    ),
+  );
   sessionManager.appendSessionInfo(`[subagent] ${options.agent.agent_id}`);
   sessionManager.appendModelChange(
     options.agent.launch_contract.model.slice(0, options.agent.launch_contract.model.indexOf("/")),
@@ -1043,6 +1069,15 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
         direct_parent_id: agent.parent_id,
       });
     }
+    // A clone inherits its source's record, which names the source session; record this one's own.
+    const lineage = agentLineage(agent, this.options.rootSessionId, sessionManager.getSessionId());
+    const recorded = readAgentLineage(lineage.sessionId, sessionManager.getBranch());
+    if (
+      recorded?.rootSessionId !== lineage.rootSessionId ||
+      recorded.agentId !== lineage.agentId ||
+      recorded.parentAgentId !== lineage.parentAgentId
+    )
+      sessionManager.appendCustomEntry(AGENT_LINEAGE_ENTRY_TYPE, agentLineageRecord(lineage));
     return {
       sessionFile,
       sessionId: sessionManager.getSessionId(),

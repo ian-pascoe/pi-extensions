@@ -36,6 +36,7 @@
     "./null-optional-arguments": "./src/null-optional-arguments.ts",
     "./tool-testing": "./src/tool-testing.ts",
     "./token-calibration": "./src/token-calibration.ts",
+    "./agent-lineage": "./src/agent-lineage.ts",
     "./settings-menu": "./src/settings-menu.ts",
     "./settings-command": "./src/settings-command.ts",
     "./ui": "./src/ui.ts",
@@ -76,6 +77,10 @@
       "./token-calibration": {
         "types": "./dist/token-calibration.d.ts",
         "import": "./dist/token-calibration.js"
+      },
+      "./agent-lineage": {
+        "types": "./dist/agent-lineage.d.ts",
+        "import": "./dist/agent-lineage.js"
       },
       "./settings-menu": {
         "types": "./dist/settings-menu.d.ts",
