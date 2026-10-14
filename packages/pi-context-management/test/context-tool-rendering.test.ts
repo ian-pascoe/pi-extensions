@@ -201,6 +201,34 @@ test("Notes lists copy ls: 20 names, an Expand Hint, and a continuation line", a
   expect(empty).toEqual(["<muted>No Notes</muted>", "", TOOK]);
 });
 
+test("Lineage Notes name their owning agent, and the call row names a non-default scope", async () => {
+  const { tool } = await registeredTool("context_notes");
+  const args = { action: "list", scope: "lineage" };
+  const list = withDetails({
+    notes: [
+      {
+        name: "plan",
+        ref: "context:r:1",
+        updatedAt: "2026-09-07T10:00:00Z",
+        characters: 2,
+        agent: "root",
+      },
+    ],
+    total: 1,
+    nextOffset: null,
+  });
+  expect(result(tool, list, renderContext(args))[0]).toBe("<toolOutput>root · plan</toolOutput>");
+  expect(textOf(result(tool, list, renderContext(args, { expanded: true })))).toContain(
+    "<muted>Agent: root</muted>",
+  );
+  expect(call(tool, renderContext(args))[0]).toBe(
+    "<toolTitle><b>context_notes</b></toolTitle> <accent>list</accent> <muted>lineage</muted>",
+  );
+  expect(call(tool, renderContext({ action: "list", scope: "branch" }))[0]).toBe(
+    "<toolTitle><b>context_notes</b></toolTitle> <accent>list</accent>",
+  );
+});
+
 test("History pages show 10 rows collapsed and readable detail when expanded", async () => {
   const { tool } = await registeredTool("context_history");
   const ref = (index: number) => `context:source-session:entry-${index}`;
