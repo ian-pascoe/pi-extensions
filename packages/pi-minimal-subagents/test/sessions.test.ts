@@ -1070,6 +1070,8 @@ describe("minimal subagent sessions", () => {
       projectContext: "inherit",
       extensionEntrypoint: coordinatorEntrypoint,
       systemPromptBlock: "child prompt",
+      // An MCP grant loads the `mcp` built-in unless settings disable it.
+      grantedTools: ["mcp__docs__search"],
       settingsManager: SettingsManager.create(directory, directory, { projectTrusted: true }),
     });
 
@@ -1093,6 +1095,7 @@ describe("minimal subagent sessions", () => {
       projectContext: "inherit",
       extensionEntrypoint: join(directory, "index.ts"),
       systemPromptBlock: "child prompt",
+      grantedTools: [],
       settingsManager: SettingsManager.create(directory, directory, { projectTrusted: true }),
     });
     await loader.reload();
@@ -1116,6 +1119,7 @@ describe("minimal subagent sessions", () => {
         projectContext: "inherit",
         extensionEntrypoint: join(directory, "index.ts"),
         systemPromptBlock: "child prompt",
+        grantedTools: [],
         settingsManager: SettingsManager.create(directory, directory, { projectTrusted: true }),
       });
       await loader.reload();
@@ -1927,6 +1931,7 @@ export default function projectAdapter(pi) {
       projectContext: "omit",
       extensionEntrypoint: join(directory, "index.ts"),
       systemPromptBlock: "child prompt",
+      grantedTools: [],
       settingsManager: SettingsManager.create(projectDir, agentDir, { projectTrusted: true }),
     });
 

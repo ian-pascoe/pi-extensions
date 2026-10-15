@@ -252,9 +252,17 @@ still apply; the saved grant is not silently rewritten. Toolsets configure names
 not tool operations: granting a multifunction tool grants that tool's available
 operations, regardless of preset name.
 
-Child Agents load Pi's built-in `llama.cpp`, `codemode`, `tool-search`, and `mcp`
-extensions unless settings disable them (`-builtin:<name>`); each child connects
-its own MCP servers. Pi does not export the llama.cpp factory, so children load it
+Child Agents load Pi's built-in `llama.cpp`, `codemode`, and `tool-search`
+extensions unless settings disable them (`-builtin:<name>`). They load the `mcp`
+extension, under the same setting, only when the Launch Contract grants an MCP tool
+(`mcp__<server>__<tool>`) or an MCP resource tool (`list_mcp_resources`,
+`list_mcp_resource_templates`, `read_mcp_resource`). Each such child connects
+its own copy of the `mcp.json` servers it can reach: the servers of its granted
+MCP tools, or every server when it is granted a resource tool. Servers that other
+extensions register with `pi.registerMcpServer()` still all connect. Pi does not
+export its `mcp.json` loader, so children load it from Pi's installed
+`dist/extensions/mcp/config.js`; when that file is absent, a child with an MCP
+grant connects every server. Pi does not export the llama.cpp factory, so children load it
 from Pi's installed `dist/extensions/llama/index.js`; when that file is absent, a
 llama.cpp launch model is reported as a missing dependency. Child `codemode`
 scripts get no `models` API, so they cannot call models outside the Launch
@@ -262,7 +270,8 @@ Contract. A tool's exposure still decides whether it is declared or reachable on
 through `codemode` or `tool_search`. Granted `codemode`- or `deferred`-exposed
 tools are callable but not declared, so a child that needs them also needs
 `codemode` or `tool_search` in its grant. Ungranted tools are unreachable in the
-child. MCP tools are checked at launch only by name, because children register
+child, including MCP tools: `codemode` and `tool_search` find and call only the
+MCP tools the Launch Contract names. MCP tools are checked at launch only by name, because children register
 them after connecting; a tool whose server disappeared fails when called. Closing
 a child runtime shuts its extensions down, closing its MCP connections. A reopened
 child re-declares the tools it last declared itself, including tools loaded
