@@ -6,6 +6,12 @@ This is the release procedure. Migration implementation publishes nothing.
 
 - Packages version independently through Changesets; no fixed or linked group
   exists.
+- Every `@ian-pascoe/pi-utils` release patch-bumps each consumer and raises its
+  range to the new version, because the package-tarball check requires every
+  consumer's packed range to name the workspace pi-utils version. Changesets
+  otherwise leaves an in-range consumer unreleased. The Changesets config sets
+  `___experimentalUnsafeOptions_WILL_CHANGE_IN_PATCH.updateInternalDependents`
+  to `always` for this; recheck the option name when upgrading Changesets.
 - `pi-adaptive-thinking`, `pi-byterover`, `@ian-pascoe/pi-codemode`,
   `@ian-pascoe/pi-mcp`, and `@ian-pascoe/pi-git-status-widget` are retired. They remain on npm only as deprecated
   historical artifacts and must not return to release automation.
