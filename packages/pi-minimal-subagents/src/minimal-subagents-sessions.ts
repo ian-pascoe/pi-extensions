@@ -44,6 +44,7 @@ import {
   CHILD_CODEMODE_MODELS,
   childProviderAvailable,
   createChildResourceLoader,
+  isMcpToolName,
 } from "./minimal-subagents-child-resources.js";
 import {
   CHILD_IDENTITY_ENTRY_TYPE,
@@ -108,24 +109,12 @@ export interface RuntimeToolAdapter {
   readonly replacements: readonly RuntimeToolReplacement[];
 }
 
-const MCP_RESOURCE_TOOL_NAMES = new Set([
-  "list_mcp_resources",
-  "list_mcp_resource_templates",
-  "read_mcp_resource",
-]);
-
-// ponytail: Pi's built-in MCP registers tools only after connecting, so launch checks accept its
-// tool names unverified; a vanished server's tools fail when called instead of at launch.
-function isMcpToolName(toolName: string): boolean {
-  return toolName.startsWith("mcp__") || MCP_RESOURCE_TOOL_NAMES.has(toolName);
-}
-
 /**
  * Pi filters MCP tools by a `tools` allowlist only when it names one (`mcp__` prefix); otherwise
  * every MCP tool stays callable from codemode and tool_search. This entry makes the child's
  * allowlist always filter them, and matches no tool: MCP tools are `mcp__<server>__<tool>`.
  */
-const MCP_ALLOWLIST_FILTER = "mcp__";
+const MCP_ALLOWLIST_SENTINEL = "mcp__";
 
 /** Resolve the exact active tools permitted by one Child Agent Launch Contract. */
 export function resolveChildActiveToolNames(
@@ -1217,6 +1206,8 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       await resourceLoader.reload();
       for (const extension of resourceLoader.getExtensions().extensions) {
         for (const toolName of extension.tools.keys()) names.add(toolName);
+        // ponytail: Pi's built-in MCP registers tools only after connecting, so launch checks
+        // accept its tool names unverified; a vanished server's tools fail when called instead.
         if (extension.path === "builtin:mcp") {
           for (const toolName of agent.launch_contract.ordinary_tools) {
             if (isMcpToolName(toolName)) names.add(toolName);
@@ -1275,7 +1266,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       agentDir: this.options.agentDir,
       model,
       thinkingLevel: agent.launch_contract.thinking_level,
-      tools: [...allowedToolNames, ...adapterToolNames, MCP_ALLOWLIST_FILTER],
+      tools: [...allowedToolNames, ...adapterToolNames, MCP_ALLOWLIST_SENTINEL],
       customTools: coordinatorTools,
       resourceLoader,
       sessionManager,

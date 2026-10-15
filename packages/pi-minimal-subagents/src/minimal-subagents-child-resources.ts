@@ -6,6 +6,7 @@ import {
   createMcpExtension,
   createToolSearchExtension,
   DefaultResourceLoader,
+  type ExtensionContext,
   type ExtensionFactory,
   getPackageDir,
   type LoadedMcpConfig,
@@ -70,6 +71,11 @@ const MCP_RESOURCE_TOOLS = new Set([
   "read_mcp_resource",
 ]);
 
+/** Whether a tool comes from MCP: a server tool (`mcp__<server>__<tool>`) or a resource tool. */
+export function isMcpToolName(toolName: string): boolean {
+  return toolName.startsWith("mcp__") || MCP_RESOURCE_TOOLS.has(toolName);
+}
+
 /** Which `mcp.json` servers a grant reaches, by server name. */
 export type McpServerScope = "none" | "all" | ((server: string) => boolean);
 
@@ -78,9 +84,7 @@ export type McpServerScope = "none" | "all" | ((server: string) => boolean);
  * server; an `mcp__<namespace>__<tool>` name reaches its server, named as in Pi's `mcpNamespace`.
  */
 export function childMcpServerScope(grantedTools: readonly string[]): McpServerScope {
-  const mcpTools = grantedTools.filter(
-    (name) => name.startsWith("mcp__") || MCP_RESOURCE_TOOLS.has(name),
-  );
+  const mcpTools = grantedTools.filter(isMcpToolName);
   if (mcpTools.length === 0) return "none";
   if (mcpTools.some((name) => MCP_RESOURCE_TOOLS.has(name) || name.includes("*"))) return "all";
   return (server) => {
@@ -115,25 +119,23 @@ async function piLoadMcpConfig(): Promise<LoadMcpConfig | undefined> {
  */
 function mcpExtension(scope: McpServerScope, agentDir: string): InlineExtension[] {
   if (scope === "none") return [];
-  const reaches = scope === "all" ? undefined : scope;
-  const factory: ExtensionFactory = async (pi) => {
-    const loadMcpConfig = reaches && (await piLoadMcpConfig());
-    const extension =
-      reaches && loadMcpConfig
-        ? createMcpExtension({
-            loadConfig: (ctx) => {
-              const loaded = loadMcpConfig({
-                agentDir,
-                cwd: ctx.cwd,
-                projectTrusted: ctx.isProjectTrusted(),
-              });
-              return { ...loaded, servers: loaded.servers.filter(({ name }) => reaches(name)) };
-            },
-          })
-        : createMcpExtension();
-    await extension(pi);
-  };
-  return [{ name: "mcp", factory, builtin: true, replaceable: true }];
+  const builtin = (factory: ExtensionFactory): InlineExtension[] => [
+    { name: "mcp", factory, builtin: true, replaceable: true },
+  ];
+  if (scope === "all") return builtin(createMcpExtension());
+  return builtin(async (pi) => {
+    const loadMcpConfig = await piLoadMcpConfig();
+    if (!loadMcpConfig) return createMcpExtension()(pi);
+    const loadConfig = (ctx: ExtensionContext) => {
+      const loaded = loadMcpConfig({
+        agentDir,
+        cwd: ctx.cwd,
+        projectTrusted: ctx.isProjectTrusted(),
+      });
+      return { ...loaded, servers: loaded.servers.filter(({ name }) => scope(name)) };
+    };
+    return createMcpExtension({ loadConfig })(pi);
+  });
 }
 
 /** Pi's built-in extensions in Pi's order, so children match the root's built-in surface. */
