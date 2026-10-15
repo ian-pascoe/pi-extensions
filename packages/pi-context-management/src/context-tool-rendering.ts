@@ -70,6 +70,7 @@ type RenderTheme = Pick<Theme, "bold" | "fg">;
 export const CONTEXT_MESSAGE_QUALIFIERS = {
   "pi-context-prepare": undefined,
   "pi-context-manual-prepare": "manual",
+  "pi-context-idle-prepare": "idle",
   "pi-context-prepare-cancelled": "cancelled",
 } as const;
 

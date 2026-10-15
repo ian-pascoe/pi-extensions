@@ -310,6 +310,18 @@ describe("Context Windows through the Pi SDK", () => {
     { global: null, project: false, trusted: true, warnings: 1 },
     { global: undefined, project: { tailTokens: -1 }, trusted: false, warnings: 0 },
     { global: undefined, project: undefined, trusted: true, warnings: 0 },
+    {
+      global: { idleRollover: { minTokens: 1000 } },
+      project: undefined,
+      trusted: true,
+      warnings: 0,
+    },
+    {
+      global: { idleRollover: { enabled: false }, tailTokens: 0 },
+      project: undefined,
+      trusted: true,
+      warnings: 1,
+    },
   ])(
     "ignores legacy settings without writes and warns once per load: %j",
     async ({ global, project, trusted, warnings }) => {

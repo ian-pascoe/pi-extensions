@@ -71,7 +71,17 @@ Actual native overflow is the exception: an Emergency Rollover immediately uses 
 
 Manual and threshold compaction are claimed before other `session_before_compact` hooks run, as if Context Management cancelled first. Other hooks therefore cannot veto or delay Rollover preparation, and summarizer overrides such as `pi-claude-bridge` never spend a request on a discarded summary. During native overflow, other hooks may still observe or cancel recovery. If one supplies compaction content, the Emergency Rollover replaces it regardless of load order, and a warning names that extension. Empty observer results cannot trigger Pi's native summarizer fallback. Every Context Checkpoint, including one committed directly by `context_rollover`, emits Pi's `session_compact` event so provider session caches and other listeners observe the new Context Window.
 
-Pi alone owns context accounting, automatic compaction timing, and recent-history retention. There are no extension-owned 80%/90% thresholds or fit checks. Pi owns overflow retry and permits at most one rebuilt request. User cancellation does not trigger recovery, and completed tools are not replayed.
+Pi alone owns context accounting, automatic compaction timing, and recent-history retention, except for the Idle Rollover below. There are no extension-owned 80%/90% thresholds or fit checks. Pi owns overflow retry and permits at most one rebuilt request. User cancellation does not trigger recovery, and completed tools are not replayed.
+
+## Idle Rollover
+
+A large Context Window left idle loses its provider prompt cache, so the next message would resend all of it uncached. Idle Rollover, modelled on Claude Code's idle compaction, prepares a pausing Rollover just before the cache expires, while the preparation request can still read the cached prefix cheaply. The next message then starts from the small new Context Window.
+
+- **When:** after an agent run settles (not on Escape) in an interactive frontend (`tui` or `rpc`; never in print-mode runs or Child Agents), when Pi's native context usage is at least `minTokens` (default 200,000), and nothing has happened since: no input, new turn, model or thinking-level change, tree navigation, or Context Checkpoint.
+- **Timing:** Pi's cache-warming refresh point, 90% of the model's prompt cache lifetime (at least ten seconds early), plus two seconds so Pi's own decision lands first. The lifetime comes from the model's `promptCache` tier that `PI_CACHE_RETENTION` selects: the short tier by default (five minutes on Anthropic, so about 4.5 idle minutes) and the long tier with `PI_CACHE_RETENTION=long` (one hour, about 54 minutes). Models without a lifetime never Idle Rollover.
+- **Pi cache warming:** while Pi's `cacheWarming: "idle"` mode keeps refreshing the cache, Idle Rollover follows each refresh and waits. It runs only once warming stops, at its 30-minute idle limit or because Pi judges another refresh uneconomic, at the refresh point after Pi's last warm.
+- **Expired caches:** if the check runs past Pi's late-refresh cutoff (halfway from the refresh point to expiry), for example after the machine slept, it does nothing.
+- **Preparation:** it is a Manual Rollover started by a displayed `pi-context-idle-prepare` message: the agent refreshes Notes, writes a Handoff, calls `context_rollover`, and stops. Input typed meanwhile is queued as a follow-up and runs after the checkpoint, in the new Context Window. An Idle Rollover that is cancelled or ends without a checkpoint reports noncompletion, is not retried until the user starts another run, and does not suppress later threshold preparation.
 
 ## Settings
 
@@ -89,7 +99,19 @@ Use Pi's native `compaction` settings in global `~/.pi/agent/settings.json` or t
 
 These are Pi's defaults: `enabled` controls automatic compaction, `reserveTokens` controls its headroom, and `keepRecentTokens` controls recent-history retention. Disabling automatic compaction leaves manual compaction and explicit Rollover available. `/context` reports native usage and settings, not a separate estimate.
 
-The obsolete `contextManagement` block is ignored, including `tailTokens`, `warningThreshold`, `emergencyThreshold`, `safetyMarginTokens`, and `outputReserveTokens`. If present in global or trusted-project settings, it produces one warning per session load pointing to native compaction settings. The extension neither edits configuration nor blocks continuation, even if the obsolete block is malformed. Remove it when convenient; there is no one-to-one migration of percentage thresholds.
+Idle Rollover is configured under `contextManagement.idleRollover` in the same files; a trusted project overrides global settings key by key:
+
+```json
+{
+  "contextManagement": {
+    "idleRollover": { "enabled": true, "minTokens": 200000 }
+  }
+}
+```
+
+Both keys are optional and default to the values shown. `contextManagement` is this extension's namespace, not a Pi setting. An invalid `idleRollover` value is ignored for that file, with one warning per session load.
+
+The other, obsolete `contextManagement` keys are ignored: `tailTokens`, `warningThreshold`, `emergencyThreshold`, `safetyMarginTokens`, and `outputReserveTokens`. A block holding anything but `idleRollover` (or one that is not an object) in global or trusted-project settings produces one warning per session load pointing to native compaction settings. The extension neither edits configuration nor blocks continuation, even if the obsolete block is malformed. Remove it when convenient; there is no one-to-one migration of percentage thresholds.
 
 Pi's usage is not an exact outgoing-request measurement. Initial oversized input or later growth in standing instructions, tool declarations, or other extensions' projections can still reach the provider limit. Native overflow recovery is the backstop; the extension does not intercept provider payloads, add a sizing margin, or promise that a fresh Handoff will fit.
 
@@ -99,6 +121,6 @@ Notes are persisted independently, so an acknowledged Note survives a later fail
 
 Pi defers initial journal flush until an assistant response exists. If the first request is already too large, shorten it before retrying—the extension cannot safely create a durable checkpoint before the first assistant turn.
 
-The extension uses Pi session entries only. It does not edit session files directly, add repository memory files, run a database or daemon, call a background model, use embeddings, replace the subagent framework, or manage tool exposure.
+The extension uses Pi session entries only. It does not edit session files directly, add repository memory files, run a database or daemon, call a background model (Idle Rollover is an ordinary agent turn), use embeddings, replace the subagent framework, or manage tool exposure.
 
 This is privileged extension code: review it before installing it into an agent that can access local files, tools, or credentials.
