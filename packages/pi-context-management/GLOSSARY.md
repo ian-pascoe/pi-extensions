@@ -48,6 +48,10 @@ _Avoid_: Automatic compaction, immediate task continuation
 A normal Rollover started by Pi's context policy, which continues the current task after its Context Checkpoint.
 _Avoid_: Manual Rollover, Emergency Rollover
 
+**Idle Rollover**:
+A Manual Rollover started by Context Management when a large Context Window sits idle until just before its provider prompt cache expires, so the preparation reads the cached prefix and the user's next message starts from a small Context Window.
+_Avoid_: Idle compaction, background summary
+
 **Emergency Rollover**:
 A Rollover after native context overflow, carrying the last saved state and access to History without requiring a fresh agent-written Handoff.
 _Avoid_: Automatic summary, normal Rollover

@@ -32,6 +32,14 @@ import {
 } from "./context-window.js";
 
 import { hasLegacyContextSettings } from "./context-settings.js";
+import {
+  cacheRefreshDelayMs,
+  decideIdle,
+  latestCacheWarm,
+  promptCacheTtlMs,
+  readIdleRolloverSettings,
+  type IdleCacheWindow,
+} from "./idle-rollover.js";
 import { acceptNullForOptionalArguments } from "@ian-pascoe/pi-utils/null-optional-arguments";
 import { expandMessageOnClick, noticeText } from "@ian-pascoe/pi-utils/ui";
 
@@ -57,6 +65,113 @@ export default function contextManagement(pi: ExtensionAPI): void {
   let nativeLeaf: string | null | undefined;
   let nativeCommittedBefore: string | undefined;
   let announcedCheckpointId: string | undefined;
+  /** Start of the latest model request, which wrote the prompt cache entry Idle Rollover reads. */
+  let lastRequestAt: number | undefined;
+  let idleWindow:
+    | (IdleCacheWindow & { timer: ReturnType<typeof setTimeout> | undefined })
+    | undefined;
+  /** An Idle Rollover preparation run is active and has not committed its checkpoint. */
+  let idlePreparation = false;
+
+  const cancelIdleRollover = () => {
+    if (idleWindow?.timer) clearTimeout(idleWindow.timer);
+    idleWindow = undefined;
+  };
+  /** Arm Idle Rollover for the cache entry of the request that just settled. */
+  function armIdleRollover(ctx: ExtensionContext): void {
+    cancelIdleRollover();
+    // Interactive frontends only: print-mode runs and Child Agents have no returning user.
+    if (ctx.mode !== "tui" && ctx.mode !== "rpc") return;
+    if (failure || !adapter || preparation !== "ready" || lastRequestAt === undefined) return;
+    const { settings } = readIdleRolloverSettings(adapter.session.settingsManager);
+    if (!settings.enabled) return;
+    if ((adapter.session.getContextUsage()?.tokens ?? 0) < settings.minTokens) return;
+    const ttlMs = promptCacheTtlMs(adapter.session.model);
+    const delayMs = ttlMs === undefined ? undefined : cacheRefreshDelayMs(ttlMs);
+    if (ttlMs === undefined || delayMs === undefined) return;
+    const window = { touchedAt: lastRequestAt, ttlMs, delayMs, timer: undefined };
+    idleWindow = window;
+    scheduleIdleCheck(window, window.touchedAt + delayMs, adapter, ctx);
+  }
+  function scheduleIdleCheck(
+    window: NonNullable<typeof idleWindow>,
+    at: number,
+    owner: CheckpointAdapter,
+    ctx: ExtensionContext,
+  ): void {
+    window.timer = setTimeout(
+      () => checkIdleRollover(window, owner, ctx),
+      Math.max(0, at - Date.now()),
+    );
+    window.timer.unref?.();
+  }
+  function checkIdleRollover(
+    window: NonNullable<typeof idleWindow>,
+    owner: CheckpointAdapter,
+    ctx: ExtensionContext,
+  ): void {
+    if (idleWindow !== window || adapter !== owner) return;
+    window.timer = undefined;
+    try {
+      // Each Pi cache warm refreshes the entry; follow its refresh points until warming stops.
+      const warmed = latestCacheWarm(owner.session.sessionManager.getBranch(), window.touchedAt);
+      if (warmed !== undefined) window.touchedAt = warmed;
+      const now = Date.now();
+      const decision = decideIdle(window, owner.session.cacheWarmingStatus, now);
+      if (decision.action === "wait") {
+        scheduleIdleCheck(window, decision.at, owner, ctx);
+        return;
+      }
+      idleWindow = undefined;
+      if (decision.action === "expired") return;
+      const owned = requireAdapter();
+      const { settings } = readIdleRolloverSettings(owned.session.settingsManager);
+      const tokens = owned.session.getContextUsage()?.tokens ?? 0;
+      if (!settings.enabled || tokens < settings.minTokens) return;
+      if (preparation !== "ready" || pending || !owned.session.isIdle) return;
+      startIdleRollover(owned, tokens, ctx);
+    } catch (cause) {
+      ctx.ui.notify(noticeText("Context", errorMessage(cause)), "error");
+    }
+  }
+  function startIdleRollover(
+    owner: CheckpointAdapter,
+    tokens: number,
+    ctx: ExtensionContext,
+  ): void {
+    queuedPreparationSignal = undefined;
+    preparation = "pending";
+    pauseAfterRollover = true;
+    pendingManualInstructions = undefined;
+    idlePreparation = true;
+    ctx.ui.notify(
+      "Idle Context Window of " +
+        tokens +
+        " tokens: preparing Notes and a fresh Handoff before its prompt cache expires.",
+      "info",
+    );
+    void owner.session
+      .sendCustomMessage(
+        {
+          customType: "pi-context-idle-prepare",
+          content:
+            "The session is idle and the prompt cache for this Context Window is about to expire. " +
+            preparationPrompt("", false),
+          display: true,
+        },
+        { triggerTurn: true },
+      )
+      .then(
+        () => {
+          if (adapter === owner && owner.session.isIdle) finishPreparation(ctx);
+        },
+        (cause) => {
+          if (adapter !== owner) return;
+          finishPreparation(ctx);
+          ctx.ui.notify(noticeText("Context", errorMessage(cause)), "error");
+        },
+      );
+  }
 
   const fail = (error: Error, ctx: ExtensionContext) => {
     failure = error;
@@ -81,6 +196,9 @@ export default function contextManagement(pi: ExtensionAPI): void {
   };
   pi.on("session_start", (_event, ctx) => {
     adapter?.dispose();
+    cancelIdleRollover();
+    lastRequestAt = undefined;
+    idlePreparation = false;
     pending = undefined;
     manualRollover = undefined;
     failure = undefined;
@@ -115,6 +233,17 @@ export default function contextManagement(pi: ExtensionAPI): void {
           ),
           "warning",
         );
+      const { invalid } = readIdleRolloverSettings(adapter.session.settingsManager);
+      if (invalid.length > 0)
+        ctx.ui.notify(
+          noticeText(
+            "Context",
+            "Ignored invalid contextManagement.idleRollover in " +
+              invalid.join(" and ") +
+              " settings; expected { enabled?: boolean, minTokens?: positive integer }.",
+          ),
+          "warning",
+        );
       requireAdapter();
       ensureReferenceOrigin(pi, ctx.sessionManager);
     } catch (cause) {
@@ -122,6 +251,8 @@ export default function contextManagement(pi: ExtensionAPI): void {
     }
   });
   pi.on("session_shutdown", () => {
+    cancelIdleRollover();
+    idlePreparation = false;
     adapter?.dispose();
     adapter = undefined;
     pending = undefined;
@@ -130,15 +261,33 @@ export default function contextManagement(pi: ExtensionAPI): void {
     pauseAfterRollover = false;
     pendingManualInstructions = undefined;
   });
-  pi.on("input", (_event, ctx) => {
+  pi.on("input", (event, ctx) => {
+    cancelIdleRollover();
+    let owner: CheckpointAdapter;
     try {
-      requireAdapter();
+      owner = requireAdapter();
     } catch (cause) {
       // Do not append new prompts beneath speculative journal entries after a write failure.
       ctx.ui.notify(noticeText("Context", errorMessage(cause)), "error");
       return { action: "handled" };
     }
+    if (idlePreparation && event.streamingBehavior === "steer") {
+      // Input that arrives during Idle Rollover waits for the checkpoint, then runs in the new Context Window.
+      void owner.session
+        .followUp(event.text, event.images, { source: event.source })
+        .catch((cause: unknown) =>
+          ctx.ui.notify(noticeText("Context", errorMessage(cause)), "error"),
+        );
+      return { action: "handled" };
+    }
   });
+  pi.on("turn_start", () => {
+    lastRequestAt = Date.now();
+    cancelIdleRollover();
+  });
+  // A different model or thinking level does not reuse the cached prefix.
+  pi.on("model_select", cancelIdleRollover);
+  pi.on("thinking_level_select", cancelIdleRollover);
   registerContextTools(pi, fail);
   for (const [customType, qualifier] of Object.entries(CONTEXT_MESSAGE_QUALIFIERS))
     pi.registerMessageRenderer(
@@ -239,7 +388,9 @@ export default function contextManagement(pi: ExtensionAPI): void {
   }
   function finishPreparation(ctx: ExtensionContext): void {
     if (preparation !== "pending") return;
-    preparation = "unfinished";
+    // A failed Idle Rollover must not suppress later threshold preparation.
+    preparation = idlePreparation ? "ready" : "unfinished";
+    idlePreparation = false;
     pauseAfterRollover = false;
     pendingManualInstructions = undefined;
     ctx.ui.notify(
@@ -262,11 +413,16 @@ export default function contextManagement(pi: ExtensionAPI): void {
     // Pi can restart queued steering with a new controller after post-run compaction aborts.
     if (preparation === "pending" && queuedPreparationSignal?.aborted) ctx.abort();
   });
-  pi.on("agent_settled", async (_event, ctx) => {
+  pi.on("agent_settled", async (event, ctx) => {
     const cancelled = preparation === "pending" && queuedPreparationSignal?.aborted;
+    // An unfinished Idle Rollover is not retried until the user starts another run.
+    const idleUnfinished = idlePreparation;
     queuedPreparationSignal = undefined;
     finishPreparation(ctx);
-    if (!cancelled) return;
+    if (!cancelled) {
+      if (!event.aborted && !idleUnfinished) armIdleRollover(ctx);
+      return;
+    }
     try {
       const owner = requireAdapter();
       dropQueuedPreparation(owner.session.agent);
@@ -315,6 +471,8 @@ export default function contextManagement(pi: ExtensionAPI): void {
     },
   });
   pi.on("session_tree", () => {
+    cancelIdleRollover();
+    idlePreparation = false;
     pending = undefined;
     manualRollover = undefined;
     preparation = "ready";
@@ -425,6 +583,7 @@ export default function contextManagement(pi: ExtensionAPI): void {
       preparation = "ready";
       pauseAfterRollover = false;
       pendingManualInstructions = undefined;
+      idlePreparation = false;
       // Let native compaction listeners (e.g. provider session caches) observe the new Context Window.
       announcedCheckpointId = checkpoint.id;
       await owner.session.extensionRunner.emit({
@@ -490,7 +649,9 @@ export default function contextManagement(pi: ExtensionAPI): void {
     adapter?.dispatches(event) ? undefined : beforeCompact(event, ctx),
   );
   pi.on("session_compact", (event, ctx) => {
+    cancelIdleRollover();
     if (event.compactionEntry.id === announcedCheckpointId) return;
+    idlePreparation = false;
     nativeLeaf = undefined;
     preparation = "ready";
     pauseAfterRollover = false;
