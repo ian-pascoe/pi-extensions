@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.19.2
+
+### Patch Changes
+
+- bb0dd4e: Child Agents reach only the MCP tools their Launch Contract grants: `codemode` and `tool_search` no longer find or call ungranted MCP tools. A child loads Pi's `mcp` extension only when it is granted an MCP tool, and then connects only the `mcp.json` servers those tools reach, so children no longer start their own copy of every stdio MCP server.
+
 ## 0.19.1
 
 ### Patch Changes
