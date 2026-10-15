@@ -61,7 +61,7 @@ Note writes/appends and Rollover Handoffs display their text as tool arguments s
 
 ## Context Windows
 
-A normal Rollover carries standing instructions, the agent-written Handoff, a Note Index of at most 4,000 characters, and a Tail selected by Pi's native retention policy. Tool calls stay with their results; omitted History remains retrievable. The extension does not shrink the Tail to satisfy a separate budget.
+A normal Rollover carries standing instructions, the agent-written Handoff, a Note Index of at most 4,000 characters, and a Tail sized by `contextManagement.tailTokens` (default 0). With the default, the Tail is only Pi's newest cut point: the `context_rollover` call and its result. The Handoff, Notes, and History carry continuity instead of a raw transcript, as in Codex's experimental context management. Pi's cut points still decide where the Tail may start, so tool calls stay with their results; omitted History remains retrievable. An Emergency Rollover keeps Pi's native `keepRecentTokens` retention, because its saved Handoff may be stale.
 
 When Pi requests normal automatic or manual compaction, Context Management asks the agent to refresh useful Notes and call `context_rollover` alone with a fresh Handoff. This applies equally to TUI `/compact`, SDK, and remote compaction. Automatic threshold preparation continues the current task after the checkpoint. Manual preparation stops with the checkpoint and waits for the user's next input without another model request; its custom instructions shape the Handoff but cannot resume work. A direct agent-initiated `context_rollover` outside manual preparation continues normally. The native summarizer is replaced, not called in addition. Preparation uses ordinary agent turns and can therefore make model requests. While preparation is pending, repeated threshold checks do not inject more reminders.
 
@@ -71,7 +71,7 @@ Actual native overflow is the exception: an Emergency Rollover immediately uses 
 
 Manual and threshold compaction are claimed before other `session_before_compact` hooks run, as if Context Management cancelled first. Other hooks therefore cannot veto or delay Rollover preparation, and summarizer overrides such as `pi-claude-bridge` never spend a request on a discarded summary. During native overflow, other hooks may still observe or cancel recovery. If one supplies compaction content, the Emergency Rollover replaces it regardless of load order, and a warning names that extension. Empty observer results cannot trigger Pi's native summarizer fallback. Every Context Checkpoint, including one committed directly by `context_rollover`, emits Pi's `session_compact` event so provider session caches and other listeners observe the new Context Window.
 
-Pi alone owns context accounting, automatic compaction timing, and recent-history retention, except for the Idle Rollover below. There are no extension-owned 80%/90% thresholds or fit checks. Pi owns overflow retry and permits at most one rebuilt request. User cancellation does not trigger recovery, and completed tools are not replayed.
+Pi alone owns context accounting, automatic compaction timing, and Emergency Rollover retention. The extension owns only the normal Rollover Tail size and the Idle Rollover below. There are no extension-owned 80%/90% thresholds or fit checks. Pi owns overflow retry and permits at most one rebuilt request. User cancellation does not trigger recovery, and completed tools are not replayed.
 
 ## Idle Rollover
 
@@ -97,21 +97,22 @@ Use Pi's native `compaction` settings in global `~/.pi/agent/settings.json` or t
 }
 ```
 
-These are Pi's defaults: `enabled` controls automatic compaction, `reserveTokens` controls its headroom, and `keepRecentTokens` controls recent-history retention. Disabling automatic compaction leaves manual compaction and explicit Rollover available. `/context` reports native usage and settings, not a separate estimate.
+These are Pi's defaults: `enabled` controls automatic compaction, `reserveTokens` controls its headroom, and `keepRecentTokens` controls recent-history retention for native compaction and Emergency Rollover. Disabling automatic compaction leaves manual compaction and explicit Rollover available. `/context` reports native usage and settings, not a separate estimate.
 
-Idle Rollover is configured under `contextManagement.idleRollover` in the same files; a trusted project overrides global settings key by key:
+The normal Rollover Tail and Idle Rollover are configured under `contextManagement` in the same files; a trusted project overrides global settings key by key:
 
 ```json
 {
   "contextManagement": {
+    "tailTokens": 0,
     "idleRollover": { "enabled": true, "minTokens": 200000 }
   }
 }
 ```
 
-Both keys are optional and default to the values shown. `contextManagement` is this extension's namespace, not a Pi setting. An invalid `idleRollover` value is ignored for that file, with one warning per session load.
+All keys are optional and default to the values shown. `tailTokens` is a nonnegative integer budget for recent History kept after a normal Rollover, measured with Pi's own estimate, which also counts thinking text that providers may not replay. `contextManagement` is this extension's namespace, not a Pi setting. An invalid `tailTokens` or `idleRollover` value is ignored for that file, with one warning per session load.
 
-The other, obsolete `contextManagement` keys are ignored: `tailTokens`, `warningThreshold`, `emergencyThreshold`, `safetyMarginTokens`, and `outputReserveTokens`. A block holding anything but `idleRollover` (or one that is not an object) in global or trusted-project settings produces one warning per session load pointing to native compaction settings. The extension neither edits configuration nor blocks continuation, even if the obsolete block is malformed. Remove it when convenient; there is no one-to-one migration of percentage thresholds.
+The other, obsolete `contextManagement` keys are ignored: `warningThreshold`, `emergencyThreshold`, `safetyMarginTokens`, and `outputReserveTokens`. A block holding anything but `tailTokens` and `idleRollover` (or one that is not an object) in global or trusted-project settings produces one warning per session load pointing to native compaction settings. The extension neither edits configuration nor blocks continuation, even if the obsolete block is malformed. Remove it when convenient; there is no one-to-one migration of percentage thresholds.
 
 Pi's usage is not an exact outgoing-request measurement. Initial oversized input or later growth in standing instructions, tool declarations, or other extensions' projections can still reach the provider limit. Native overflow recovery is the backstop; the extension does not intercept provider payloads, add a sizing margin, or promise that a fresh Handoff will fit.
 

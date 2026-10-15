@@ -308,7 +308,7 @@ it("restores selected-branch Tasks through tree navigation, reload, resume, and 
 
 for (const transition of ["native", "rollover"] as const) {
   for (const keepRecentTokens of transition === "native" ? [0, 500] : [500]) {
-    it(`maps ${transition} checkpoint to its immutable cutoff with native retention ${keepRecentTokens}`, async () => {
+    it(`maps ${transition} checkpoint to its immutable cutoff with retention ${keepRecentTokens}`, async () => {
       const anchors: Array<{ baseline: unknown; cutoff: string; summaryIndex: number }> = [];
       const inspect: ExtensionFactory = (pi) => {
         pi.on("context", (event, context) => {
@@ -338,6 +338,7 @@ for (const transition of ["native", "rollover"] as const) {
       const f = await createSdkHarness([contextManagement, inspect], {
         additionalExtensionPaths: [todoPath],
         keepRecentTokens,
+        contextSettings: { tailTokens: keepRecentTokens },
       });
       f.responses.push(
         toolCall("todo", { action: "add", title: "Before cutoff" }),
@@ -696,7 +697,7 @@ for (const position of ["before", "after"]) {
       position === "before"
         ? [companion, todo, contextManagement]
         : [contextManagement, todo, companion],
-      { keepRecentTokens: 500 },
+      { keepRecentTokens: 500, contextSettings: { tailTokens: 500 } },
     );
     f.responses.push(
       toolCall("todo", { action: "add", title: "Task alongside MCP" }),

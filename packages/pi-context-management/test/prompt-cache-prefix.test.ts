@@ -301,10 +301,11 @@ it("preserves the emergency Rollover Todo endpoint without replaying an oversize
 
 for (const transition of ["native", "rollover"] as const) {
   for (const keepRecentTokens of transition === "native" ? [0, 500] : [500]) {
-    it(`preserves the first ${transition} Todo endpoint with native retention ${keepRecentTokens} through later mutations`, async () => {
+    it(`preserves the first ${transition} Todo endpoint with retention ${keepRecentTokens} through later mutations`, async () => {
       const f = await createSdkHarness([contextManagement], {
         additionalExtensionPaths: [todoPath],
         keepRecentTokens,
+        contextSettings: { tailTokens: keepRecentTokens },
       });
       f.responses.push(
         toolCall("todo", { action: "add", title: "Before cutoff" }),

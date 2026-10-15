@@ -305,10 +305,10 @@ describe("Context Windows through the Pi SDK", () => {
   });
 
   it.each([
-    { global: { tailTokens: -1 }, project: undefined, trusted: true, warnings: 1 },
+    { global: { safetyMarginTokens: -1 }, project: undefined, trusted: true, warnings: 1 },
     { global: undefined, project: "malformed", trusted: true, warnings: 1 },
     { global: null, project: false, trusted: true, warnings: 1 },
-    { global: undefined, project: { tailTokens: -1 }, trusted: false, warnings: 0 },
+    { global: undefined, project: { safetyMarginTokens: -1 }, trusted: false, warnings: 0 },
     { global: undefined, project: undefined, trusted: true, warnings: 0 },
     {
       global: { idleRollover: { minTokens: 1000 } },
@@ -318,6 +318,12 @@ describe("Context Windows through the Pi SDK", () => {
     },
     {
       global: { idleRollover: { enabled: false }, tailTokens: 0 },
+      project: undefined,
+      trusted: true,
+      warnings: 0,
+    },
+    {
+      global: { tailTokens: 0, warningThreshold: 0.8 },
       project: undefined,
       trusted: true,
       warnings: 1,
@@ -362,7 +368,9 @@ describe("Context Windows through the Pi SDK", () => {
         expect(notices.filter((message) => message.includes("obsolete and ignored"))).toHaveLength(
           load * warnings,
         );
-        expect(notices.at(-1)).toContain("Native recent-history retention: 500 tokens.");
+        expect(notices.at(-1)).toContain(
+          "Rollover Tail: 0 tokens; Emergency Rollover keeps native recent-history retention: 500 tokens.",
+        );
         expect(notices.at(-1)).toContain(
           `Native usage: ${f.session.getContextUsage()?.tokens} / 200000 tokens.`,
         );
@@ -501,4 +509,85 @@ describe("Context Windows through the Pi SDK", () => {
     expect(f.requests[2]?.tools).toContain("context_history");
     expect(f.requests[2]?.systemPrompt).toContain("Standing instructions");
   });
+
+  it.each([
+    { label: "default", global: undefined, project: undefined, trusted: true, kept: false },
+    {
+      label: "global",
+      global: { tailTokens: 20_000 },
+      project: undefined,
+      trusted: true,
+      kept: true,
+    },
+    {
+      label: "trusted project override",
+      global: { tailTokens: 20_000 },
+      project: { tailTokens: 0 },
+      trusted: true,
+      kept: false,
+    },
+    {
+      label: "untrusted project",
+      global: undefined,
+      project: { tailTokens: 20_000 },
+      trusted: false,
+      kept: false,
+    },
+    {
+      label: "invalid global",
+      global: { tailTokens: -1 },
+      project: undefined,
+      trusted: true,
+      kept: false,
+    },
+  ])(
+    "sizes the normal Rollover Tail from contextManagement.tailTokens, not keepRecentTokens: $label",
+    async ({ global, project, trusted, kept }) => {
+      const settings = SettingsManager.fromStorage(
+        {
+          withLock(scope, fn) {
+            fn(
+              JSON.stringify({
+                contextManagement: scope === "global" ? global : project,
+                compaction: { enabled: true, reserveTokens: 512, keepRecentTokens: 20_000 },
+                retry: { enabled: false },
+              }),
+            );
+          },
+        },
+        { projectTrusted: trusted },
+      );
+      const f = await createSdkHarness([contextManagement], { settings });
+      const notices: string[] = [];
+      await f.session.bindExtensions({
+        mode: "rpc",
+        uiContext: {
+          ...f.session.extensionRunner.getUIContext(),
+          notify: (message) => {
+            notices.push(message);
+          },
+        },
+      });
+      f.responses.push(reply("EARLIER-REPLY"));
+      await f.session.prompt("EARLIER-TURN");
+      f.responses.push(
+        toolCall("context_rollover", { handoff: "Continue from the Handoff." }),
+        reply("Continued."),
+      );
+      await f.session.prompt("Roll over now");
+      const fresh = JSON.stringify(f.requests.at(-1)!.messages);
+      expect(fresh.includes("EARLIER-TURN")).toBe(kept);
+      expect(fresh.includes("EARLIER-REPLY")).toBe(kept);
+      expect(fresh).toContain("Continue from the Handoff.");
+      expect(f.requests.at(-1)!.messages.at(-1)).toMatchObject({
+        role: "toolResult",
+        toolName: "context_rollover",
+      });
+      expect(
+        notices.filter((message) => message.includes("invalid contextManagement.tailTokens")),
+      ).toHaveLength(global?.tailTokens === -1 ? 1 : 0);
+      expect(f.providerRequests).toEqual([]);
+      expect(f.extensionErrors).toEqual([]);
+    },
+  );
 });

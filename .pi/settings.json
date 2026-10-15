@@ -241,6 +241,9 @@
     }
   },
   "lsp": {
+    "timeouts": {
+      "diagnosticsMs": 10000
+    },
     "servers": {
       "typescript": {
         "command": "pnpm",

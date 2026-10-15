@@ -61,5 +61,5 @@ The agent-written continuation brief carried into the next Context Window to exp
 _Avoid_: History, automatic summary
 
 **Tail**:
-The portion of recent History retained by Pi across a Rollover for immediate conversational continuity, keeping tool calls together with their corresponding results.
+The portion of recent History retained across a Rollover for immediate conversational continuity, cut at a Pi cut point so tool calls stay together with their corresponding results. Its size comes from `contextManagement.tailTokens` (default 0) for a normal Rollover and from Pi's `keepRecentTokens` for an Emergency Rollover.
 _Avoid_: Handoff, summary
