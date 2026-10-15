@@ -1,5 +1,14 @@
 # @ian-pascoe/pi-dap
 
+## 0.9.2
+
+### Patch Changes
+
+- cabb9fb: Stop `dap_launch` from sending a TypeBox `~optional` marker in its `launch_arguments` schema. Gemini rejected every request with the tool active ("Unknown name \"~optional\"") when a provider passed the schema through as OpenAPI `parameters`.
+- 5692f82: Require `typebox` 1 or later as a peer dependency instead of accepting any version.
+- Updated dependencies [5692f82]
+  - @ian-pascoe/pi-utils@0.7.1
+
 ## 0.9.1
 
 ### Patch Changes

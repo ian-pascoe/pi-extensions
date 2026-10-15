@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-utils
 
+## 0.7.1
+
+### Patch Changes
+
+- 5692f82: Require `typebox` 1 or later as a peer dependency instead of accepting any version.
+
 ## 0.7.0
 
 ### Minor Changes
