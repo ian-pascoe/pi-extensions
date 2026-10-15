@@ -43,7 +43,7 @@
     "@earendil-works/pi-ai": ">=1.1.0",
     "@earendil-works/pi-coding-agent": ">=1.1.0",
     "@earendil-works/pi-tui": ">=1.1.0",
-    "typebox": "*"
+    "typebox": ">=1"
   },
   "engines": {
     "node": ">=22.19.0"
