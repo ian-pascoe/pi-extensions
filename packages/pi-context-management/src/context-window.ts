@@ -34,11 +34,14 @@ export function savedHandoff(manager: ReadonlySessionManager): string | undefine
   return undefined;
 }
 
-/** Pi chooses retention; only protocol safety can shorten its contiguous suffix. */
+/**
+ * Pi's cut points bound the Tail: a native cutoff when Pi supplies one, otherwise `tailTokens`.
+ * Only protocol safety can shorten the contiguous suffix.
+ */
 function selectTail(
   manager: ReadonlySessionManager,
   reason: string,
-  keepRecentTokens: number,
+  tailTokens: number,
   nativeCutoff?: string,
 ) {
   const entries = manager.getBranch();
@@ -52,7 +55,7 @@ function selectTail(
   let first =
     nativeCutoff === undefined
       ? start < entries.length
-        ? findCutPoint(entries, start, entries.length, keepRecentTokens).firstKeptEntryIndex
+        ? findCutPoint(entries, start, entries.length, tailTokens).firstKeptEntryIndex
         : entries.length
       : entries.findIndex((entry) => entry.id === nativeCutoff);
   if (first < start)
@@ -108,10 +111,10 @@ export function planCheckpoint(
   manager: ReadonlySessionManager,
   handoff: string,
   reason: string,
-  keepRecentTokens: number,
+  tailTokens: number,
   nativeCutoff?: string,
 ) {
-  const tail = selectTail(manager, reason, keepRecentTokens, nativeCutoff);
+  const tail = selectTail(manager, reason, tailTokens, nativeCutoff);
   const previousLeaf = manager.getLeafId();
   const summary = [
     "Context Window Handoff",

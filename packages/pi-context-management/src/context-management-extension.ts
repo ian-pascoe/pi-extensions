@@ -31,7 +31,7 @@ import {
   savedHandoff,
 } from "./context-window.js";
 
-import { hasLegacyContextSettings } from "./context-settings.js";
+import { hasLegacyContextSettings, readTailTokens } from "./context-settings.js";
 import {
   cacheRefreshDelayMs,
   decideIdle,
@@ -233,6 +233,17 @@ export default function contextManagement(pi: ExtensionAPI): void {
           ),
           "warning",
         );
+      const tail = readTailTokens(adapter.session.settingsManager);
+      if (tail.invalid.length > 0)
+        ctx.ui.notify(
+          noticeText(
+            "Context",
+            "Ignored invalid contextManagement.tailTokens in " +
+              tail.invalid.join(" and ") +
+              " settings; expected a nonnegative integer.",
+          ),
+          "warning",
+        );
       const { invalid } = readIdleRolloverSettings(adapter.session.settingsManager);
       if (invalid.length > 0)
         ctx.ui.notify(
@@ -318,7 +329,11 @@ export default function contextManagement(pi: ExtensionAPI): void {
               " / " +
               (usage?.contextWindow ?? owner.session.model?.contextWindow ?? "unknown") +
               " tokens.",
-            "Native recent-history retention: " + configuration.keepRecentTokens + " tokens.",
+            "Rollover Tail: " +
+              readTailTokens(owner.session.settingsManager).tailTokens +
+              " tokens; Emergency Rollover keeps native recent-history retention: " +
+              configuration.keepRecentTokens +
+              " tokens.",
             noteIndex(ctx.sessionManager, 2000),
             "Recent Context Windows (" + (checkpoints.length + 1) + " total):",
             ...checkpoints
@@ -571,7 +586,7 @@ export default function contextManagement(pi: ExtensionAPI): void {
         owner.session.sessionManager,
         request.handoff,
         "normal",
-        owner.session.settingsManager.getCompactionSettings().keepRecentTokens,
+        readTailTokens(owner.session.settingsManager).tailTokens,
       );
       const checkpoint = owner.commit(
         plan.summary,
