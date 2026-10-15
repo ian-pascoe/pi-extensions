@@ -90,6 +90,13 @@ describe("withEmptyPromptPlaceholder", () => {
     expect(line).toContain("\x1b[7m \x1b[0mhint");
     expect(visibleWidth(line)).toBe(6);
   });
+
+  it("follows pi-tui's fake cursor", () => {
+    const cursor = "\x1b_pi:fc\x07 \x1b_pi:/fc\x07";
+    const line = withEmptyPromptPlaceholder(`${cursor}   `, "hint", 6);
+    expect(line).toContain(`${cursor}hint`);
+    expect(visibleWidth(line)).toBe(6);
+  });
 });
 
 describe("formatStatusFooter", () => {

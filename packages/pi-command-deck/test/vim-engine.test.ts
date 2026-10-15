@@ -575,6 +575,14 @@ describe("row painting", () => {
     );
   });
 
+  it("never cancels pi-tui's fake cursor that follows a highlight", () => {
+    const cursor = "\x1b_pi:fc\x07c\x1b_pi:/fc\x07";
+    expect(paintRow(`ab${cursor}d`, [{ from: 0, to: 2 }])).toBe(`\x1b[7mab${cursor}d`);
+    expect(paintRow(`ab${cursor}d`, [{ from: 1, to: 4 }])).toBe(
+      `a\x1b[7mb${cursor}\x1b[7md\x1b[27m`,
+    );
+  });
+
   it("paints a wrapped line's rows only up to each row's text", () => {
     const rendered = ["top", "aaaa bbbb  ", "cccc dddd  ", "bottom"];
     paintHighlights(

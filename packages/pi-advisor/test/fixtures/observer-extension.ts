@@ -74,9 +74,10 @@ export default function observerFixture(pi: ExtensionAPI): void {
       .getBranch()
       .some((entry) => entry.type === "custom" && entry.customType === "pi-advisor-role");
   });
-  pi.on("before_agent_start", () => {
+  pi.on("before_agent_start", (event) => {
     if (privateRole) globalThis.advisorObserverTest.privateTools?.(pi.getAllTools());
-    else globalThis.advisorObserverTest.beforeTask?.();
+    // As the extension does: a custom message's run, such as a corrective continuation, is no new task.
+    else if (event.messageType !== "custom") globalThis.advisorObserverTest.beforeTask?.();
   });
   pi.on("turn_end", (event) =>
     privateRole ? undefined : globalThis.advisorObserverTest.turnEnd?.(event),

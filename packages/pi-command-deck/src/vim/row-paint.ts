@@ -1,3 +1,4 @@
+import { FAKE_CURSOR } from "../cursor-shape.js";
 import type { Highlight } from "./types.js";
 
 /** One rendered editor row: a slice of a logical line after word wrap. */
@@ -43,6 +44,9 @@ function escapeEnd(row: string, start: number): number {
 
 /** How an escape sequence changes reverse video: on, off, or unchanged (undefined). */
 function reverseChange(sequence: string): boolean | undefined {
+  // The TUI resolves fake-cursor markers to reverse video on and off.
+  if (sequence === FAKE_CURSOR.start) return true;
+  if (sequence === FAKE_CURSOR.end) return false;
   if (!sequence.startsWith(`${ESC}[`) || !sequence.endsWith("m")) return undefined;
   let change: boolean | undefined;
   for (const param of sequence.slice(2, -1).split(";")) {

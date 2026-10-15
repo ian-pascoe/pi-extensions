@@ -1035,7 +1035,10 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
     const due = extensionInputs.filter((input) => input.run >= runs);
     extensionInputs.splice(0, extensionInputs.length, ...due);
   });
-  pi.on("before_agent_start", () => {
+  pi.on("before_agent_start", (event) => {
+    // A prompt starts a new request. Since Pi 1.2 a custom message's run fires this too; only a
+    // parent's Coordination Message ends the Rejection Streak, in `message_end`.
+    if (event.messageType === "custom") return;
     streak = 0;
     ending = false;
   });

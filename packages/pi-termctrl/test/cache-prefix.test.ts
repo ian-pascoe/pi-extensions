@@ -310,7 +310,9 @@ describe("configurations", () => {
     const bash = fixture.turns[0]?.tools.find(({ name }) => name === "bash");
     const declared = `${codemode?.description ?? ""}\n${bash?.description ?? ""}`;
     // Scripts get the typed background result: `exit_code` optional, `background` added.
-    expect(declared).toMatch(/resolves to `\{ [^`]*\bexit_code\?, [^`]*\bbackground\? \}`/u);
+    expect(declared).toMatch(
+      /resolves to `\{ [^`]*\bexit_code\?, [^`]*\bbackground\?: \{ id, log_path \} \}`/u,
+    );
   });
 
   test("the binary-missing configuration is stable across turns and reload", async () => {

@@ -3,7 +3,6 @@ import { initTheme, type KeybindingsManager } from "@earendil-works/pi-coding-ag
 import {
   KeybindingsManager as TuiKeybindingsManager,
   TUI_KEYBINDINGS,
-  CURSOR_MARKER,
   stripTerminalSequences,
   TuiMainScreen,
   type Component,
@@ -28,6 +27,9 @@ import { escapeTaggedTheme, expectLinesFitWidth, readableTags } from "../src/ui-
 const enter = "\r";
 const escape = "\x1b";
 const down = "\x1b[B";
+/** Pi's zero-width APC markers: `CURSOR_MARKER` and the fake-cursor pair the TUI resolves per frame. */
+const BEL = String.fromCharCode(7);
+const PI_MARKER = new RegExp(`${escape}_pi:[^${BEL}]*${BEL}`, "g");
 const taggedTheme: SettingsMenuTheme = {
   fg: (color, text) => `<${color}>${text}</${color}>`,
   bold: (text) => `<b>${text}</b>`,
@@ -304,8 +306,8 @@ describe("EditorChooser", () => {
     );
     for (const width of [40, 120])
       expectLinesFitWidth(
-        // The focused editor draws Pi's cursor marker, which is not text.
-        chooser.render(width).map((line) => line.replace(CURSOR_MARKER, "")),
+        // The focused editor draws Pi's cursor markers, which are not text.
+        chooser.render(width).map((line) => line.replaceAll(PI_MARKER, "")),
         width,
         { piThemedBody: true },
       );
