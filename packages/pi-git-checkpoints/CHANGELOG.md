@@ -1,5 +1,13 @@
 # @ian-pascoe/pi-git-checkpoints
 
+## 0.3.3
+
+### Patch Changes
+
+- 5692f82: Require `typebox` 1 or later as a peer dependency instead of accepting any version.
+- Updated dependencies [5692f82]
+  - @ian-pascoe/pi-utils@0.7.1
+
 ## 0.3.2
 
 ### Patch Changes

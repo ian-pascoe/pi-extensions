@@ -1,5 +1,13 @@
 # @ian-pascoe/pi-command-deck
 
+## 0.2.4
+
+### Patch Changes
+
+- 5692f82: Support pi-tui 1.2's fake-cursor markers. With pi-tui 1.2 the empty-prompt placeholder disappeared, the Vim editor kept the software cursor next to the hardware cursor, and the cursor could cut a Visual highlight short. pi-tui 1.1's reverse-video cursor still works.
+- Updated dependencies [5692f82]
+  - @ian-pascoe/pi-utils@0.7.1
+
 ## 0.2.3
 
 ### Patch Changes

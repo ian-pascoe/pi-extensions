@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-git-checkpoints",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": false,
   "description": "Git-backed worktree checkpoints for Pi tree navigation",
   "keywords": [
@@ -37,7 +37,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@ian-pascoe/pi-utils": "^0.7.0"
+    "@ian-pascoe/pi-utils": "^0.7.1"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=1.1.0",

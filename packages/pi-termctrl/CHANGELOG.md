@@ -1,5 +1,13 @@
 # @ian-pascoe/pi-termctrl
 
+## 0.8.2
+
+### Patch Changes
+
+- 5692f82: Require `typebox` 1 or later as a peer dependency instead of accepting any version.
+- Updated dependencies [5692f82]
+  - @ian-pascoe/pi-utils@0.7.1
+
 ## 0.8.1
 
 ### Patch Changes

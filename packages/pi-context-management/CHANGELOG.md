@@ -1,5 +1,17 @@
 # @ian-pascoe/pi-context-management
 
+## 0.7.0
+
+### Minor Changes
+
+- e26cda5: Add Idle Rollover, modelled on Claude Code's idle compaction: when an interactive session with at least 200,000 tokens of context sits idle until just before its provider prompt cache expires (after any Pi idle cache warming stops), the agent refreshes Notes, writes a Handoff, and rolls over, so the next message does not resend the whole Context Window uncached. Configure it with `contextManagement.idleRollover: { enabled, minTokens }`; the obsolete-settings warning no longer fires for that key.
+
+### Patch Changes
+
+- 5692f82: Require `typebox` 1 or later as a peer dependency instead of accepting any version.
+- Updated dependencies [5692f82]
+  - @ian-pascoe/pi-utils@0.7.1
+
 ## 0.6.0
 
 ### Minor Changes
