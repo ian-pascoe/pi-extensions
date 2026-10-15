@@ -1832,6 +1832,8 @@ it.each([
     ]);
     expectPrefix(privateRequests[1], privateRequests[0]);
   },
+  // The 400-turn fixture takes about 2 s alone but passed 20 s under `pnpm verify` contention on CI.
+  60_000,
 );
 
 it("re-seeds with a changed seedBudgetTokens and keeps each Advisor context a stable prefix", async () => {
