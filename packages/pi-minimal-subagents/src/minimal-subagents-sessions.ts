@@ -120,6 +120,13 @@ function isMcpToolName(toolName: string): boolean {
   return toolName.startsWith("mcp__") || MCP_RESOURCE_TOOL_NAMES.has(toolName);
 }
 
+/**
+ * Pi filters MCP tools by a `tools` allowlist only when it names one (`mcp__` prefix); otherwise
+ * every MCP tool stays callable from codemode and tool_search. This entry makes the child's
+ * allowlist always filter them, and matches no tool: MCP tools are `mcp__<server>__<tool>`.
+ */
+const MCP_ALLOWLIST_FILTER = "mcp__";
+
 /** Resolve the exact active tools permitted by one Child Agent Launch Contract. */
 export function resolveChildActiveToolNames(
   allowedToolNames: readonly string[],
@@ -1205,6 +1212,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
         extensionEntrypoint: this.options.extensionEntrypoint,
         systemPromptBlock: this.buildChildSystemPrompt(agent),
         settingsManager,
+        grantedTools: agent.launch_contract.ordinary_tools,
       });
       await resourceLoader.reload();
       for (const extension of resourceLoader.getExtensions().extensions) {
@@ -1241,6 +1249,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       extensionEntrypoint: this.options.extensionEntrypoint,
       systemPromptBlock: this.buildChildSystemPrompt(agent),
       settingsManager,
+      grantedTools: agent.launch_contract.ordinary_tools,
     });
     await resourceLoader.reload();
     const modelRuntime = await ModelRuntime.create({
@@ -1266,7 +1275,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       agentDir: this.options.agentDir,
       model,
       thinkingLevel: agent.launch_contract.thinking_level,
-      tools: [...allowedToolNames, ...adapterToolNames],
+      tools: [...allowedToolNames, ...adapterToolNames, MCP_ALLOWLIST_FILTER],
       customTools: coordinatorTools,
       resourceLoader,
       sessionManager,
