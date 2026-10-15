@@ -5,8 +5,13 @@ const BAR_CURSOR = "\x1b[5 q";
 const BLOCK_CURSOR = "\x1b[1 q";
 const DEFAULT_CURSOR = "\x1b[0 q";
 const SHOW_CURSOR = "\x1b[?25h";
-const SOFTWARE_CURSOR_START = "\x1b[7m";
-const SOFTWARE_CURSOR_END = "\x1b[0m";
+/**
+ * The editor's software cursor around the cursor cell. pi-tui before 1.2 draws it in reverse video;
+ * pi-tui 1.2 wraps the cell in zero-width fake-cursor markers that the TUI resolves each frame.
+ */
+export const LEGACY_SOFTWARE_CURSOR = { start: "\x1b[7m", end: "\x1b[0m" } as const;
+export const FAKE_CURSOR = { start: "\x1b_pi:fc\x07", end: "\x1b_pi:/fc\x07" } as const;
+const SOFTWARE_CURSORS = [FAKE_CURSOR, LEGACY_SOFTWARE_CURSOR];
 
 /** The cursor style a Vim Mode asks for. */
 export type CursorStyle = "bar" | "block";
@@ -57,14 +62,13 @@ export function stripSoftwareCursor(lines: string[]): void {
     const marker = line.indexOf(CURSOR_MARKER);
     if (marker === -1) continue;
     const start = marker + CURSOR_MARKER.length;
-    if (!line.startsWith(SOFTWARE_CURSOR_START, start)) return;
-    const contentStart = start + SOFTWARE_CURSOR_START.length;
-    const end = line.indexOf(SOFTWARE_CURSOR_END, contentStart);
+    const cursor = SOFTWARE_CURSORS.find((candidate) => line.startsWith(candidate.start, start));
+    if (!cursor) return;
+    const contentStart = start + cursor.start.length;
+    const end = line.indexOf(cursor.end, contentStart);
     if (end === -1) return;
     lines[index] =
-      line.slice(0, start) +
-      line.slice(contentStart, end) +
-      line.slice(end + SOFTWARE_CURSOR_END.length);
+      line.slice(0, start) + line.slice(contentStart, end) + line.slice(end + cursor.end.length);
     return;
   }
 }

@@ -278,8 +278,9 @@ async function serializeTurn(turn: TurnContext) {
   return captured;
 }
 
+// Pi 1.2 expands one level of nested result shapes in each description's `Codemode:` line.
 const BASELINE_DIRECT_TOOLS_SHA256 =
-  "fb90edbbc8c0cb94079097d6867f1401d5438c3f9f3f5013068dacdefd72a8cc";
+  "2493075e5befae4c76c1ba5e4fe4807d53420077d6543ba6c00d9349a05fa33e";
 
 function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
@@ -480,7 +481,7 @@ test.each([
     expect(codemode).not.toContain("lsp_hover(");
     const hover = tools.find(({ name }) => name === "lsp_hover")?.description ?? "";
     expect(hover).toContain(
-      "Codemode: `tools.lsp_hover(args)` resolves to `{ position, results, warnings, truncated, structured_truncated, spill_path?, server_preview_ids? }`.",
+      "Codemode: `tools.lsp_hover(args)` resolves to `{ position: { path, line, character, token?, line_text }, results, warnings, truncated, structured_truncated, spill_path?, server_preview_ids? }`.",
     );
     expect(fixture.providerRequests).toEqual([]);
   },
@@ -496,11 +497,9 @@ test("lists the most useful script-callable tools under the default codemode bud
   const fixture = await createToolCacheFixture(["lsp"], { builtins: ["codemode"] });
   const turns = await runTurnsAcrossReload(fixture);
   const codemode = turns[0]?.tools.find(({ name }) => name === "codemode")?.description ?? "";
-  for (const name of [
-    "lsp_workspace_diagnostics",
-    "lsp_incoming_calls",
-    "lsp_goto_implementation",
-  ]) {
+  // Pi lists the cheapest declarations first; since Pi 1.2 renders schema constraints as comments,
+  // the position tools at the end of that order, such as lsp_goto_implementation, no longer fit.
+  for (const name of ["lsp_workspace_diagnostics", "lsp_incoming_calls"]) {
     expect(codemode, name).toContain(`### \`${name}\``);
   }
   // The rules appear once, under the namespace header, not on every declaration.

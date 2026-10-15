@@ -233,7 +233,10 @@ export default function advisor(pi: ExtensionAPI): void {
     await refresh(ctx);
   });
   pi.on("model_select", () => observer?.modelChanged());
-  pi.on("before_agent_start", () => observer?.beforeTask());
+  // Since Pi 1.2 a custom message's run, such as a corrective continuation, fires this too.
+  pi.on("before_agent_start", (event) => {
+    if (event.messageType !== "custom") observer?.beforeTask();
+  });
   pi.on("agent_settled", () => observer?.settled());
   pi.on("session_shutdown", async () => {
     activeMenu?.close();

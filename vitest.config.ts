@@ -11,6 +11,10 @@ const agentDir = join(home, ".pi", "agent");
 mkdirSync(agentDir, { recursive: true });
 process.once("exit", () => rmSync(home, { recursive: true, force: true }));
 
+// A Pi session exports its cache retention to commands it runs, which changes provider payloads
+// (Anthropic `ttl`, OpenAI `prompt_cache_retention`). Test workers inherit this process's env.
+delete process.env.PI_CACHE_RETENTION;
+
 export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],

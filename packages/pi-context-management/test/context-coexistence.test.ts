@@ -476,7 +476,7 @@ it("hands codemode scripts typed todo, context_notes and context_history values 
   );
   const todoDescription = declared(0)?.find((tool) => tool.name === "todo")?.description ?? "";
   expect(todoDescription).toMatch(
-    /Codemode: `tools\.todo\(args\)` resolves to `\{ action, tasks\?, task\?, id\?, cleared\? \}`/,
+    /Codemode: `tools\.todo\(args\)` resolves to `\{ action, tasks\?, task\?: \{ id, title, description\?, status \}, id\?, cleared\? \}`/,
   );
   f.responses.push(reply("After reload."));
   await f.session.reload();

@@ -1,9 +1,11 @@
 import path from "node:path";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { FAKE_CURSOR, LEGACY_SOFTWARE_CURSOR } from "./cursor-shape.js";
 
 const LABEL_GAP = 3;
-const SOFTWARE_CURSOR = "\x1b[7m \x1b[0m";
+const SOFTWARE_CURSOR = `${LEGACY_SOFTWARE_CURSOR.start} ${LEGACY_SOFTWARE_CURSOR.end}`;
+const FAKE_CURSOR_CELL = `${FAKE_CURSOR.start} ${FAKE_CURSOR.end}`;
 
 /** Render a border row with a left and a right label, shrinking the longer label to fit. */
 export function renderDeckBorder(
@@ -60,6 +62,7 @@ export function withEmptyPromptPlaceholder(
   return truncateToWidth(
     line
       .replace(SOFTWARE_CURSOR, `${SOFTWARE_CURSOR}${placeholder}`)
+      .replace(FAKE_CURSOR_CELL, `${FAKE_CURSOR_CELL}${placeholder}`)
       .replace(`${CURSOR_MARKER} `, `${CURSOR_MARKER} ${placeholder}`),
     width,
     "",

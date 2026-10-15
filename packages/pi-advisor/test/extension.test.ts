@@ -225,7 +225,7 @@ it.each(["none", "on", "only"] as const)(
     // Built-in codemode says how scripts call the tools they can reach.
     const askCall = `${askTool.description}\n\nCodemode: \`tools.advisor_ask(args)\` resolves to a string.`;
     // `only` lists the full script declaration in the codemode description.
-    const askSample = `${askTool.description}\n\ncodemode tool declaration:\n\`\`\`ts\ndeclare const tools: { advisor_ask(args: { message: string; }): Promise<string>; };\n\`\`\``;
+    const askSample = `${askTool.description}\n\ncodemode tool declaration:\n\`\`\`ts\ndeclare const tools: { advisor_ask(args: {\n  // @minLength 1\n  message: string;\n}): Promise<string>; };\n\`\`\``;
     const declaredAsk = codemodeMode === "on" ? { ...askTool, description: askCall } : askTool;
     // `only` hides direct declarations and lists them in the codemode description instead.
     const withScriptedAsk = (tools: NonNullable<Context["tools"]> = []) =>
