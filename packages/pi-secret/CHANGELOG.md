@@ -1,5 +1,12 @@
 # @ian-pascoe/pi-secret
 
+## 0.1.1
+
+### Patch Changes
+
+- Updated dependencies [16eaaf1]
+  - @ian-pascoe/pi-utils@0.9.0
+
 ## 0.1.0
 
 ### Minor Changes

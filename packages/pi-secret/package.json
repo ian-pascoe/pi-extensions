@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-secret",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "description": "Let Pi agents use Secrets the user enters without the values reaching the model, the session file, or the screen.",
   "keywords": [
@@ -37,7 +37,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@ian-pascoe/pi-utils": "^0.8.0"
+    "@ian-pascoe/pi-utils": "^0.9.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=1.1.0",
