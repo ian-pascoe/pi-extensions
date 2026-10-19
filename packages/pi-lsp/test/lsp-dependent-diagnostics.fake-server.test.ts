@@ -8,10 +8,12 @@ import { MAX_TOUCHED_DECLARATIONS } from "../src/lsp-dependent-diagnostics.js";
 
 const fakeServerPath = fileURLToPath(new URL("fixtures/fake-lsp-server.mjs", import.meta.url));
 const requestLog = resolve(tmpdir(), `pi-lsp-dependents-requests-${process.pid}.log`);
+const peakLog = resolve(tmpdir(), `pi-lsp-dependents-peak-${process.pid}.log`);
 
 afterEach(async () => {
   await closeExtensionSessions();
   await rm(requestLog, { force: true });
+  await rm(peakLog, { force: true });
 });
 
 const declarations = Array.from({ length: 15 }, (_, index) => `export function f${index}() {}`);
@@ -20,9 +22,16 @@ const source = declarations.join("\n");
 function startFakeSession(
   environment: Record<string, string>,
   effects: { readonly dependentScanBudgetMs?: number } = {},
+  serverSettings: { readonly maxConcurrentDiagnostics?: number } = {},
+  dependentCount = 1,
 ) {
+  const dependents = Array.from({ length: dependentCount }, (_, index) => `src/dep-${index}.ts`);
   return startExtensionSession({
-    files: { "src/a.ts": `${source}\n`, "src/b.ts": "import './a.js';\n" },
+    files: {
+      "src/a.ts": `${source}\n`,
+      "src/b.ts": "import './a.js';\n",
+      ...Object.fromEntries(dependents.map((path) => [path, "import './a.js';\n"])),
+    },
     lspSettings: {
       timeouts: { diagnosticsMs: 2_000, initializeMs: 5_000, requestMs: 10_000 },
       servers: {
@@ -33,9 +42,10 @@ function startFakeSession(
             FAKE_REQUEST_LOG: requestLog,
             FAKE_SCAN: "1",
             FAKE_SYMBOLS: "15",
-            FAKE_REFERENCE_FILE: "src/b.ts",
+            FAKE_REFERENCE_FILE: dependentCount === 1 ? "src/b.ts" : dependents.join(","),
             ...environment,
           },
+          ...serverSettings,
           languages: [{ extensions: [".ts"], languageId: "typescript" }],
         },
       },
@@ -60,7 +70,35 @@ const wholeFileEdit = {
   newText: source.replace("f0", "g0"),
 };
 
+async function peakDiagnosticsInFlight(): Promise<number> {
+  return Number(await readFile(peakLog, "utf8"));
+}
+
 describe("dependent-file Post-edit Diagnostics against a fake server", () => {
+  // The server answers pulls only, each after a delay, so concurrent pulls overlap and are counted.
+  const slowPulls = {
+    FAKE_DIAGNOSTICS: "one",
+    FAKE_PUSH: "none",
+    FAKE_DIAGNOSTIC_LATENCY_MS: "30",
+    FAKE_PEAK_LOG: peakLog,
+  };
+
+  test("never has more than one pull in flight to a Server Instance capped at one", async () => {
+    const session = await startFakeSession(slowPulls, {}, { maxConcurrentDiagnostics: 1 }, 8);
+    await session.edit(wholeFileEdit);
+
+    // The scan still pulled the changed file and all 8 dependents, once before the edit and once after.
+    expect((await requestCounts()).get("textDocument/diagnostic")).toBeGreaterThanOrEqual(18);
+    expect(await peakDiagnosticsInFlight()).toBe(1);
+  }, 30_000);
+
+  test("has at most two pulls in flight to a Server Instance whose limit is unset", async () => {
+    const session = await startFakeSession(slowPulls, {}, {}, 8);
+    await session.edit(wholeFileEdit);
+
+    expect(await peakDiagnosticsInFlight()).toBe(2);
+  }, 30_000);
+
   test("searches at most 10 touched declarations: one documentSymbol and 10 references", async () => {
     await rm(requestLog, { force: true });
     const session = await startFakeSession({ FAKE_DIAGNOSTICS: "one" });

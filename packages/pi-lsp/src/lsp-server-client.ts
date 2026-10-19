@@ -53,6 +53,7 @@ import {
   normalizeLspPositionEncoding,
   type LspPositionEncoding,
 } from "./lsp-position-encoding.js";
+import { LspRequestLimiter } from "./lsp-request-limiter.js";
 import type { LspTimeouts } from "./pi-lsp-settings.js";
 
 const MAX_OPEN_DOCUMENTS = 100;
@@ -104,6 +105,11 @@ export interface LspServerClientOptions {
   readonly settings: unknown;
   /** Per-operation time budgets. */
   readonly timeouts: LspServerClientTimeouts;
+  /**
+   * Most document-pull and workspace-pull diagnostics requests in flight at once; further ones
+   * wait in a first-in, first-out queue. Push-diagnostics waits are not requests and never queue.
+   */
+  readonly maxConcurrentDiagnostics: number;
   /** Mode-safe session file that retains the latest 1 MB of server stderr. */
   readonly stderrPath: string;
   /** Convert a server-initiated edit into a Workspace Edit Preview. */
@@ -306,6 +312,7 @@ export class LspServerClient {
   private readonly dynamicRegistrations = new Map<string, Registration>();
   private readonly diagnosticWaiters = new Map<string, Set<() => void>>();
   private diagnosticsRevision = 0;
+  private readonly diagnosticsLimiter: LspRequestLimiter;
   /** Document version of each URI whose diagnostics wait ended in silence from a push-only server. */
   private readonly silentDocumentVersions = new Map<string, number>();
   private stderrTail: Buffer<ArrayBufferLike> = Buffer.alloc(0);
@@ -324,6 +331,9 @@ export class LspServerClient {
     this.terminalErrorPromise = new Promise((resolveTerminalError) => {
       this.resolveTerminalError = resolveTerminalError;
     });
+    this.diagnosticsLimiter = new LspRequestLimiter(options.maxConcurrentDiagnostics, () =>
+      abortError(options),
+    );
   }
 
   /** Spawn and initialize one configured language server over stdio. */
@@ -730,20 +740,28 @@ export class LspServerClient {
     if (pushOnly && this.silentDocumentVersions.get(document.uri) === document.version) {
       return this.silentWaitResult(pushOnly, true);
     }
+    // The loser of the race, such as a pull still waiting in the queue, is cancelled with the winner.
+    const attempt = new AbortController();
+    const attemptSignal =
+      signal === undefined ? attempt.signal : AbortSignal.any([signal, attempt.signal]);
     const candidates: Array<Promise<LspDocumentDiagnosticResult>> = [
-      this.waitForPushDiagnostics(document.uri, document.version, synchronizedRevision, signal),
+      this.waitForPushDiagnostics(
+        document.uri,
+        document.version,
+        synchronizedRevision,
+        attemptSignal,
+      ),
     ];
     if (registration !== undefined) {
-      candidates.push(this.pullDocumentDiagnostics(document.uri, registration.identifier, signal));
+      candidates.push(
+        this.pullDocumentDiagnostics(document.uri, registration.identifier, attemptSignal),
+      );
     }
 
+    // Each candidate enforces its own diagnostics timeout: a pull's starts when it is sent, so
+    // time spent queued behind other pulls never counts against it.
     try {
-      return await this.raceBudget(
-        Promise.any(candidates),
-        this.options.timeouts.diagnosticsMs,
-        "diagnostics",
-        signal,
-      );
+      return await Promise.any(candidates);
     } catch (cause) {
       if (cause instanceof LspServerClientError) {
         if (cause.kind === "cancelled") throw cause;
@@ -766,6 +784,8 @@ export class LspServerClient {
         if (clientError instanceof LspServerClientError) throw clientError;
       }
       throw cause;
+    } finally {
+      attempt.abort();
     }
   }
 
@@ -822,17 +842,19 @@ export class LspServerClient {
     }
 
     try {
-      const report = await this.sendRequestWithBudget<WorkspaceDiagnosticReport>(
-        WorkspaceDiagnosticRequest.method,
-        {
-          identifier: registration.identifier,
-          previousResultIds: [...this.pullDiagnostics]
-            .filter(([, state]) => state.resultId !== undefined)
-            .map(([uri, state]) => ({ uri, value: state.resultId ?? "" })),
-        },
-        this.options.timeouts.diagnosticsMs,
-        WorkspaceDiagnosticRequest.method,
-        signal,
+      const report = await this.diagnosticsLimiter.run(signal, () =>
+        this.sendRequestWithBudget<WorkspaceDiagnosticReport>(
+          WorkspaceDiagnosticRequest.method,
+          {
+            identifier: registration.identifier,
+            previousResultIds: [...this.pullDiagnostics]
+              .filter(([, state]) => state.resultId !== undefined)
+              .map(([uri, state]) => ({ uri, value: state.resultId ?? "" })),
+          },
+          this.options.timeouts.diagnosticsMs,
+          WorkspaceDiagnosticRequest.method,
+          signal,
+        ),
       );
       const diagnosticsByUri = this.acceptWorkspaceDiagnosticReport(report);
       return { status: "fresh", source: "workspace_pull", diagnosticsByUri };
@@ -1164,18 +1186,23 @@ export class LspServerClient {
     identifier: string | undefined,
     signal?: AbortSignal,
   ): Promise<LspDocumentDiagnosticResult> {
-    const previous = this.pullDiagnostics.get(uri);
-    const report = await this.sendRequestWithBudget<DocumentDiagnosticReport>(
-      DocumentDiagnosticRequest.method,
-      {
-        textDocument: { uri },
-        identifier,
-        previousResultId: previous?.resultId,
-      },
-      this.options.timeouts.diagnosticsMs,
-      DocumentDiagnosticRequest.method,
-      signal,
-    );
+    // The previous result is read when the request is sent, so a pull that waited in the queue
+    // builds on any report that arrived meanwhile.
+    const { previous, report } = await this.diagnosticsLimiter.run(signal, async () => {
+      const previousState = this.pullDiagnostics.get(uri);
+      const documentReport = await this.sendRequestWithBudget<DocumentDiagnosticReport>(
+        DocumentDiagnosticRequest.method,
+        {
+          textDocument: { uri },
+          identifier,
+          previousResultId: previousState?.resultId,
+        },
+        this.options.timeouts.diagnosticsMs,
+        DocumentDiagnosticRequest.method,
+        signal,
+      );
+      return { previous: previousState, report: documentReport };
+    });
     if (report.kind === DocumentDiagnosticReportKind.Unchanged) {
       return {
         status: "fresh",

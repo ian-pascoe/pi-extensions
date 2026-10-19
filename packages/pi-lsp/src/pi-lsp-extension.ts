@@ -550,6 +550,7 @@ export class PiLspLifecycleController {
           environment: { ...definition.environment },
           initializationOptions: definition.initializationOptions ?? null,
           settings: definition.settings ?? null,
+          maxConcurrentDiagnostics: definition.maxConcurrentDiagnostics,
           timeouts,
           signal,
           stderrPath: await sessionFiles.getServerStderrPath(`${definition.id}\u0000${rootPath}`),

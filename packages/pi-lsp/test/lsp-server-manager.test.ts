@@ -305,6 +305,7 @@ function serverDefinition(id: string): LspServerDefinition {
     environment: {},
     id,
     languages: [{ extensions: [".ts"], fileNames: [], languageId: "typescript" }],
+    maxConcurrentDiagnostics: 2,
     requireRootMarker: false,
     rootMarkers: ["package.json"],
   };
@@ -852,6 +853,7 @@ describe("session-scoped LSP server manager", () => {
           environment: process.env,
           initializationOptions: null,
           settings: null,
+          maxConcurrentDiagnostics: definition.maxConcurrentDiagnostics,
           timeouts: { ...timeouts, initializeMs: 2_000 },
           stderrPath,
           onUnavailable,
@@ -891,6 +893,7 @@ describe("session-scoped LSP server manager", () => {
           environment: { ...process.env, FAKE_BLOCK_CONFIGURATION: "1" },
           initializationOptions: null,
           settings: { large: "x".repeat(1024 * 1024) },
+          maxConcurrentDiagnostics: definition.maxConcurrentDiagnostics,
           timeouts: { ...timeouts, initializeMs: 10_000, shutdownMs: 100 },
           stderrPath,
           onUnavailable,

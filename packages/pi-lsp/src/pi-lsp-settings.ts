@@ -10,8 +10,12 @@ const DEFAULT_LSP_TIMEOUTS = {
   workspaceRequestMs: 15000,
 } as const;
 
+/** Diagnostics requests one Server Instance has in flight when its definition sets no limit. */
+const DEFAULT_MAX_CONCURRENT_DIAGNOSTICS = 2;
+
 const NonEmptyStringSchema = Type.String({ minLength: 1 });
-const PositiveMillisecondsSchema = Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
+const PositiveIntegerSchema = Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
+const PositiveMillisecondsSchema = PositiveIntegerSchema;
 const JsonValueSchema = Type.Any();
 const JsonObjectSchema = Type.Record(Type.String(), JsonValueSchema);
 const LspLanguageMappingSchema = Type.Object(
@@ -31,6 +35,7 @@ const LspServerDefinitionSchema = Type.Object(
     ),
     initializationOptions: Type.Optional(JsonValueSchema),
     languages: Type.Optional(Type.Array(LspLanguageMappingSchema, { minItems: 1 })),
+    maxConcurrentDiagnostics: Type.Optional(PositiveIntegerSchema),
     requireRootMarker: Type.Optional(Type.Boolean()),
     rootMarkers: Type.Optional(Type.Array(NonEmptyStringSchema)),
     settings: Type.Optional(JsonValueSchema),
@@ -84,6 +89,11 @@ export interface LspServerDefinition {
   readonly id: string;
   readonly initializationOptions?: JsonValue;
   readonly languages: readonly LspLanguageMapping[];
+  /**
+   * Most document-pull and workspace-pull diagnostics requests one Server Instance of this
+   * definition has in flight at once; the rest wait in a first-in, first-out queue.
+   */
+  readonly maxConcurrentDiagnostics: number;
   /** Require any root marker above a candidate file; false falls back to Pi's working directory. */
   readonly requireRootMarker: boolean;
   readonly rootMarkers: readonly string[];
@@ -161,6 +171,32 @@ function schemaValidationWarning(
   return `${prefix}${path}${unknownFieldSuffix}: ${error?.message ?? "invalid settings"}`;
 }
 
+interface ServerWithoutInvalidLimit {
+  readonly definition: JsonValue;
+  readonly warning: string | undefined;
+}
+
+/**
+ * An invalid `maxConcurrentDiagnostics` only costs its own value: the definition keeps working
+ * with the default, unlike other invalid fields that quarantine the whole definition.
+ */
+function withoutInvalidMaxConcurrentDiagnostics(
+  server: JsonValue,
+  prefix: string,
+): ServerWithoutInvalidLimit {
+  if (!isJsonObject(server) || !Object.hasOwn(server, "maxConcurrentDiagnostics")) {
+    return { definition: server, warning: undefined };
+  }
+  const { maxConcurrentDiagnostics, ...rest } = server;
+  if (Value.Check(PositiveIntegerSchema, maxConcurrentDiagnostics)) {
+    return { definition: server, warning: undefined };
+  }
+  return {
+    definition: rest,
+    warning: `${prefix}.maxConcurrentDiagnostics: expected a positive integer`,
+  };
+}
+
 function parseLspServerDefinitions(
   value: JsonValue | undefined,
   scope: "global" | "project",
@@ -171,22 +207,32 @@ function parseLspServerDefinitions(
   if (!isJsonObject(value)) {
     return { servers, warnings: [`${scope} lsp.servers: expected a JSON object`] };
   }
-  for (const [id, server] of Object.entries(value)) {
+  for (const [id, rawServer] of Object.entries(value)) {
     if (!Value.Check(NonEmptyStringSchema, id)) {
       warnings.push(`${scope} lsp.servers.${String(id)}: server ID must be a non-empty string`);
       continue;
     }
-    if (server === null) {
+    if (rawServer === null) {
       servers.set(id, { kind: "excluded" });
       continue;
     }
-    if (!Value.Check(LspServerDefinitionSchema, server)) {
+    const { definition, warning } = withoutInvalidMaxConcurrentDiagnostics(
+      rawServer,
+      `${scope} lsp.servers.${id}`,
+    );
+    if (warning !== undefined) warnings.push(warning);
+    if (!Value.Check(LspServerDefinitionSchema, definition)) {
       warnings.push(
-        schemaValidationWarning(LspServerDefinitionSchema, server, `${scope} lsp.servers.${id}`),
+        schemaValidationWarning(
+          LspServerDefinitionSchema,
+          definition,
+          `${scope} lsp.servers.${id}`,
+        ),
       );
       servers.set(id, { kind: "excluded" });
       continue;
     }
+    const server = definition;
     if (server.command === undefined || server.languages === undefined) {
       warnings.push(`${scope} lsp.servers.${id}: command and languages are required`);
       servers.set(id, { kind: "excluded" });
@@ -369,6 +415,7 @@ function resolveLspServerDefinition(
     environment: resolveLspEnvironment(server.environment),
     id,
     languages,
+    maxConcurrentDiagnostics: server.maxConcurrentDiagnostics ?? DEFAULT_MAX_CONCURRENT_DIAGNOSTICS,
     requireRootMarker: server.requireRootMarker ?? false,
     rootMarkers: server.rootMarkers ?? [],
   };
