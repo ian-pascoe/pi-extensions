@@ -1,5 +1,16 @@
 # @ian-pascoe/pi-guardian
 
+## 0.3.0
+
+### Minor Changes
+
+- 2bda153: Guardian now redacts Secrets held through Pi Secret to their Secret References before reviewing or journaling a call, including in review evidence, and no longer reports their resolution as argument drift, whichever extension loads first. `secret_ask`, `secret_list`, and `secret_forget` are allowed by default.
+
+### Patch Changes
+
+- Updated dependencies [2bda153]
+  - @ian-pascoe/pi-utils@0.8.0
+
 ## 0.2.3
 
 ### Patch Changes
