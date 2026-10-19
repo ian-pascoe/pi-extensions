@@ -389,7 +389,7 @@ describe("Safe Command", () => {
         expect(isSafeCommand(`${change}; git log`, rules, where)).toBe(false);
         // A later cd is no longer proved, so only a rule that covers it allows it.
         expect(isSafeCommand(`${change} && cd src`, rules, where)).toBe(false);
-        expect(isSafeCommand(`${change} && cd /var && ls`, rules, where)).toBe(false);
+        expect(isSafeCommand(`${change} && cd /usr && ls`, rules, where)).toBe(false);
         // Other built-in programs only read where they are pointed.
         expect(isSafeCommand(`${change} && ls && pwd`, rules, where)).toBe(true);
         // Git before the change still runs in the working directory.
@@ -424,7 +424,7 @@ describe("Safe Command", () => {
         ["a missing directory", () => "cd missing && ls"],
         ["a file", () => "cd file.txt && ls"],
         ["a directory inside the home directory", () => `cd ${home()}/notes && ls`],
-        ["a chain of such cds", () => `cd /opt && cd /var && ls`],
+        ["a chain of such cds", () => `cd /opt && cd /usr && ls`],
         ["a relative cd from an earlier one", () => `cd /opt && cd sub && ls`],
         ["a chain that stays clear of home", () => "cd packages && cd ../../outside && pwd"],
         ["a failing cd's `||` branch", () => "cd /opt || ls"],
@@ -448,7 +448,7 @@ describe("Safe Command", () => {
         ["git after a parent escape", "cd .. && git status"],
         ["git after a missing directory", "cd missing && git status"],
         ["git after a nested repository", "cd vendor/nested && git status"],
-        ["git after a chain", "cd /opt && cd /var && git status"],
+        ["git after a chain", "cd /opt && cd /usr && git status"],
         ["git after a known cd that follows", "cd /opt && cd src && git status"],
       ])("reviews %s", (_case, command) => {
         expect(isSafeCommand(command, {}, where), command).toBe(false);
@@ -541,10 +541,10 @@ describe("Safe Command", () => {
         const rules = { "cd /opt": "allow", pushd: "allow", "git describe": "allow" } as const;
         // The user allowed this very `cd`, so the directory is theirs to vouch for.
         expect(isSafeCommand("cd /opt && git describe", rules, where)).toBe(true);
-        expect(isSafeCommand("cd /var && pushd /opt && ls", rules, where)).toBe(true);
+        expect(isSafeCommand("cd /usr && pushd /opt && ls", rules, where)).toBe(true);
         // A directory change after a relaxed `cd` stays unknown: git is still reviewed.
-        expect(isSafeCommand("cd /var && pushd /opt && git status", rules, where)).toBe(false);
-        expect(isSafeCommand("cd /var && pushd /opt && git describe", rules, where)).toBe(false);
+        expect(isSafeCommand("cd /usr && pushd /opt && git status", rules, where)).toBe(false);
+        expect(isSafeCommand("cd /usr && pushd /opt && git describe", rules, where)).toBe(false);
       });
 
       it.each([
