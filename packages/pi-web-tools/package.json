@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-web-tools",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "private": false,
   "description": "Bounded public web search and textual URL fetching for Pi",
   "keywords": [
@@ -37,7 +37,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@ian-pascoe/pi-utils": "^0.7.1",
+    "@ian-pascoe/pi-utils": "^0.8.0",
     "htmlparser2": "12.0.0",
     "turndown": "7.2.4"
   },
