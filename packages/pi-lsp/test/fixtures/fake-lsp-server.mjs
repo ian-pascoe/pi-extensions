@@ -217,6 +217,10 @@ async function handleRequest(message) {
         process.env.FAKE_APPLY_EDIT_ON_HOVER === "1"
           ? await requestFakeEdit(message.params.textDocument.uri)
           : null;
+      // FAKE_APPLY_EDIT_LOG names a file that receives each edit reply as one JSON line.
+      if (reply !== null && process.env.FAKE_APPLY_EDIT_LOG) {
+        appendFileSync(process.env.FAKE_APPLY_EDIT_LOG, `${JSON.stringify(reply)}\n`);
+      }
       respond(message.id, { contents: { kind: "plaintext", value: JSON.stringify(reply) } });
       return;
     }

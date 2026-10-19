@@ -1,5 +1,6 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -220,6 +221,30 @@ describe("Server Instances shared across sessions in one Pi process", () => {
     expect((await status(child)).server?.state).toBe("running");
   });
 
+  test("a restart during a shared startup reports a fresh running instance, not the stopped startup's failure", async () => {
+    const project = await createSharedProject({ FAKE_INITIALIZE_DELAY_MS: "300" });
+    const parent = await openSession(project);
+    const child = await openSession(project);
+    const start = { server_id: "fake", file_path: project.filePath };
+
+    const starting = runTool(parent, "lsp_capabilities", start);
+    starting.catch(() => undefined);
+    // The first process is launched and waiting to answer initialize.
+    await expect.poll(() => project.launches()).toHaveLength(1);
+    const restarted = await runTool(child, "lsp_restart", start);
+
+    expect(restarted.structuredContent).toMatchObject({ server_id: "fake" });
+    await expect(starting).rejects.toThrow("Instance was stopped during startup");
+    expect((await status(child)).server).toMatchObject({ state: "running" });
+    expect((await status(child)).server?.error).toBeUndefined();
+    await runTool(parent, "lsp_capabilities", start);
+    expect((await status(parent)).server).toMatchObject({
+      state: "running",
+      shared_with_sessions: 1,
+    });
+    expect(await project.launches()).toHaveLength(2);
+  });
+
   test("an instance stops when its last leaseholder shuts down, and a session that never routes to it takes no lease", async () => {
     const project = await createSharedProject();
     const { parent, child, pid } = await openLeasingSessions(project);
@@ -285,13 +310,20 @@ describe("Server Instances shared across sessions in one Pi process", () => {
   });
 
   test("a server-initiated edit becomes a preview only in a sole leaseholder's session", async () => {
-    const project = await createSharedProject({ FAKE_APPLY_EDIT_ON_HOVER: "1" });
+    const replyLog = resolve(await makeTemporaryDirectory("pi-lsp-shared-edits-"), "replies.log");
+    const project = await createSharedProject({
+      FAKE_APPLY_EDIT_ON_HOVER: "1",
+      FAKE_APPLY_EDIT_LOG: replyLog,
+    });
     const parent = await openSession(project);
     const child = await openSession(project);
     const hover = { file_path: project.filePath, line: 1, character: 1 };
 
     const sole = await runTool(parent, "lsp_hover", hover);
-    expect(sole.structuredContent).toMatchObject({ server_preview_ids: [expect.any(String)] });
+    const [previewId] = Value.Parse(
+      Type.Object({ server_preview_ids: Type.Array(Type.String()) }),
+      sole.structuredContent,
+    ).server_preview_ids;
     expect(JSON.stringify(sole.content)).toContain("workspace edit captured as preview");
 
     const shared = await runTool(child, "lsp_hover", hover);
@@ -301,6 +333,21 @@ describe("Server Instances shared across sessions in one Pi process", () => {
     expect(shared.structuredContent).not.toHaveProperty("server_preview_ids");
     const parentNext = await runTool(parent, "lsp_status", {});
     expect(parentNext.structuredContent).not.toHaveProperty("server_preview_ids");
+    const replies = (await readFile(replyLog, "utf8"))
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => JSON.parse(line));
+    expect(replies).toEqual([
+      {
+        applied: false,
+        failureReason: `Pi LSP: workspace edit captured as preview ${previewId}`,
+      },
+      {
+        applied: false,
+        failureReason:
+          "Pi LSP: workspace edit preview rejected: the shared Server Instance cannot attribute the edit to a session",
+      },
+    ]);
   });
 
   test("a shared instance's stderr file outlives the session that started it and is removed when the instance stops", async () => {
@@ -313,6 +360,9 @@ describe("Server Instances shared across sessions in one Pi process", () => {
     const stderrPath = /stderr (\S+)\)/u.exec((await status(child)).server?.error ?? "")?.[1];
     if (stderrPath === undefined) throw new Error("Expected the error to cite the stderr file");
     expect(stderrPath.startsWith(parent.sessionDirectory)).toBe(false);
+    expect(dirname(dirname(stderrPath))).toBe(tmpdir());
+    expect((await stat(dirname(stderrPath))).mode & 0o777).toBe(0o700);
+    expect((await stat(stderrPath)).mode & 0o777).toBe(0o600);
     expect(await readFile(stderrPath, "utf8")).toContain("END");
 
     await runCommand(child, `stop fake ${JSON.stringify(project.directories.cwd)}`);

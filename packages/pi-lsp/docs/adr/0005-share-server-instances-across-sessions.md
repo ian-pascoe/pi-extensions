@@ -8,14 +8,16 @@ The pool lives on `globalThis` under the versioned slot `Symbol.for("@ian-pascoe
 
 An entry's key is the identity of the process and its protocol behavior:
 
-- pi-lsp's package version, so copies of different versions never share client code or entry shapes;
+- pi-lsp's package version, so copies of different released versions never share client code or entry shapes;
 - the server ID and the workspace root;
 - the resolved `command`, `args`, and `environment`;
 - `initializationOptions` and `settings`;
 - the resolved `lsp.timeouts`;
 - `maxConcurrentDiagnostics`, so #464's limit is enforced once per shared process.
 
-Routing-only fields (`languages`, `rootMarkers`, `workspaceRootMarkers`, `requireRootMarker`), enablement, and `includeHintDiagnostics` are left out: they decide which files reach an instance or how results are filtered per session, not what the process is. Sessions whose keys differ, for example because only one trusts a project override, get separate instances without any warning. Values are serialized in the order settings resolution produced them, so a difference in key order alone could only cause an extra instance, never wrong sharing.
+Routing-only fields (`languages`, `rootMarkers`, `workspaceRootMarkers`, `requireRootMarker`), enablement, and `includeHintDiagnostics` are left out: they decide which files reach an instance or how results are filtered per session, not what the process is. Sessions whose keys differ, for example because only one trusts a project override, get separate instances without any warning. The environment and timeouts are serialized sorted by name; `initializationOptions` and `settings` keep the key order settings resolution produced, so a difference in their key order alone could only cause an extra instance, never wrong sharing.
+
+The version separates released versions, not two copies of the same version with different code, such as a linked development checkout loaded beside an installed release. Such copies share instances, and whichever started an instance supplies its client code. This is accepted: it affects only development setups, where a stale instance ends with a Stop, a restart, or the last session using it.
 
 ## Server Instance Leases
 

@@ -15,6 +15,7 @@ import { LspInputError } from "./lsp-input-error.js";
 import type { LspPositionEncoding } from "./lsp-position-encoding.js";
 import { LspServerClientError } from "./lsp-server-client.js";
 import {
+  type LspPooledStartInput,
   type LspServerInstanceLease,
   type LspServerInstanceLeaseHolder,
   lspServerInstanceKey,
@@ -80,26 +81,15 @@ export interface LspManagedServerClient {
   shutdown(): Promise<void>;
 }
 
-/** Provides all parsed inputs needed to start one language-server process. */
-export interface LspServerStartInput {
+/**
+ * Provides all parsed inputs needed to start one language-server process: the pool's stderr
+ * file, failure and edit callbacks, and abort signal, plus the instance's configuration.
+ */
+export interface LspServerStartInput extends LspPooledStartInput {
   /** Complete configured Server Definition. */
   readonly definition: LspServerDefinition;
-  /** Marks a started instance unavailable, for every leaseholder, after a process or protocol failure. */
-  readonly onUnavailable: (cause: unknown) => void;
-  /**
-   * Hands a server-initiated Workspace Edit to the only leaseholder's session, returning its
-   * preview ID, or rejects it when the shared instance cannot attribute it to one session.
-   */
-  readonly onWorkspaceEdit: (
-    edit: WorkspaceEdit,
-    positionEncoding: LspPositionEncoding,
-  ) => Promise<string>;
   /** Workspace root selected for this Server Instance. */
   readonly rootPath: string;
-  /** Cancels initialization when the last lease is released before startup completes. */
-  readonly signal: AbortSignal;
-  /** Pool-owned stderr file, kept until the Server Instance stops. */
-  readonly stderrPath: string;
   /** Resolved request and lifecycle timeout policy. */
   readonly timeouts: LspTimeouts;
 }
@@ -1130,9 +1120,13 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     if (route === undefined) {
       throw new Error(`Pi LSP: no known instance of ${serverId} for ${rootPath}`);
     }
-    this.leases.delete(key);
     const definition = this.input.settings.servers.get(serverId);
-    if (definition === undefined) return;
+    if (definition === undefined) {
+      // Without the definition there is no key to stop; still never leave this session's lease.
+      await this.releaseLease(key);
+      return;
+    }
+    this.leases.delete(key);
     await this.pool.stop(this.poolKey(definition, route));
   }
 
@@ -1246,16 +1240,15 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     this.knownRoutes.set(key, route);
     let lease = this.leases.get(key);
     if (lease?.active !== true) {
+      // The pool may run this startup after this session has shut down, so it captures only the
+      // instance's configuration and the start function, never the manager.
+      const { startClient, settings } = this.input;
+      const { rootPath } = route;
+      const { timeouts } = settings;
       lease = this.pool.acquire(
         this.poolKey(definition, route),
         this.leaseHolder(route.serverId),
-        (start) =>
-          this.input.startClient({
-            ...start,
-            definition,
-            rootPath: route.rootPath,
-            timeouts: this.input.settings.timeouts,
-          }),
+        (start) => startClient({ ...start, definition, rootPath, timeouts }),
       );
       this.leases.set(key, lease);
     }

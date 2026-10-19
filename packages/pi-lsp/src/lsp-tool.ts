@@ -1091,9 +1091,9 @@ function listedStatusServers(status: LspServerManagerStatus, all: boolean) {
 }
 
 /**
- * Render status as one `server_id state [root] language(extensions,...)... [error: ...] [shared
- * with N other sessions]` line per
- * Server Definition or Server Instance, followed by settings warnings. Unless `all` is set, only
+ * Render status as one
+ * `server_id state [root] language(extensions,...)... [error: ...] [shared with N other sessions]`
+ * line per Server Definition or Server Instance, followed by settings warnings. Unless `all` is set, only
  * the `LISTED_STATES` get a line, and the enabled Server Definitions without a Server Instance
  * are counted in one summary line.
  */

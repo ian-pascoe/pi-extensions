@@ -1,8 +1,8 @@
 /**
  * The process-wide pool of Server Instances that every Pi session running pi-lsp in one Pi process
  * shares (ADR-0005). Its entries live on `globalThis` under a registered symbol, because Pi
- * evaluates extension modules again on `/reload` and for every in-process Child Agent or Advisor
- * session, so module-level state would not be shared. Only pi-lsp reads or writes the slot; no
+ * evaluates extension modules again on `/reload` and for every in-process Minimal Subagents child
+ * or Advisor session, so module-level state would not be shared. Only pi-lsp reads or writes the slot; no
  * other package depends on it.
  */
 import { readFileSync } from "node:fs";
@@ -12,9 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import type { WorkspaceEdit } from "vscode-languageserver-protocol";
-import type { LspPositionEncoding } from "./lsp-position-encoding.js";
-import type { LspServerClient } from "./lsp-server-client.js";
+import type { LspServerClient, LspServerWorkspaceEditHandler } from "./lsp-server-client.js";
 import type { LspServerDefinition, LspTimeouts } from "./pi-lsp-settings.js";
 
 /** The versioned `globalThis` slot holding the shared pool's entries by Server Instance key. */
@@ -27,12 +25,6 @@ export interface LspPooledServerClient {
   /** Gracefully stop the language-server process and release protocol resources. */
   shutdown(): Promise<void>;
 }
-
-/** Converts a server-initiated Workspace Edit into a held preview, returning the preview ID. */
-export type LspServerWorkspaceEditHandler = (
-  edit: WorkspaceEdit,
-  positionEncoding: LspPositionEncoding,
-) => Promise<string>;
 
 /** What the pool provides to start one shared language-server process. */
 export interface LspPooledStartInput {
@@ -76,8 +68,11 @@ interface LspPoolEntry<TClient> {
   client: TClient | undefined;
   /** Failure that makes the instance unavailable to every leaseholder until it is stopped. */
   error: string | undefined;
-  /** What startup threw, even when it threw because the instance was stopped. */
-  startError: string | undefined;
+  /**
+   * Why the leases that waited for a previous instance's failed Stop ended; they fail with it
+   * instead of starting. A startup aborted by a Stop or the last release records nothing.
+   */
+  stopError: string | undefined;
   stderrDirectory: string | undefined;
   /** Present once the instance is stopping; a later lease starts a new instance after it. */
   stopping: Promise<void> | undefined;
@@ -103,8 +98,10 @@ function sortedEntries<T>(record: Readonly<Record<string, T>>): [string, T][] {
 /**
  * The identity of a shared Server Instance: the pi-lsp version, Server Definition ID, workspace
  * root, and everything that shapes the process and its protocol behavior. Routing-only fields,
- * enablement, and `includeHintDiagnostics` are left out. The definition's values are serialized
- * in the order settings resolution produced them, so identical settings give identical keys.
+ * enablement, and `includeHintDiagnostics` are left out. The environment and timeouts are sorted
+ * by name; `initializationOptions` and `settings` keep the order settings resolution produced, so
+ * identical settings give identical keys. The version does not separate two copies of the same
+ * version with different code, such as a linked development checkout (ADR-0005).
  */
 export function lspServerInstanceKey(
   definition: LspServerDefinition,
@@ -149,7 +146,8 @@ export class LspServerInstanceLease<TClient> {
 
   /** The running client, while the lease is active and the instance is available. */
   get client(): TClient | undefined {
-    return this.active && this.entry.error === undefined ? this.entry.client : undefined;
+    const view = this.view();
+    return view.kind === "running" ? view.client : undefined;
   }
 
   /** How many other sessions hold a lease on the same instance. */
@@ -159,27 +157,31 @@ export class LspServerInstanceLease<TClient> {
 
   /** The instance's state as this lease sees it, without waiting. */
   get state(): LspServerInstanceLeaseState {
-    if (!this.active) return "stopped";
-    if (this.entry.error !== undefined) return "unavailable";
-    if (!this.entry.settled) return "starting";
-    return this.entry.client === undefined ? "stopped" : "running";
+    return this.view().kind;
   }
 
   /** The latest unavailable reason, when the shared instance failed. */
   get error(): string | undefined {
-    return this.active ? this.entry.error : undefined;
+    const view = this.view();
+    return view.kind === "unavailable" ? view.error : undefined;
   }
 
   /** Wait for the shared startup, then report the client or why there is none. */
   async ready(): Promise<LspServerInstanceOutcome<TClient>> {
     await this.entry.started;
-    if (!this.active) {
-      return this.entry.startError === undefined
-        ? { kind: "stopped" }
-        : { kind: "unavailable", error: this.entry.startError };
-    }
+    const { stopError } = this.entry;
+    if (!this.active && stopError !== undefined) return { kind: "unavailable", error: stopError };
+    const view = this.view();
+    // Startup has ended, so the view is never `starting` here.
+    return view.kind === "starting" ? { kind: "stopped" } : view;
+  }
+
+  /** The instance as this lease sees it now: the one cascade every accessor derives from. */
+  private view(): LspServerInstanceOutcome<TClient> | { readonly kind: "starting" } {
+    if (!this.active) return { kind: "stopped" };
     if (this.entry.error !== undefined) return { kind: "unavailable", error: this.entry.error };
-    const client = this.entry.client;
+    if (!this.entry.settled) return { kind: "starting" };
+    const { client } = this.entry;
     return client === undefined ? { kind: "stopped" } : { kind: "running", client };
   }
 
@@ -219,7 +221,7 @@ export class LspServerInstancePool<TClient extends LspPooledServerClient> {
       settled: false,
       client: undefined,
       error: undefined,
-      startError: undefined,
+      stopError: undefined,
       stderrDirectory: undefined,
       stopping: undefined,
     };
@@ -264,7 +266,7 @@ export class LspServerInstancePool<TClient extends LspPooledServerClient> {
         await previousStop;
       } catch (cause) {
         // The leases waiting for a failed Stop fail with it, and the next use starts afresh.
-        entry.startError = describeError(cause);
+        entry.stopError = describeError(cause);
         entry.leases.clear();
         if (this.entries.get(key) === entry) this.entries.delete(key);
         return;
@@ -294,8 +296,8 @@ export class LspServerInstancePool<TClient extends LspPooledServerClient> {
       }
       entry.client = client;
     } catch (cause) {
-      entry.startError = describeError(cause);
-      if (!signal.aborted) entry.error = entry.startError;
+      // A startup a Stop or the last release aborted is not a failure of the instance.
+      if (!signal.aborted) entry.error = describeError(cause);
     }
   }
 

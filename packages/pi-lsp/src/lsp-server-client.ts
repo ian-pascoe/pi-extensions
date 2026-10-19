@@ -87,6 +87,16 @@ const DOCUMENTATION_FORMATS = [MarkupKind.Markdown, MarkupKind.PlainText];
 /** Time budgets, in milliseconds, for one language-server process. */
 export type LspServerClientTimeouts = LspTimeouts;
 
+/**
+ * Converts a server-initiated Workspace Edit, with the position encoding the server negotiated,
+ * into a held Workspace Edit Preview and returns its ID; a rejection becomes the reply's failure
+ * reason.
+ */
+export type LspServerWorkspaceEditHandler = (
+  workspaceEdit: WorkspaceEdit,
+  positionEncoding: LspPositionEncoding,
+) => Promise<string>;
+
 /** Launch and protocol configuration for one language-server process. */
 export interface LspServerClientOptions {
   /** Stable configured server ID. */
@@ -112,14 +122,8 @@ export interface LspServerClientOptions {
   readonly maxConcurrentDiagnostics: number;
   /** Mode-safe file that retains the latest 1 MB of server stderr; its directory is created if missing. */
   readonly stderrPath: string;
-  /**
-   * Convert a server-initiated edit, with the negotiated position encoding, into a Workspace Edit
-   * Preview and return its ID; a rejection becomes the reply's failure reason.
-   */
-  readonly onWorkspaceEdit?: (
-    workspaceEdit: WorkspaceEdit,
-    positionEncoding: LspPositionEncoding,
-  ) => Promise<string>;
+  /** Convert a server-initiated edit into a Workspace Edit Preview. */
+  readonly onWorkspaceEdit?: LspServerWorkspaceEditHandler;
   /** Mark the owning Server Instance unavailable after its first terminal process/protocol failure. */
   readonly onUnavailable?: (error: LspServerClientError) => void;
   /** Cancel startup before initialization completes; running clients use shutdown instead. */
