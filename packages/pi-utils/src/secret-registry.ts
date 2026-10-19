@@ -97,25 +97,86 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** The pattern for the values redacted so far; values are only ever added, so size keys it. */
-let cachedPattern: { size: number; pattern: RegExp } | undefined;
+/**
+ * Values shorter than this are redacted only as written: their encoded forms are short enough to
+ * occur by chance in unrelated output, such as a hash or another base64 blob.
+ */
+export const MIN_ENCODED_REDACTION_LENGTH = 8;
 
-function redactionPattern(values: Map<string, string>): RegExp | undefined {
-  if (values.size === 0) return undefined;
-  if (cachedPattern?.size !== values.size) {
-    const alternatives = [...values.keys()]
-      .toSorted((a, b) => b.length - a.length)
-      .map(escapeRegExp);
-    cachedPattern = { size: values.size, pattern: new RegExp(alternatives.join("|"), "g") };
-  }
-  return cachedPattern.pattern;
+/**
+ * The base64 characters that encode `bytes` whatever bytes surround them, for each of the three
+ * alignments `bytes` can start at inside a longer encoded payload, such as `user:password` in an
+ * HTTP Basic `Authorization` header. The characters that mix in neighbouring bytes are left out.
+ */
+function base64Cores(bytes: Buffer): string[] {
+  return [0, 1, 2].map((offset) => {
+    const encoded = Buffer.concat([Buffer.alloc(offset), bytes]).toString("base64");
+    const firstBit = offset * 8;
+    const endBit = (offset + bytes.length) * 8;
+    return encoded.slice(Math.ceil(firstBit / 6), Math.floor(endBit / 6));
+  });
 }
 
-function redactValue<T>(value: T, values: Map<string, string>, pattern: RegExp): T {
+/**
+ * The common encodings a program prints a value in: JSON string escaping, percent-encoding, hex,
+ * and base64 and base64url at every alignment. Values shorter than
+ * {@link MIN_ENCODED_REDACTION_LENGTH} get none.
+ */
+function encodedForms(value: string): string[] {
+  if (value.length < MIN_ENCODED_REDACTION_LENGTH) return [];
+  const bytes = Buffer.from(value, "utf8");
+  const hex = bytes.toString("hex");
+  const base64 = base64Cores(bytes);
+  const forms = [
+    JSON.stringify(value).slice(1, -1),
+    encodeURIComponent(value),
+    hex,
+    hex.toUpperCase(),
+    ...base64,
+    ...base64.map((core) => core.replaceAll("+", "-").replaceAll("/", "_")),
+  ];
+  return forms.filter((form) => form !== value && form.length >= MIN_ENCODED_REDACTION_LENGTH);
+}
+
+interface RedactionPattern {
+  /** How many values were redacted when the pattern was built; values are only ever added. */
+  readonly size: number;
+  readonly pattern: RegExp;
+  /** The held value each matchable text stands for, whether written as is or encoded. */
+  readonly sources: ReadonlyMap<string, string>;
+}
+
+let cachedPattern: RedactionPattern | undefined;
+
+function redactionPattern(values: Map<string, string>): RedactionPattern | undefined {
+  if (values.size === 0) return undefined;
+  if (cachedPattern?.size !== values.size) {
+    const sources = new Map<string, string>();
+    for (const value of values.keys())
+      for (const form of encodedForms(value)) if (!sources.has(form)) sources.set(form, value);
+    // A value as written wins over another value's encoded form that happens to equal it.
+    for (const value of values.keys()) sources.set(value, value);
+    const alternatives = [...sources.keys()]
+      .toSorted((a, b) => b.length - a.length)
+      .map(escapeRegExp);
+    cachedPattern = {
+      size: values.size,
+      pattern: new RegExp(alternatives.join("|"), "g"),
+      sources,
+    };
+  }
+  return cachedPattern;
+}
+
+function redactValue<T>(value: T, values: Map<string, string>, pattern: RedactionPattern): T {
   // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: walks arbitrary JSON-like tool data; only strings carry text to redact.
   if (typeof value === "string") {
     // One pass, so a Secret Reference inserted for one value is never matched by another.
-    const text = value.replace(pattern, (match) => secretReference(values.get(match) ?? ""));
+    // The name is looked up now, not when the pattern was built: a value held again under
+    // another name keeps the map's size.
+    const text = value.replace(pattern.pattern, (match) =>
+      secretReference(values.get(pattern.sources.get(match) ?? "") ?? ""),
+    );
     // oxlint-disable-next-line anti-slop/require-safety-comment-for-type-assertion -- SAFETY: `T` is `string` in this branch, and a string is returned.
     return (text === value ? value : text) as T;
   }
@@ -145,8 +206,9 @@ function redactValue<T>(value: T, values: Map<string, string>, pattern: RegExp):
 }
 
 /**
- * `value` with every occurrence of any value held in this process replaced by its Secret
- * Reference, in strings nested in plain objects and arrays. Returns `value` itself when nothing
+ * `value` with every occurrence of any value held in this process, written as is or in one of its
+ * common encodings (JSON string escaping, percent-encoding, hex, base64, base64url), replaced by
+ * its Secret Reference, in strings nested in plain objects and arrays. Returns `value` itself when nothing
  * was redacted, and never modifies it.
  */
 export function redactSecrets<T>(value: T): T {

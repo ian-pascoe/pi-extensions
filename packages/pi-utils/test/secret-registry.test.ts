@@ -49,6 +49,41 @@ test("redaction prefers the longest value and never re-redacts inserted referenc
   revokeSecret("REGISTRY_WORD", owner);
 });
 
+test("a held value is redacted in its common encodings too, at any base64 alignment", () => {
+  const value = 'p@ss "word"/9f3k';
+  holdSecret("REGISTRY_ENCODED", value, owner);
+  const reference = secretReference("REGISTRY_ENCODED");
+  const basic = Buffer.from(`user:${value}`).toString("base64");
+  const encodings = [
+    JSON.stringify({ password: value }),
+    `https://example.test/?pw=${encodeURIComponent(value)}`,
+    Buffer.from(value).toString("hex"),
+    Buffer.from(value).toString("hex").toUpperCase(),
+    Buffer.from(value).toString("base64"),
+    Buffer.from(value).toString("base64url"),
+    `Authorization: Basic ${basic}`,
+    Buffer.from(`ab:${value}!`).toString("base64"),
+    Buffer.from(`abc:${value}`).toString("base64url"),
+  ];
+  for (const text of encodings) {
+    const [before, after, ...rest] = redactSecrets(text).split(reference);
+    expect(rest, text).toEqual([]);
+    expect(after, text).toBeDefined();
+    // Only the characters that mix in neighbouring bytes, or padding, survive around it.
+    expect(`${before ?? ""}${after ?? ""}`.length, text).toBeLessThanOrEqual(
+      text.length - value.length,
+    );
+  }
+  const header = redactSecrets(`Authorization: Basic ${basic}`);
+  expect(header.startsWith(`Authorization: Basic ${basic.slice(0, 7)}${reference}`)).toBe(true);
+});
+
+test("a value shorter than eight characters is redacted only as written", () => {
+  holdSecret("REGISTRY_TINY", "t1ny-pw", owner);
+  const hex = Buffer.from("t1ny-pw").toString("hex");
+  expect(redactSecrets(`t1ny-pw ${hex}`)).toBe(`${secretReference("REGISTRY_TINY")} ${hex}`);
+});
+
 test("a revoked Secret no longer resolves but is still redacted", () => {
   holdSecret("REGISTRY_REVOKED", "old-password-0042", owner);
   revokeSecret("REGISTRY_REVOKED", owner);

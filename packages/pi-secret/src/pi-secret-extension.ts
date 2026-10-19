@@ -106,6 +106,31 @@ function iso(time: number): string {
   return new Date(time).toISOString();
 }
 
+/**
+ * Why a call referencing `names` cannot run, or undefined when every one is a held Secret. A
+ * malformed name and a name this session does not hold each get their own advice.
+ */
+function unresolvedReason(names: readonly string[]): string | undefined {
+  const malformed = names.filter((name) => !isSecretName(name));
+  const unheld = names.filter((name) => isSecretName(name) && resolveSecret(name) === undefined);
+  const sentences = ["The call did not run."];
+  if (malformed.length > 0) {
+    const listed = malformed.map((name) => JSON.stringify(name)).join(", ");
+    const verb =
+      malformed.length === 1 ? "is not a valid Secret Name" : "are not valid Secret Names";
+    sentences.push(
+      `${listed} ${verb}: a Secret Name uses uppercase letters, digits, and underscores, and does not start with a digit.`,
+    );
+  }
+  if (unheld.length > 0) {
+    const listed = unheld.map((name) => secretReference(name)).join(", ");
+    sentences.push(
+      `It references ${listed}, which this session does not hold. The Secret expired, was forgotten, or was never provided. Call secret_ask to request it again.`,
+    );
+  }
+  return sentences.length === 1 ? undefined : sentences.join(" ");
+}
+
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
@@ -286,16 +311,8 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
       const input = event.input as { [key: string]: JsonValue };
       const names = referencedSecretNames(input);
       if (names.size === 0) return undefined;
-      const missing = [...names].filter(
-        (name) => !isSecretName(name) || resolveSecret(name) === undefined,
-      );
-      if (missing.length > 0) {
-        const listed = missing.map((name) => secretReference(name)).join(", ");
-        return {
-          block: true,
-          reason: `The call did not run: it references ${listed}, which this session does not hold. The Secret expired, was forgotten, or was never provided. Call secret_ask to request it again.`,
-        };
-      }
+      const reason = unresolvedReason([...names]);
+      if (reason !== undefined) return { block: true, reason };
       // Pi passes the same arguments object on to the tool: resolve in place.
       Object.assign(
         input,

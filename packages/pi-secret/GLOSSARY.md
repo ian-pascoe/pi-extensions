@@ -25,5 +25,5 @@ The fixed span the user configures, counted from entry, after which a Secret exp
 _Avoid_: TTL, session lifetime, timeout
 
 **Redaction**:
-Replacing every occurrence of a held Secret's value with its Secret Reference in what a tool returns or the provider receives.
+Replacing every occurrence of a held Secret's value, as is or in a common encoding such as base64, with its Secret Reference in what a tool returns or the provider receives.
 _Avoid_: Masking, scrubbing

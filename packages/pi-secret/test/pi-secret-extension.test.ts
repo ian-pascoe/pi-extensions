@@ -48,6 +48,36 @@ describe("Secret Request and Secret References", () => {
     expect(await harness.sessionFileText()).not.toContain(value);
   });
 
+  it("redacts a Secret a command prints encoded, such as in an HTTP Basic Authorization header", async () => {
+    const value = "pw-basic-auth-77d0";
+    const harness = await createSecretHarness({
+      builtinTools: true,
+      dialogs: [[keys.paste(value), keys.enter]],
+    });
+    const basic = Buffer.from(`deploy:${value}`).toString("base64");
+    harness.responses.push(
+      toolCalls(["secret_ask", { names: ["API_PASSWORD"] }, "call-ask"]),
+      toolCalls([
+        "bash",
+        {
+          command:
+            'printf "deploy:%s" "$PI_SECRET_API_PASSWORD" | base64; printf "%s" "$PI_SECRET_API_PASSWORD" | xxd -p',
+        },
+        "call-bash",
+      ]),
+      reply("Done."),
+    );
+    await harness.session.prompt("Check the Basic auth header.");
+
+    const text = harness.resultText("call-bash") ?? "";
+    expect(text.match(/\{\{secret:API_PASSWORD\}\}/g)).toHaveLength(2);
+    for (const leaked of [basic.slice(8, -4), Buffer.from(value).toString("hex")]) {
+      expect(text).not.toContain(leaked);
+      expect(harness.requests.join("\n")).not.toContain(leaked);
+      expect(await harness.sessionFileText()).not.toContain(leaked);
+    }
+  });
+
   it.each([
     ["a Secret Reference", { text: "{{secret:NEVER_PROVIDED}}" }, "{{secret:NEVER_PROVIDED}}"],
     [
@@ -55,7 +85,6 @@ describe("Secret Request and Secret References", () => {
       { text: "curl -u $PI_SECRET_NEVER_PROVIDED" },
       "{{secret:NEVER_PROVIDED}}",
     ],
-    ["a malformed Secret Name", { text: "{{secret:lower-case}}" }, "{{secret:lower-case}}"],
   ])(
     "blocks a call whose %s names no held Secret, and says to ask again",
     async (_kind, args, named) => {
@@ -69,6 +98,55 @@ describe("Secret Request and Secret References", () => {
       expect(text).toContain("Call secret_ask to request it again");
     },
   );
+
+  it.each([
+    [
+      "a malformed Secret Name",
+      { text: "{{secret:lower-case}}" },
+      '"lower-case" is not a valid Secret Name',
+    ],
+    ["an empty Secret Reference", { text: "{{secret:}}" }, '"" is not a valid Secret Name'],
+    [
+      "a malformed environment reference",
+      { text: "echo $PI_SECRET_lower" },
+      '"lower" is not a valid Secret Name',
+    ],
+  ])("blocks a call with %s and says what a Secret Name looks like", async (_kind, args, named) => {
+    const harness = await createSecretHarness();
+    harness.responses.push(toolCalls(["echo", args, "call-echo"]), reply("Done."));
+    await harness.session.prompt("Go.");
+
+    expect(harness.received).toEqual([]);
+    const text = harness.resultText("call-echo");
+    expect(text).toContain(named);
+    expect(text).toContain("uppercase letters, digits, and underscores");
+    expect(text).not.toContain("does not hold");
+  });
+
+  it("gives a malformed and an unheld Secret Reference each its own advice in one block", async () => {
+    const harness = await createSecretHarness();
+    harness.responses.push(
+      toolCalls(["echo", { text: "{{secret:bad name}} {{secret:NEVER_PROVIDED}}" }, "call-echo"]),
+      reply("Done."),
+    );
+    await harness.session.prompt("Go.");
+
+    expect(harness.received).toEqual([]);
+    expect(harness.resultText("call-echo")).toBe(
+      'The call did not run. "bad name" is not a valid Secret Name: a Secret Name uses uppercase letters, digits, and underscores, and does not start with a digit. It references {{secret:NEVER_PROVIDED}}, which this session does not hold. The Secret expired, was forgotten, or was never provided. Call secret_ask to request it again.',
+    );
+  });
+
+  it("runs a call that only mentions the environment prefix, such as listing held Secrets' variables", async () => {
+    const harness = await createSecretHarness();
+    harness.responses.push(
+      toolCalls(["echo", { text: "env | grep PI_SECRET_" }, "call-echo"]),
+      reply("Done."),
+    );
+    await harness.session.prompt("Go.");
+
+    expect(harness.received).toEqual([{ tool: "echo", args: { text: "env | grep PI_SECRET_" } }]);
+  });
 
   it("reports skipped and cancelled names and holds nothing for them", async () => {
     const harness = await createSecretHarness({
