@@ -330,7 +330,8 @@ describe("bashTail", () => {
   });
 
   test("output beyond the in-memory buffer still reports its true line totals", async () => {
-    const result = await run("seq 1 3000000");
+    // BSD seq (macOS) prints numbers from a million up as `3e+06` unless told the format.
+    const result = await run("seq -f '%.0f' 1 3000000");
     const text = textOf(result);
     expect(text).toContain("[Showing lines 2999701-3000000 of 3000000 (16.0KB or 300 line limit)");
     expect(result.details).toMatchObject({

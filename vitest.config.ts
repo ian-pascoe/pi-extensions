@@ -1,7 +1,14 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineConfig } from "vitest/config";
+
+// The platform's temporary directory can sit behind a symbolic link (macOS's /var is
+// /private/var). Code under test resolves real paths, through process.cwd(), realpath, or a child
+// process's working directory, so tests that build expected paths from tmpdir() would see two
+// spellings of one directory. Resolve it once, here and in the workers.
+const temporaryDirectory = realpathSync(tmpdir());
+process.env.TMPDIR = temporaryDirectory;
 
 // Pi and its built-in extensions (MCP, skills, trust, auth) read the developer's global config from
 // the agent directory and from paths under the home directory. Point both at an empty temporary
@@ -24,6 +31,7 @@ export default defineConfig({
     // room rather than raising it test by test.
     testTimeout: 20_000,
     env: {
+      TMPDIR: temporaryDirectory,
       HOME: home,
       USERPROFILE: home,
       XDG_CONFIG_HOME: join(home, ".config"),

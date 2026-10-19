@@ -1,7 +1,9 @@
 import { mkdtemp, readFile, readdir, readlink, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, expect, test } from "vitest";
 import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { createDapToolDefinitions } from "../src/dap-tool.js";
@@ -13,18 +15,60 @@ const temporaryDirectories: string[] = [];
 const sessionFileStores: DapSessionFiles[] = [];
 const openSessions: DapSession[] = [];
 
-async function processIdsContaining(fragment: string): Promise<ReadonlySet<number>> {
-  const processIds = new Set<number>();
+const execFileText = promisify(execFile);
+
+/** Every running process's id and command line: from /proc on Linux, else from `ps` (macOS). */
+async function runningProcesses(): Promise<ReadonlyArray<{ id: number; commandLine: string }>> {
+  if (process.platform !== "linux") {
+    const { stdout } = await execFileText("ps", ["-A", "-ww", "-o", "pid=,command="], {
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return stdout.split("\n").flatMap((line) => {
+      const match = /^\s*(\d+)\s(.*)$/u.exec(line);
+      return match ? [{ id: Number(match[1]), commandLine: match[2] ?? "" }] : [];
+    });
+  }
+  const found: { id: number; commandLine: string }[] = [];
   for (const entry of await readdir("/proc", { withFileTypes: true })) {
     if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
     try {
       const commandLine = (await readFile(`/proc/${entry.name}/cmdline`)).toString("utf8");
-      if (commandLine.includes(fragment)) processIds.add(Number(entry.name));
+      found.push({ id: Number(entry.name), commandLine });
     } catch {
       // Processes can exit while /proc is scanned.
     }
   }
-  return processIds;
+  return found;
+}
+
+/** A process's working directory: from /proc on Linux, else from `lsof` (macOS). */
+async function workingDirectory(processId: number): Promise<string | undefined> {
+  try {
+    if (process.platform === "linux") return await readlink(`/proc/${processId}/cwd`);
+    const { stdout } = await execFileText("lsof", [
+      "-a",
+      "-p",
+      String(processId),
+      "-d",
+      "cwd",
+      "-Fn",
+    ]);
+    return stdout
+      .split("\n")
+      .find((line) => line.startsWith("n"))
+      ?.slice(1);
+  } catch {
+    // The process exited before it could be inspected.
+    return undefined;
+  }
+}
+
+async function processIdsContaining(fragment: string): Promise<ReadonlySet<number>> {
+  return new Set(
+    (await runningProcesses())
+      .filter(({ commandLine }) => commandLine.includes(fragment))
+      .map(({ id }) => id),
+  );
 }
 
 async function debuggeeProcessIds(
@@ -32,17 +76,9 @@ async function debuggeeProcessIds(
   programName: string,
 ): Promise<ReadonlySet<number>> {
   const processIds = new Set<number>();
-  for (const entry of await readdir("/proc", { withFileTypes: true })) {
-    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
-    try {
-      const commandLine = (await readFile(`/proc/${entry.name}/cmdline`)).toString("utf8");
-      const cwd = await readlink(`/proc/${entry.name}/cwd`);
-      if (cwd === projectDirectory && commandLine.includes(programName)) {
-        processIds.add(Number(entry.name));
-      }
-    } catch {
-      // Processes can exit while /proc is scanned.
-    }
+  for (const { id, commandLine } of await runningProcesses()) {
+    if (!commandLine.includes(programName)) continue;
+    if ((await workingDirectory(id)) === projectDirectory) processIds.add(id);
   }
   return processIds;
 }

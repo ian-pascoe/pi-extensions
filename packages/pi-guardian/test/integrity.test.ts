@@ -9,6 +9,7 @@ import {
   confirmedRejection,
   createGuardianHarness,
   DeferredReply,
+  GatedReply,
   reply,
   toolCalls,
 } from "./fixtures/guardian-harness.js";
@@ -189,23 +190,34 @@ describe("Trusted Evidence comes from Pi, not the agent", () => {
   });
 });
 
+/**
+ * Finish an early review's reply before its call reaches Guardian, so the review settles with
+ * usage and discarding it is journaled. Left to race, the call can abort it within the same
+ * millisecond, and a review that cost nothing and took no time is not journaled.
+ */
+async function finishEarly(early: GatedReply): Promise<void> {
+  await early.requested;
+  early.complete();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 describe("early reviews", () => {
   it("discards an early review whose arguments changed before Guardian saw the call", async () => {
+    const early = new GatedReply(assessment("low", "high", "Early."));
     const harness = await createGuardianHarness({
       guardianSettings: reviewer,
       before: [
         (pi) => {
-          pi.on("tool_call", (event: ToolCallEvent) => {
-            if (event.toolName === "deploy") event.input["target"] = "rewritten";
+          pi.on("tool_call", async (event: ToolCallEvent) => {
+            if (event.toolName !== "deploy") return;
+            await finishEarly(early);
+            event.input["target"] = "rewritten";
           });
         },
       ],
     });
     harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
-    harness.guardianReplies.push(
-      assessment("low", "high", "Early."),
-      assessment("low", "high", "Late."),
-    );
+    harness.guardianReplies.push(early, assessment("low", "high", "Late."));
     await harness.session.prompt("Deploy a.");
     expect(harness.executed).toEqual(["deploy:rewritten"]);
     expect(harness.reviews).toHaveLength(2);
@@ -224,23 +236,22 @@ describe("early reviews", () => {
   ])(
     "discards an early review when %s changes before the call arrives",
     async (_case, overrides, model) => {
+      const early = new GatedReply(assessment("low", "high", "Early."));
       const harness = await createGuardianHarness({
         guardianSettings: reviewer,
         before: [
           (pi) => {
             // A session settings change between the response's end and the call's preflight.
-            pi.on("tool_call", (event: ToolCallEvent) => {
-              if (event.toolCallId === "call-1")
-                pi.appendEntry("pi-guardian-settings", { version: 1, overrides });
+            pi.on("tool_call", async (event: ToolCallEvent) => {
+              if (event.toolCallId !== "call-1") return;
+              await finishEarly(early);
+              pi.appendEntry("pi-guardian-settings", { version: 1, overrides });
             });
           },
         ],
       });
       harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
-      harness.guardianReplies.push(
-        assessment("low", "high", "Early."),
-        assessment("low", "high", "Late."),
-      );
+      harness.guardianReplies.push(early, assessment("low", "high", "Late."));
       await harness.session.prompt("Deploy a.");
       expect(harness.executed).toEqual(["deploy:a"]);
       expect(harness.reviews).toHaveLength(2);

@@ -37,9 +37,9 @@ describe("Sensitive Path", () => {
 
   it.each([
     ["the parent directory", "../outside/file", "outside the workspace root"],
-    ["an absolute outside path", "/etc/hosts", "outside the workspace root"],
+    ["an absolute outside path", "/usr/share/outside.txt", "outside the workspace root"],
     ["the home directory", "~/notes.txt", "outside the workspace root"],
-    ["a file URL outside", "file:///etc/passwd", "outside the workspace root"],
+    ["a file URL outside", "file:///usr/share/outside.txt", "outside the workspace root"],
     ["git metadata", ".git/config", 'version-control metadata (".git")'],
     ["nested git metadata", "sub/.git/hooks/pre-commit", 'version-control metadata (".git")'],
     ["case variants", ".GIT/config", 'version-control metadata (".GIT")'],
