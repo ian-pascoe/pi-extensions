@@ -10,7 +10,7 @@ A PTY-backed program that Pi Termctrl starts through termctrl, which the agent d
 _Avoid_: Session, shell, process
 
 **Background job**:
-A `bash` tool command the user moved to the background while it ran. It keeps its original pipes and accepts no input.
+A `bash` tool command that left the foreground while it ran, because the model asked for it, the user pressed Ctrl+B, or a Steer Yield (defined in `pi-utils`) moved it. It keeps its original pipes and accepts no input.
 _Avoid_: Background shell, detached process, task
 
 **Bash tail**:

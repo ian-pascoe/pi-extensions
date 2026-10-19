@@ -88,8 +88,11 @@ async function methodsReachedBy(
     MINIMAL_ARGUMENTS[operation] as never,
     undefined,
     undefined,
-    // SAFETY: Tool execution only reads cwd; this fixture supplies that surface.
-    { cwd: directory } as ExtensionToolContext,
+    // SAFETY: Tool execution only reads cwd and the session id; this fixture supplies that surface.
+    {
+      cwd: directory,
+      sessionManager: { getSessionId: () => "contract-test" },
+    } as ExtensionToolContext,
   );
   return { methods, isError: result.isError === true };
 }
@@ -215,8 +218,11 @@ describe("DAP tool family", () => {
       ({ name }) => name === "dap_launch",
     );
     if (launch === undefined) throw new Error("Missing dap_launch");
-    // SAFETY: Tool execution only reads cwd.
-    const context = { cwd: directory } as ExtensionToolContext;
+    // SAFETY: Tool execution only reads cwd and the session id.
+    const context = {
+      cwd: directory,
+      sessionManager: { getSessionId: () => "contract-test" },
+    } as ExtensionToolContext;
     const result = await launch.execute("call", {}, undefined, undefined, context);
     expect(result.isError).toBe(true);
     expect(result.structuredContent).toEqual({

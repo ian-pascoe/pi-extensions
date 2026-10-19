@@ -351,7 +351,7 @@ export function renderListResult(
 const WAIT_REASON_SUMMARY = {
   exited: undefined,
   timeout: "Nothing exited before the wait ended",
-  message: "Returned early: a message is waiting",
+  steered: "Returned early: a message is queued for you",
   aborted: "Wait cancelled",
   nothing_running: "Nothing to wait for",
 } as const satisfies Record<WaitResult["reason"], string | undefined>;

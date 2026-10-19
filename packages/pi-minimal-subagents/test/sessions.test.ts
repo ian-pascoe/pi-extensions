@@ -23,6 +23,7 @@ import {
   type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { readAgentLineage } from "@ian-pascoe/pi-utils/agent-lineage";
+import { hasQueuedSteer, settleQueuedSteers } from "@ian-pascoe/pi-utils/queued-steer";
 import fc from "fast-check";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createChildResourceLoader } from "../src/minimal-subagents-child-resources.js";
@@ -723,9 +724,76 @@ describe("minimal subagent sessions", () => {
       await expect(runtime.queueCoordinatorMessage(message)).resolves.toBeUndefined();
       expect(secondPrompt).not.toHaveBeenCalled();
       expect(steer).toHaveBeenCalledWith(expect.objectContaining({ role: "custom" }));
+      // The steer waits for the child's tool batch, so a wait inside the child must yield to it.
+      expect(hasQueuedSteer(agent.session_id!)).toBe(true);
     } finally {
       secondPrompt.mockRestore();
       steer.mockRestore();
+      await runtime.dispose();
+    }
+  });
+
+  it("settles the child session's Queued Steer on its turn start, run end, and disposal", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-child-steer-"));
+    temporaryDirectories.push(directory);
+    const agent = persistedAgent();
+    const identity = createPersistentChildIdentity({
+      agent,
+      importedMessages: [],
+      cwd: directory,
+      sessionDir: directory,
+      rootSessionId: "root",
+    });
+    agent.session_file = identity.sessionFile;
+    agent.session_id = identity.sessionId;
+    agent.session_leaf_id = identity.sessionLeafId;
+    const subscribe = vi.spyOn(AgentSession.prototype, "subscribe");
+    const emit = (event: Parameters<Parameters<AgentSession["subscribe"]>[0]>[0]) => {
+      for (const [listener] of subscribe.mock.calls) listener(event);
+    };
+    const factory = new PiAgentSessionFactory({
+      cwd: directory,
+      agentDir: directory,
+      sessionDir: directory,
+      rootSessionId: "root",
+      extensionEntrypoint: join(directory, "index.ts"),
+      models: [TEST_MODEL],
+      eligibleModelIds: ["provider/model"],
+      modelScopeRestricted: false,
+      availableToolNames: ["read"],
+      projectTrusted: true,
+      getCoordinatorTools: () => [],
+    });
+    const runtime = await factory.openRuntime(agent);
+    const message: CoordinatorMessage = {
+      customType: "minimal-subagents.message",
+      content: "change direction",
+      details: {
+        source_agent_id: "root",
+        destination_agent_id: "child",
+        source_turn_id: "root:turn",
+        message_id: "message",
+      },
+    };
+
+    try {
+      await runtime.queueCoordinatorMessage(message);
+      expect(hasQueuedSteer(identity.sessionId)).toBe(true);
+      emit({ type: "turn_start" });
+      expect(hasQueuedSteer(identity.sessionId)).toBe(false);
+
+      await runtime.queueCoordinatorMessage(message);
+      expect(hasQueuedSteer(identity.sessionId)).toBe(true);
+      emit({ type: "agent_end", messages: [], willRetry: false });
+      expect(hasQueuedSteer(identity.sessionId)).toBe(false);
+
+      await runtime.queueCoordinatorMessage(message);
+      expect(hasQueuedSteer(identity.sessionId)).toBe(true);
+      await runtime.dispose();
+      expect(hasQueuedSteer(identity.sessionId)).toBe(false);
+    } finally {
+      subscribe.mockRestore();
+      settleQueuedSteers(identity.sessionId);
       await runtime.dispose();
     }
   });

@@ -248,6 +248,23 @@ describe("Coordinator Tool result text", () => {
     );
   });
 
+  it("reports a steer yield without cancelling or claiming", () => {
+    expect(
+      formatWaitResultText({
+        event: "steered",
+        agent_id: "child",
+        turn_id: "child:1",
+        state: "running",
+        elapsed_ms: 95_000,
+        latest_activity_at: "2026-01-01T00:01:35.000Z",
+        total_tokens: 15_200,
+        recent_activity_labels: ["tool call read"],
+      }),
+    ).toBe(
+      "Wait ended early: a queued steer is waiting for you. child is running on turn child:1 and was not cancelled; wait again to resume.\nelapsed 1m 35s · last activity 2026-01-01T00:01:35.000Z · 15.2k tokens\nrecent activity: tool call read",
+    );
+  });
+
   it("reports a timeout without cancelling", () => {
     expect(
       formatWaitResultText({

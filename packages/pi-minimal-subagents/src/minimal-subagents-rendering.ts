@@ -597,13 +597,20 @@ function alreadyDeliveredText(details: { delivery_pending?: boolean }): string {
   return details.delivery_pending ? DELIVERY_PENDING_TEXT : ALREADY_DELIVERED_TEXT;
 }
 
-/** The activity labels of a timeout result, including pre-compact results that carried the full status. */
-function timeoutActivityLabels(
-  details: Extract<WaitRenderDetails, { event: "timeout" }>,
-): readonly string[] {
+/** A wait that ended early with a progress snapshot: a timeout or a Steer Yield. */
+type WaitEarlyEndRenderDetails = Extract<WaitRenderDetails, { event: "timeout" | "steered" }>;
+
+function isWaitProgress(details: WaitRenderDetails): details is WaitEarlyEndRenderDetails {
+  return details.event === "timeout" || details.event === "steered";
+}
+
+/** The activity labels of a timeout or steered result, including pre-compact results that carried the full status. */
+function timeoutActivityLabels(details: WaitEarlyEndRenderDetails): readonly string[] {
   return (
     details.recent_activity_labels ??
-    latestProgressActivity(details.agent?.recent_activity ?? []).map((entry) => entry.label)
+    latestProgressActivity(
+      ("agent" in details ? details.agent?.recent_activity : undefined) ?? [],
+    ).map((entry) => entry.label)
   );
 }
 
@@ -614,7 +621,7 @@ function collapsedWaitBody(
   theme: MinimalSubagentsRenderTheme,
 ): Component | undefined {
   if (details.event === "message") return collapsedText(theme, details.message);
-  if (details.event === "timeout") {
+  if (isWaitProgress(details)) {
     const labels = timeoutActivityLabels(details);
     return labels.length > 0
       ? collapsedText(theme, theme.fg("dim", labels.join(" \u00b7 ")))
@@ -643,18 +650,18 @@ function renderWaitResult(
       ? "message"
       : details.event === "timeout"
         ? "timed out"
-        : details.status;
+        : details.event === "steered"
+          ? "steered"
+          : details.status;
   const duration = formatSubagentDuration(
     details.event === "timeout" ? details.timeout_ms : details.elapsed_ms,
   );
-  const usage = details.event === "timeout" ? undefined : details.usage;
+  const usage = isWaitProgress(details) ? undefined : details.usage;
   const tokens = formatSubagentTokenCount(
-    details.event === "timeout" ? details.total_tokens : usage?.totalTokens,
+    isWaitProgress(details) ? details.total_tokens : usage?.totalTokens,
   );
   const drainedMessageCount =
-    details.event === "message" || details.event === "timeout"
-      ? 0
-      : (details.messages?.length ?? 0);
+    details.event === "message" || isWaitProgress(details) ? 0 : (details.messages?.length ?? 0);
   const metrics = [
     duration,
     tokens ? `${tokens} tokens` : undefined,
@@ -674,10 +681,9 @@ function renderWaitResult(
     container.addChild(renderLabelValue(theme, "Message ID", details.message_id));
     return container;
   }
-  if (details.event === "timeout") {
-    container.addChild(
-      renderLabelValue(theme, "State", details.state ?? details.agent?.state ?? "unknown"),
-    );
+  if (isWaitProgress(details)) {
+    const legacyState = "agent" in details ? details.agent?.state : undefined;
+    container.addChild(renderLabelValue(theme, "State", details.state ?? legacyState ?? "unknown"));
     if (details.latest_activity_at) {
       container.addChild(renderLabelValue(theme, "Latest activity", details.latest_activity_at));
     }

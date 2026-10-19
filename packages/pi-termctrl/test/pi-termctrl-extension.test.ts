@@ -299,3 +299,49 @@ describe("lifecycle", () => {
     expect(fixture.statuses.at(-1)).toBeUndefined();
   });
 });
+
+describe("Queued Steer through Pi", () => {
+  test("a steer typed while bash runs moves the call to the background without waiting for it", async () => {
+    const fixture = await createSdkFixture();
+    fixture.responses.push(
+      fauxAssistantMessage(fauxToolCall("bash", { command: "echo working; sleep 30" }), {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage("Changing course."),
+    );
+    const startedAt = Date.now();
+    const running = fixture.session.prompt("Run the slow command");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await fixture.session.prompt("Actually, do something else", { streamingBehavior: "steer" });
+    await running;
+    await settle(fixture.session);
+
+    expect(Date.now() - startedAt).toBeLessThan(10_000);
+    expect(toolResultText(fixture.turns[1]?.messages ?? [], "bash")).toContain(
+      "Command moved to the background as b1 because a message was queued for you.",
+    );
+    expect(JSON.stringify(fixture.turns[1]?.messages.at(-1))).toContain(
+      "Actually, do something else",
+    );
+  });
+
+  test("a follow-up typed while bash runs does not move it", async () => {
+    const fixture = await createSdkFixture();
+    fixture.responses.push(
+      fauxAssistantMessage(fauxToolCall("bash", { command: "echo working; sleep 1.5" }), {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage("Done."),
+      fauxAssistantMessage("Then that."),
+    );
+    const running = fixture.session.prompt("Run the command");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await fixture.session.prompt("After that, one more thing", { streamingBehavior: "followUp" });
+    await running;
+    await settle(fixture.session);
+
+    const text = toolResultText(fixture.turns[1]?.messages ?? [], "bash");
+    expect(text).toContain("working");
+    expect(text).not.toContain("moved to the background");
+  });
+});

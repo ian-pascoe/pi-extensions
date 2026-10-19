@@ -35,6 +35,7 @@ import {
   type EditorTheme,
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { hasQueuedSteer, settleQueuedSteers } from "@ian-pascoe/pi-utils/queued-steer";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { expectClickToggles } from "@ian-pascoe/pi-utils/ui-testing";
 import { COORDINATOR_TOOL_NAMES } from "../src/minimal-subagents-capabilities.js";
@@ -1302,6 +1303,44 @@ describe("minimal subagents extension lifecycle", () => {
     expect(harness.sentMessageTypes).toEqual(["minimal-subagents.result"]);
 
     await emitSessionShutdown(harness, "quit");
+  });
+
+  it("raises the root's Queued Steer only when a result is steered into a running root turn", async () => {
+    for (const rootIdle of [false, true]) {
+      const cwd = await createTemporaryDirectory("minimal-subagents-queued-steer-cwd-");
+      const sessionDirectory = await createTemporaryDirectory(
+        "minimal-subagents-queued-steer-sessions-",
+      );
+      const sessionManager = await createPersistedSession(cwd, sessionDirectory);
+      const sessionId = sessionManager.getSessionId();
+      const harness = await createExtensionHarness(sessionManager);
+      try {
+        expect(harness.runner.hasHandlers("input")).toBe(true);
+        await harness.runner.emit(sessionStartEvent());
+        harness.setIdle(rootIdle);
+        await harness.runner
+          .getToolDefinition("subagent")!
+          .execute(
+            "spawn-call",
+            { task: "Complete while the root runs", agent_id: "steer-child" },
+            undefined,
+            undefined,
+            toToolContext(harness.runner.createContext()),
+          );
+        await vi.waitFor(
+          () => expect(harness.sentMessageTypes).toEqual(["minimal-subagents.result"]),
+          { timeout: 2_000 },
+        );
+        // An idle root starts a turn with the message, so no steer is left queued behind a tool.
+        expect(hasQueuedSteer(sessionId)).toBe(!rootIdle);
+        await harness.runner.emit({ type: "turn_start", turnIndex: 0, timestamp: 0 });
+        expect(hasQueuedSteer(sessionId)).toBe(false);
+      } finally {
+        settleQueuedSteers(sessionId);
+        harness.setIdle(true);
+        await emitSessionShutdown(harness, "quit");
+      }
+    }
   });
 
   /** Steer one completed result into an active root turn, then end that turn with Pi's queue preview. */

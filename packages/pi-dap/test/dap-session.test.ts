@@ -515,6 +515,29 @@ describe("DapSession", () => {
     await session.stop();
   });
 
+  test("a steer signal ends an execution wait early and leaves the Debuggee running", async () => {
+    // The execution timeout is far longer than the test, so only the steer can end the wait.
+    const { session } = await createSession({ neverStop: true, stopOnEntry: false }, 30_000);
+    const steer = new AbortController();
+    setTimeout(() => steer.abort(), 20);
+    const started = Date.now();
+    const launched = await session.launch({}, undefined, steer.signal);
+    expect(launched.snapshot.state).toBe("running");
+    expect(Date.now() - started).toBeLessThan(10_000);
+
+    const stopped = await session.pause();
+    expect(stopped.snapshot).toMatchObject({ state: "stopped", stopReason: "pause" });
+
+    // The wait began with the steer pending: it ends after the resuming request was sent.
+    const resumed = await session.continue(undefined, AbortSignal.abort());
+    expect(resumed.snapshot.state).toBe("running");
+    expect(session.status().snapshot.state).toBe("running");
+    const recovered = await session.pause();
+    expect(recovered.snapshot.state).toBe("stopped");
+
+    await session.stop();
+  });
+
   test("reports the stop description, hit Breakpoint ids, and top frame of each stop", async () => {
     const { session } = await createSession({ stopOnEntry: true, requireBreakpoint: false });
     await session.launch();

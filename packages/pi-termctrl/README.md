@@ -38,8 +38,8 @@ the session's directory. A `cwd` that is missing or not a directory fails with a
 error naming the resolved path.
 
 `terminal_start` and `terminal_send` wait until the Terminal **settles**: at the
-first of 250 ms of screen quiet, a `wait_for_text` match, process exit, or
-`wait_ms` running out. `wait_for_text` is a literal substring, or a regex when
+first of 250 ms of screen quiet, a `wait_for_text` match, process exit,
+`wait_ms` running out, or a Queued Steer (see below). `wait_for_text` is a literal substring, or a regex when
 written as `/source/flags`; with `wait_for_text`, quiet alone does not end the
 wait, and text already on the screen before `terminal_send` counts only after
 the screen changes. Default waits are 2 s for `terminal_start`, 500 ms for `terminal_send`
@@ -54,10 +54,22 @@ turn too, then reports what the calls ahead of it left. A call queued behind a
 stop finds the Terminal gone. Calls to different Terminals stay concurrent. Aborting a waiting
 call removes it without affecting the running one.
 
-Results say why the wait ended in `settle_reason` (`matched`, `timeout`, `quiet`
-or `exited`) and in their first line, such as `t1 running · settled: timeout`; a
-`wait_for_text` that timed out adds that the pattern was not seen. Polls report
-their reason too.
+Results say why the wait ended in `settle_reason` (`matched`, `timeout`, `quiet`,
+`exited` or `steered`) and in their first line, such as
+`t1 running · settled: timeout`; a `wait_for_text` that timed out or was
+steered adds that the pattern was not seen. Polls report their reason too.
+
+**Steer Yield.** Pi hands the agent a Queued Steer (a message the user or a
+parent agent queued while it works) only after every tool call in the current
+batch has returned, so a long wait would delay it. When a Queued Steer is
+pending for the session, the settle wait of `terminal_start` and `terminal_send`
+ends at once with `settle_reason: "steered"` (`t1 running · settled: steered`).
+Input (`text`, `keys`) is still typed first, and the Terminal keeps running; poll
+it again with `terminal_send` once you have read the message. A steer stays
+pending until Pi starts the next turn, so a call that starts while one is
+pending settles immediately after typing its input. Calls waiting in the Call
+queue still run in order, each yielding as soon as it reaches its settle wait.
+Follow-ups never count.
 
 Sending `text` or `keys` to an exited Terminal is an error that names its exit
 code or signal; a poll (neither `text` nor `keys`) still returns its final screen.
@@ -134,9 +146,12 @@ paths.
 exits: those listed in `ids`, otherwise every one still running. It returns
 every exit by then, in the same form as an Exit notification, plus what is still
 running, and those exits send no Exit notification. It also returns when
-`wait_ms` runs out, when the call is aborted, or as soon as a message is queued
-for the agent, such as the user steering or another entry's Exit notification;
-a watched entry that exits after that is notified as usual. With nothing to
+`wait_ms` runs out, when the call is aborted, or as a Steer Yield with
+`reason: "steered"` as soon as a Queued Steer is pending for the session, such
+as the user steering or a parent agent's message; whatever it waited on keeps
+running, and a watched entry that exits after that is notified as usual. A
+follow-up never ends the wait, and neither does another entry's Exit
+notification: Exit notifications wait for the end of the turn. With nothing to
 wait for it returns at once. Terminal exits are noticed within about 500 ms.
 
 ### Tool annotations
@@ -149,13 +164,22 @@ With `termctrl.replaceBash` (default `true`), Pi Termctrl replaces Pi's `bash`
 tool with Pi's own definition plus one parameter, `background?: boolean`.
 Commands still run on pipes through Pi's local `exec`, so Pi keeps spawning,
 process-tree kills and rendering, and foreground results differ from Pi's only
-by the shorter tail below. A command becomes a Background job in two ways:
+by the shorter tail below. A command becomes a Background job in three ways:
 
 - **`background: true`** waits 2 s. A command that finishes first returns an
   ordinary result; otherwise the call returns a background result. If the cap
   is reached during those 2 s, the command stays in the foreground.
 - **Ctrl+B** while an agent `bash` call runs moves every running call to the
   background. At other times Ctrl+B stays the editor's cursor-left.
+- **Steer Yield**: when a Queued Steer becomes pending for the session, every
+  running `bash` call of that session moves to the background at once, exactly
+  as Ctrl+B does, so the message reaches the agent without waiting for the
+  command. A call that starts while a Queued Steer is pending becomes a
+  Background job as soon as it has started, even with `background: false`. The
+  result says why, as in
+  `Command moved to the background as b3 because a message was queued for you`.
+  If the job cap is reached, the call stays in the foreground and the user gets
+  a notification saying so. Follow-ups never count.
 
 Up to 16 MiB of a command's output is kept in memory until it is backgrounded;
 older output becomes an omission line in the log. Once backgrounded, a

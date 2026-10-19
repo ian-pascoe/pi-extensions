@@ -41,7 +41,8 @@
     "./settings-command": "./src/settings-command.ts",
     "./ui": "./src/ui.ts",
     "./ui-testing": "./src/ui-testing.ts",
-    "./secret-registry": "./src/secret-registry.ts"
+    "./secret-registry": "./src/secret-registry.ts",
+    "./queued-steer": "./src/queued-steer.ts"
   },
   "publishConfig": {
     "main": "./dist/index.js",
@@ -102,6 +103,10 @@
       "./secret-registry": {
         "types": "./dist/secret-registry.d.ts",
         "import": "./dist/secret-registry.js"
+      },
+      "./queued-steer": {
+        "types": "./dist/queued-steer.d.ts",
+        "import": "./dist/queued-steer.js"
       }
     },
     "access": "public",

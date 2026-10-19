@@ -8,6 +8,7 @@ import {
   truncateTail,
   type ExtensionToolContext,
 } from "@earendil-works/pi-coding-agent";
+import { watchQueuedSteer } from "@ian-pascoe/pi-utils/queued-steer";
 import type { Key } from "@kitlangton/terminal-control";
 import { Type, type Static } from "typebox";
 import type {
@@ -40,8 +41,6 @@ export const START_WAIT_MS = 2_000;
 export const INPUT_WAIT_MS = 500;
 export const POLL_WAIT_MS = 30_000;
 export const MAX_WAIT_MS = 5 * 60_000;
-/** How often `terminal_wait` checks for a queued message, which raises no event it can await. */
-export const PENDING_CHECK_MS = 100;
 
 const CONTROL_KEYS = Array.from(
   { length: 26 },
@@ -93,10 +92,16 @@ export type TerminalResultRuntime = Pick<TerminalToolRuntime, "registry" | "scro
 const TerminalStateSchema = Type.Union([Type.Literal("running"), Type.Literal("exited")]);
 
 const SettleReasonSchema = Type.Union(
-  [Type.Literal("matched"), Type.Literal("timeout"), Type.Literal("quiet"), Type.Literal("exited")],
+  [
+    Type.Literal("matched"),
+    Type.Literal("timeout"),
+    Type.Literal("quiet"),
+    Type.Literal("exited"),
+    Type.Literal("steered"),
+  ],
   {
     description:
-      "Why the wait ended: wait_for_text matched, wait_ms ran out or the call was cancelled, the screen was quiet for 250 ms, or the Terminal exited",
+      "Why the wait ended: wait_for_text matched, wait_ms ran out or the call was cancelled, the screen was quiet for 250 ms, the Terminal exited, or a message was queued for you (steered; the Terminal keeps running)",
   },
 );
 
@@ -280,13 +285,13 @@ const WaitResultSchema = Type.Object({
     [
       Type.Literal("exited"),
       Type.Literal("timeout"),
-      Type.Literal("message"),
+      Type.Literal("steered"),
       Type.Literal("aborted"),
       Type.Literal("nothing_running"),
     ],
     {
       description:
-        "Why the wait ended: an exit, wait_ms, a message queued for you, cancellation, or nothing to wait for",
+        "Why the wait ended: an exit, wait_ms, a steer queued for you (steered), cancellation, or nothing to wait for",
     },
   ),
   exited: Type.Array(
@@ -342,12 +347,28 @@ interface SettleRequest {
   /** The screen before the call. A match already on it counts only once the screen changes. */
   readonly baseline: string | undefined;
   readonly signal: AbortSignal | undefined;
+  /** Aborts once a Queued Steer is pending, which ends the wait with a Steer Yield. */
+  readonly steer: AbortSignal | undefined;
+}
+
+/** Sleep `milliseconds`, or until `steer` aborts. */
+function pause(milliseconds: number, steer: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      steer?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, milliseconds);
+    steer?.addEventListener("abort", done, { once: true });
+  });
 }
 
 /**
  * Poll a Terminal until it settles: screen quiet for 250 ms, a `wait_for_text` match, process exit,
- * or the wait budget running out. A poll (no input) settles on quiet only after new output.
- * With `wait_for_text`, quiet does not settle the wait.
+ * the wait budget running out, or a Queued Steer (a Steer Yield; the Terminal keeps running). A
+ * poll (no input) settles on quiet only after new output. With `wait_for_text`, quiet does not
+ * settle the wait.
  */
 export async function settleTerminal(
   entry: TerminalEntry,
@@ -380,7 +401,8 @@ export async function settleTerminal(
       return { snapshot, reason: "quiet" };
     }
     if (now >= deadline || request.signal?.aborted === true) return { snapshot, reason: "timeout" };
-    await new Promise((resolve) => setTimeout(resolve, Math.min(POLL_MS, deadline - now)));
+    if (request.steer?.aborted === true) return { snapshot, reason: "steered" };
+    await pause(Math.min(POLL_MS, deadline - now), request.steer);
   }
 }
 
@@ -769,7 +791,7 @@ function screenMarker(label: string, screen: string, view: ScreenView): string {
 
 /** Says that `wait_for_text` was not seen when its wait timed out. */
 function unmatchedNote(reason: SettleReason, pattern: string | undefined): string | undefined {
-  return reason === "timeout" && pattern !== undefined
+  return (reason === "timeout" || reason === "steered") && pattern !== undefined
     ? `wait_for_text ${JSON.stringify(pattern)} was not seen before the wait ended.`
     : undefined;
 }
@@ -971,13 +993,27 @@ function shellCommand(shell: TerminalShell, command: string): [string, ...string
   return [shell.shell, ...shell.args, script];
 }
 
+/** Settle a Terminal for the session, ending the wait early when a Queued Steer is pending. */
+async function settleForSession(
+  entry: TerminalEntry,
+  sessionId: string,
+  request: Omit<SettleRequest, "steer">,
+): Promise<{ readonly snapshot: TerminalSnapshot; readonly reason: SettleReason }> {
+  const watch = watchQueuedSteer(sessionId);
+  try {
+    return await settleTerminal(entry, { ...request, steer: watch.signal });
+  } finally {
+    watch.dispose();
+  }
+}
+
 /** `terminal_start`: run a program in a new Terminal and wait for it to settle. */
 export function createTerminalStartTool(runtime: TerminalToolRuntime) {
   return defineTool<typeof StartParameters, TerminalResult>({
     name: "terminal_start",
     label: "terminal_start",
     description:
-      "Start a program in a new interactive Terminal (a PTY) and return its screen once it settles: 250 ms of quiet, exit, or wait_ms (default 2000). Use it for REPLs, TUIs, prompts and other programs that need input or a screen. Drive it with terminal_send and end it with terminal_stop.",
+      "Start a program in a new interactive Terminal (a PTY) and return its screen once it settles: 250 ms of quiet, exit, wait_ms (default 2000), or a message queued for you (settle_reason steered; the Terminal keeps running). Use it for REPLs, TUIs, prompts and other programs that need input or a screen. Drive it with terminal_send and end it with terminal_stop.",
     promptSnippet: "Start an interactive program (REPL, TUI, prompt) in a Terminal",
     promptGuidelines: [
       "Use terminal_start, terminal_send and terminal_stop for programs that need input or a screen; use bash for everything else.",
@@ -1007,7 +1043,7 @@ export function createTerminalStartTool(runtime: TerminalToolRuntime) {
       // The Terminal is running and nothing else knows its id yet, so the call never queues; an
       // abort ends the wait but must still return the id, or the agent could not reach the Terminal.
       return driveTerminal(runtime.registry, entry, undefined, async () => {
-        const { snapshot, reason } = await settleTerminal(entry, {
+        const { snapshot, reason } = await settleForSession(entry, ownerOf(context), {
           mode: "start",
           waitMs: clampWait(params.wait_ms, START_WAIT_MS),
           startedAt,
@@ -1040,7 +1076,7 @@ export function createTerminalSendTool(runtime: TerminalToolRuntime) {
     name: "terminal_send",
     label: "terminal_send",
     description:
-      "Type text and press keys in a Terminal, then return its screen once it settles: 250 ms of quiet, a wait_for_text match, exit, or wait_ms (default 500). With neither text nor keys it polls: it waits up to wait_ms (default 30000) for new output. Results include the lines that scrolled off since your previous result; a truncated result names a file with its full output. When the rows above the previous result's cursor row are unchanged, the screen shows only the rows from there down; an unchanged screen shows no rows; full_screen: true shows the whole screen.",
+      "Type text and press keys in a Terminal, then return its screen once it settles: 250 ms of quiet, a wait_for_text match, exit, wait_ms (default 500), or a message queued for you (settle_reason steered; the Terminal keeps running). With neither text nor keys it polls: it waits up to wait_ms (default 30000) for new output. Results include the lines that scrolled off since your previous result; a truncated result names a file with its full output. When the rows above the previous result's cursor row are unchanged, the screen shows only the rows from there down; an unchanged screen shows no rows; full_screen: true shows the whole screen.",
     promptSnippet: "Send input to a Terminal, or poll it, and read its screen",
     parameters: SendParameters,
     annotations: {
@@ -1094,7 +1130,7 @@ export function createTerminalSendTool(runtime: TerminalToolRuntime) {
         if (params.text !== undefined && params.text !== "") await entry.handle.type(params.text);
         const validKeys = keys.filter(isKey);
         if (validKeys.length > 0) await entry.handle.press(validKeys);
-        const { snapshot, reason } = await settleTerminal(entry, {
+        const { snapshot, reason } = await settleForSession(entry, ownerOf(context), {
           mode: hasInput ? "input" : "poll",
           waitMs: clampWait(params.wait_ms, hasInput ? INPUT_WAIT_MS : POLL_WAIT_MS),
           startedAt,
@@ -1267,43 +1303,44 @@ function waitTargets(
   return [...targets.values()];
 }
 
-/** Wait until a target exits, the wait runs out, the call is aborted, or a message is queued. */
+/**
+ * Wait until a target exits, the wait runs out, the call is aborted, or a Queued Steer is pending
+ * (`steer` aborts; the targets keep running).
+ */
 function awaitExit(
   registry: TermctrlRegistry,
   targets: readonly TermctrlEntry[],
   waitMs: number,
   signal: AbortSignal | undefined,
-  hasPendingMessages: () => boolean,
+  steer: AbortSignal,
 ): Promise<WaitReason> {
-  const deadline = Date.now() + waitMs;
   return new Promise((resolve) => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let unsubscribe: (() => void) | undefined;
-    const check = () => {
-      let reason: WaitReason | undefined;
-      if (targets.some((entry) => entry.state === "exited")) reason = "exited";
-      else if (signal?.aborted === true) reason = "aborted";
-      else if (hasPendingMessages()) reason = "message";
-      else if (Date.now() >= deadline) reason = "timeout";
-      if (reason === undefined) {
-        clearTimeout(timer);
-        timer = setTimeout(check, Math.max(0, Math.min(PENDING_CHECK_MS, deadline - Date.now())));
-        return;
-      }
-      clearTimeout(timer);
-      unsubscribe?.();
-      signal?.removeEventListener("abort", check);
+    const cleanups: (() => void)[] = [];
+    const finish = (reason: WaitReason) => {
+      for (const cleanup of cleanups.splice(0)) cleanup();
       resolve(reason);
     };
-    unsubscribe = registry.onChange(check);
+    const check = () => {
+      if (targets.some((entry) => entry.state === "exited")) finish("exited");
+      else if (signal?.aborted === true) finish("aborted");
+      else if (steer.aborted) finish("steered");
+    };
+    const timer = setTimeout(() => finish("timeout"), waitMs);
+    cleanups.push(
+      () => clearTimeout(timer),
+      registry.onChange(check),
+      () => signal?.removeEventListener("abort", check),
+      () => steer.removeEventListener("abort", check),
+    );
     signal?.addEventListener("abort", check, { once: true });
+    steer.addEventListener("abort", check, { once: true });
     check();
   });
 }
 
 const WAIT_REASON_TEXT = {
   timeout: (waitMs) => `Nothing exited within ${Math.round(waitMs / 1000)}s.`,
-  message: () => "Returned early: a message is waiting for you.",
+  steered: () => "Returned early: a message is queued for you.",
   aborted: () => "Wait cancelled.",
   nothing_running: () => "Nothing to wait for: you have no running Terminals or Background jobs.",
 } satisfies Record<Exclude<WaitReason, "exited">, (waitMs: number) => string>;
@@ -1315,7 +1352,7 @@ export function createTerminalWaitTool(runtime: TerminalWaitRuntime) {
     name: "terminal_wait",
     label: "terminal_wait",
     description:
-      "Wait until one of your Terminals or Background jobs exits, then return every exit so far and what is still running. Returns early when wait_ms (default 300000) runs out or a message is queued for you. Exits it returns send no Exit notification.",
+      "Wait until one of your Terminals or Background jobs exits, then return every exit so far and what is still running. Returns early when wait_ms (default 300000) runs out or a steer is queued for you; whatever it waited on keeps running. Exits it returns send no Exit notification.",
     promptSnippet: "Wait for a Terminal or Background job to exit",
     promptGuidelines: [
       "Do not poll a Background job's log or a Terminal in a loop to learn when it finishes: keep working and rely on its Exit notification, or call terminal_wait when nothing else can proceed.",
@@ -1339,10 +1376,9 @@ export function createTerminalWaitTool(runtime: TerminalWaitRuntime) {
       const parts: string[] = [];
       if (targets.length > 0) {
         const release = registry.watch(targets);
+        const steer = watchQueuedSteer(owner);
         try {
-          reason = await awaitExit(registry, targets, waitMs, signal, () =>
-            context.hasPendingMessages(),
-          );
+          reason = await awaitExit(registry, targets, waitMs, signal, steer.signal);
           const tailLines = runtime.exitTailLines();
           for (const entry of targets) {
             const notice = registry.noticeFor(entry);
@@ -1361,6 +1397,7 @@ export function createTerminalWaitTool(runtime: TerminalWaitRuntime) {
             result.exited.push(exited);
           }
         } finally {
+          steer.dispose();
           release();
         }
       }

@@ -119,13 +119,8 @@ export interface WaitDeliveredTurnResult extends Pick<
   messages?: WaitMessageResult[];
 }
 
-/** Reports an observational wait timeout with a compact, bounded child progress snapshot. */
-export interface WaitTimeoutResult {
-  event: "timeout";
-  agent_id: string;
-  turn_id: string;
-  /** Requested timeout duration that expired. */
-  timeout_ms: number;
+/** The compact, bounded child progress snapshot an observational wait ending early reports. */
+export interface WaitProgressSnapshot {
   state: AgentState;
   elapsed_ms?: number;
   latest_activity_at?: string;
@@ -135,12 +130,32 @@ export interface WaitTimeoutResult {
   recent_activity_labels: string[];
 }
 
-/** Reports one message, terminal turn, or timeout returned by subagent_wait. */
+/** Reports an observational wait timeout with a compact, bounded child progress snapshot. */
+export interface WaitTimeoutResult extends WaitProgressSnapshot {
+  event: "timeout";
+  agent_id: string;
+  turn_id: string;
+  /** Requested timeout duration that expired. */
+  timeout_ms: number;
+}
+
+/**
+ * Reports a Steer Yield: the wait ended early because a Queued Steer is pending for the caller,
+ * with the same progress snapshot as a timeout. The child keeps running and nothing is claimed.
+ */
+export interface WaitSteeredResult extends WaitProgressSnapshot {
+  event: "steered";
+  agent_id: string;
+  turn_id: string;
+}
+
+/** Reports one message, terminal turn, timeout, or steer yield returned by subagent_wait. */
 export type WaitResult =
   | WaitMessageResult
   | WaitTurnResult
   | WaitDeliveredTurnResult
-  | WaitTimeoutResult;
+  | WaitTimeoutResult
+  | WaitSteeredResult;
 
 /** Provides bounded hierarchy, usage, and best-known Runtime Profile data for one persistent agent. */
 export interface AgentSummary extends RuntimeProfile {

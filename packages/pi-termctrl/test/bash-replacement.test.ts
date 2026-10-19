@@ -8,6 +8,7 @@ import {
   type ExtensionToolContext,
   type TerminalInputHandler,
 } from "@earendil-works/pi-coding-agent";
+import { raiseQueuedSteer, settleQueuedSteers } from "@ian-pascoe/pi-utils/queued-steer";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { createBashReplacement, RunningBashCalls } from "../src/bash-replacement.js";
 import { TermctrlRegistry, type ExitNotice } from "../src/termctrl-registry.js";
@@ -130,6 +131,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  settleQueuedSteers("root");
   for (const file of fullOutputFiles.splice(0)) await rm(file, { force: true });
   await TermctrlRegistry.teardownForTests();
   await rm(directory, { recursive: true, force: true });
@@ -470,6 +472,112 @@ describe("Background jobs", () => {
     );
     expect(quick.structuredContent).toMatchObject({ exit_code: 0 });
     expect(ui.handler).toBeUndefined();
+  });
+
+  test("a Queued Steer backgrounds every running call at once, and says why", async () => {
+    const { tool } = replacement();
+    const first = tool.execute(
+      "a",
+      { command: "echo a; sleep 3" },
+      undefined,
+      undefined,
+      context(),
+    );
+    const second = tool.execute(
+      "b",
+      { command: "echo b; sleep 3" },
+      undefined,
+      undefined,
+      context(),
+    );
+    await waitFor(() => ui.handler !== undefined);
+    await sleep(200);
+    const raisedAt = Date.now();
+    raiseQueuedSteer("root");
+
+    const results = await Promise.all([first, second]);
+    expect(Date.now() - raisedAt).toBeLessThan(500);
+    expect(results.map((result) => result.structuredContent)).toMatchObject([
+      { output: "a\n", background: { id: "b1" } },
+      { output: "b\n", background: { id: "b2" } },
+    ]);
+    expect(textOf(results[0])).toContain(
+      "Command moved to the background as b1 because a message was queued for you. Its output so far",
+    );
+    expect(registry.get("b1")?.state).toBe("running");
+    expect(ui.notifications).toEqual([]);
+    expect(ui.handler).toBeUndefined();
+  });
+
+  test("a steer that cannot move a call tells the user and leaves it in the foreground", async () => {
+    for (let index = 0; index < 16; index++) {
+      registry.createJob("root", `job ${index}`, () => ({
+        logPath: `/tmp/fake-${index}.log`,
+        stop: () => {},
+        tail: () => "",
+        removeLog: async () => {},
+      }));
+    }
+    const { tool } = replacement();
+    const running = tool.execute(
+      "call",
+      { command: "echo busy; sleep 0.5" },
+      undefined,
+      undefined,
+      context(),
+    );
+    await waitFor(() => ui.handler !== undefined);
+    await sleep(200);
+    raiseQueuedSteer("root");
+    const result = await running;
+    expect(result.structuredContent).toMatchObject({ exit_code: 0 });
+    expect(ui.notifications).toHaveLength(1);
+    expect(ui.notifications[0]).toContain("A message was queued for the agent");
+    expect(ui.notifications[0]).toContain("Cannot");
+  });
+
+  test("a call that starts while a Queued Steer is pending becomes a Background job at once, even with background: false", async () => {
+    const { tool } = replacement();
+    raiseQueuedSteer("root");
+    const gate = join(directory, "gate");
+    const startedAt = Date.now();
+    const result = await tool.execute(
+      "call",
+      {
+        command: `while [ ! -e '${gate}' ]; do sleep 0.05; done; echo done`,
+        background: false,
+      },
+      undefined,
+      undefined,
+      context(),
+    );
+    expect(Date.now() - startedAt).toBeLessThan(1_500);
+    expect(result.structuredContent).toMatchObject({ output: "", background: { id: "b1" } });
+    expect(textOf(result)).toContain(
+      "Command moved to the background as b1 because a message was queued for you.",
+    );
+
+    await writeFile(gate, "");
+    await waitFor(() => notices.length === 1, 10_000);
+    expect(notices[0]).toMatchObject([{ id: "b1", output: "done\n" }]);
+  });
+
+  test("a steer for another session leaves a running call alone", async () => {
+    const { tool } = replacement();
+    const running = tool.execute(
+      "call",
+      { command: "echo mine; sleep 0.5" },
+      undefined,
+      undefined,
+      context(),
+    );
+    await waitFor(() => ui.handler !== undefined);
+    raiseQueuedSteer("child");
+    try {
+      expect((await running).structuredContent).toMatchObject({ exit_code: 0 });
+    } finally {
+      settleQueuedSteers("child");
+    }
   });
 
   test("Esc after backgrounding leaves the job alive; terminal_stop kills the whole tree", async () => {

@@ -69,7 +69,8 @@ import type {
   StatusResult,
   TurnResult,
   WaitMessageResult,
-  WaitTimeoutResult,
+  WaitProgressSnapshot,
+  WaitSteeredResult,
   AutomaticDelivery,
   WaitDeliveredTurnResult,
   WaitResult,
@@ -106,6 +107,8 @@ interface TurnWaiter {
   timeout?: ReturnType<typeof setTimeout>;
   abortSignal?: AbortSignal;
   abortListener?: () => void;
+  steerSignal?: AbortSignal;
+  steerListener?: () => void;
 }
 
 interface PendingParentMessage {
@@ -489,13 +492,19 @@ export class MinimalSubagentsCoordinator {
     }
   }
 
-  /** Wait for one exact turn, returning compact child progress if the waiter times out. */
+  /**
+   * Wait for one exact turn, returning compact child progress if the waiter times out. Once
+   * `steerSignal` aborts, a Queued Steer is pending for the caller, so a wait that would block
+   * ends with a `steered` Steer Yield instead, claiming nothing and leaving the child running;
+   * `signal` still rejects as a cancellation.
+   */
   wait(
     callerId: string,
     agentId: string,
     timeoutMs?: number,
     signal?: AbortSignal,
     requestedTurnId?: string,
+    steerSignal?: AbortSignal,
   ): Promise<WaitResult> {
     this.assertAccepting();
     this.assertCallerExists(callerId);
@@ -538,8 +547,18 @@ export class MinimalSubagentsCoordinator {
       );
     }
 
+    if (steerSignal?.aborted && !signal?.aborted) {
+      return Promise.resolve(this.steeredWaitResult(agent, turnId));
+    }
+
     return new Promise<WaitResult>((resolve, reject) => {
-      const waiter: TurnWaiter = { callerId, resolve, reject, abortSignal: signal };
+      const waiter: TurnWaiter = {
+        callerId,
+        resolve,
+        reject,
+        abortSignal: signal,
+        steerSignal,
+      };
       let turnWaiters = this.waiters.get(key);
       if (!turnWaiters) {
         turnWaiters = new Set();
@@ -562,6 +581,13 @@ export class MinimalSubagentsCoordinator {
           });
         }, timeoutMs);
       }
+      if (steerSignal) {
+        waiter.steerListener = () => {
+          this.removeWaiter(key, waiter);
+          resolve(this.steeredWaitResult(agent, turnId));
+        };
+        steerSignal.addEventListener("abort", waiter.steerListener, { once: true });
+      }
       if (signal) {
         waiter.abortListener = () =>
           stopWaiting(new Error(`Minimal subagents wait cancelled for ${agentId}`));
@@ -569,6 +595,16 @@ export class MinimalSubagentsCoordinator {
         else signal.addEventListener("abort", waiter.abortListener, { once: true });
       }
     });
+  }
+
+  /** The Steer Yield: the timeout's progress snapshot, with nothing claimed or cancelled. */
+  private steeredWaitResult(agent: PersistedAgent, turnId: string): WaitSteeredResult {
+    return {
+      event: "steered",
+      agent_id: agent.agent_id,
+      turn_id: turnId,
+      ...this.buildWaitTimeoutProgress(agent),
+    };
   }
 
   /** Return direct-child status for a child caller; the root may inspect any descendant. */
@@ -1918,9 +1954,7 @@ export class MinimalSubagentsCoordinator {
   }
 
   /** The compact progress a timed-out wait reports; `subagent_status` has the full detail. */
-  private buildWaitTimeoutProgress(
-    agent: PersistedAgent,
-  ): Omit<WaitTimeoutResult, "event" | "agent_id" | "turn_id" | "timeout_ms"> {
+  private buildWaitTimeoutProgress(agent: PersistedAgent): WaitProgressSnapshot {
     const summary = this.buildAgentSummary(agent, false);
     const runtime = this.runtimes.get(agent.agent_id);
     const messages =
@@ -2098,6 +2132,9 @@ export class MinimalSubagentsCoordinator {
     if (waiter.timeout) clearTimeout(waiter.timeout);
     if (waiter.abortSignal && waiter.abortListener) {
       waiter.abortSignal.removeEventListener("abort", waiter.abortListener);
+    }
+    if (waiter.steerSignal && waiter.steerListener) {
+      waiter.steerSignal.removeEventListener("abort", waiter.steerListener);
     }
   }
 

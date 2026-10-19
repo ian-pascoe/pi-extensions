@@ -54,6 +54,10 @@ _Avoid_: Checkpoint, stop point
 A breakpoint retained by Pi DAP and applied to each new debug session in the same Pi conversation session.
 _Avoid_: Saved breakpoint, persistent breakpoint
 
+**Execution wait**:
+The time a tool that starts or resumes the debuggee waits for it to stop or exit before reporting it still running. Cancellation or a Steer Yield (defined in `pi-utils`) ends it early without changing the debuggee.
+_Avoid_: Execution timeout, run wait
+
 **Stack frame**:
 A suspended function invocation available for inspection and evaluation.
 _Avoid_: Frame, call

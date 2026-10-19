@@ -12,14 +12,17 @@ import type {
   DapVariableGroup,
 } from "./dap-session.js";
 
+/** How a wait ended early without a stop or exit: its call was cancelled, or a Queued Steer yielded it. */
+export type DapExecutionWaitEnd = "cancelled" | "steered";
+
 /** Everything a text formatter may show: one operation's result plus how to present paths. */
 interface DapTextContext {
   readonly operation: DapOperation;
   readonly result: DapSessionResult;
   /** Project directory that source paths are shown relative to. */
   readonly cwd: string;
-  /** The call stopped waiting because it was cancelled, not because the Debuggee stopped. */
-  readonly executionWaitCancelled: boolean;
+  /** Why the call stopped waiting before the Debuggee stopped or exited, when it did. */
+  readonly executionWaitEnd: DapExecutionWaitEnd | undefined;
 }
 
 type DapTextFormatter = (context: DapTextContext) => readonly string[];
@@ -29,7 +32,7 @@ interface DapToolTextInput {
   readonly operation: DapOperation;
   readonly result: DapSessionResult;
   readonly cwd: string;
-  readonly executionWaitCancelled: boolean;
+  readonly executionWaitEnd: DapExecutionWaitEnd | undefined;
   /** Warnings lead so that truncating a long result can never drop them. */
   readonly warnings: readonly string[];
 }
@@ -63,8 +66,8 @@ const EXECUTION_WAIT_OPERATIONS: readonly DapOperation[] = [
   "step_out",
 ];
 
-function runningHeadline(state: string, { operation, executionWaitCancelled }: DapTextContext) {
-  if (executionWaitCancelled) return `${state} (wait cancelled)`;
+function runningHeadline(state: string, { operation, executionWaitEnd }: DapTextContext) {
+  if (executionWaitEnd !== undefined) return `${state} (wait ${executionWaitEnd})`;
   return EXECUTION_WAIT_OPERATIONS.includes(operation) ? `${state} (wait timed out)` : state;
 }
 
@@ -280,10 +283,10 @@ const DAP_TEXT_FORMATTERS = {
  * drained Debuggee output under its own heading. The full data stays in `structuredContent`.
  */
 export function formatDapToolText(input: DapToolTextInput): string {
-  const { operation, result, cwd, executionWaitCancelled, warnings } = input;
+  const { operation, result, cwd, executionWaitEnd, warnings } = input;
   const lines = [
     ...warnings.map((warning) => `Warning: ${warning}`),
-    ...DAP_TEXT_FORMATTERS[operation]({ operation, result, cwd, executionWaitCancelled }),
+    ...DAP_TEXT_FORMATTERS[operation]({ operation, result, cwd, executionWaitEnd }),
   ];
   const summary = lines.join("\n");
   if (result.output.length === 0) return summary;

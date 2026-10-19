@@ -20,6 +20,7 @@ import {
   type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, isKeyRepeat, matchesKey } from "@earendil-works/pi-tui";
+import { raiseQueuedSteer, trackQueuedSteers } from "@ian-pascoe/pi-utils/queued-steer";
 import { expandMessageOnClick, noticeText } from "@ian-pascoe/pi-utils/ui";
 import {
   createSubagentAccessBranchRecord,
@@ -189,7 +190,11 @@ function createRootConversationEndpoint(
   return {
     async queueCoordinatorMessage(message) {
       // A running root takes the message as a clearable steer; an idle root starts a turn with it.
-      if (!context.isIdle()) onSteer();
+      if (!context.isIdle()) {
+        onSteer();
+        // Pi hands the steer over only after the running tool batch ends, so waits there yield.
+        raiseQueuedSteer(context.sessionManager.getSessionId());
+      }
       pi.sendMessage(
         {
           customType: message.customType,
@@ -548,6 +553,7 @@ export class MinimalSubagentsLifecycleController {
    * registered only while a result waits in the root's steer queue (`watchRootTurnEnds`).
    */
   register(): void {
+    trackQueuedSteers(this.pi);
     const rootTools = createCoordinatorToolDefinitions({
       coordinator: this.coordinatorOperations,
       callerId: "root",

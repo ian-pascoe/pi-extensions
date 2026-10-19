@@ -23,6 +23,7 @@ The Pi packages and `typebox` are optional peers; Pi's extension loader supplies
 | `./token-calibration`          | Nothing                                                                          |
 | `./agent-lineage`              | `typebox`                                                                        |
 | `./secret-registry`            | Nothing                                                                          |
+| `./queued-steer`               | Nothing                                                                          |
 | `./layered-settings`           | `typebox`                                                                        |
 | `./null-optional-arguments`    | `typebox`                                                                        |
 | `./tool-testing`               | `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and `typebox`        |
@@ -40,6 +41,17 @@ Type-only imports from `@earendil-works/pi-ai` and `@earendil-works/pi-coding-ag
 ## Secret registry
 
 `@ian-pascoe/pi-utils/secret-registry` is the process-wide registry of held Secrets that Pi Secret fills and other packages read without depending on it ([ADR-0008](../../docs/adr/0008-secret-redaction-registry-in-pi-utils.md)). Every copy of pi-utils in one process shares it. `holdSecret(name, value, owner, expiresAt?)` makes a value resolve under a Secret Name (`SECRET_NAME_PATTERN`) until the same `owner` calls `revokeSecret(name, owner)` or the wall clock passes `expiresAt`, so a late revocation timer cannot extend a Secret's life. `resolveSecret(name)` and `heldSecretNames()` read what currently resolves. `redactSecrets(value)` returns a copy of a JSON-like value with every value ever held in the process replaced by its Secret Reference (`secretReference(name)`, `{{secret:NAME}}`), longest value first in one pass, whether written as is or in a common encoding (JSON string escaping, percent-encoding, hex, and base64 and base64url at every alignment; only for values of at least `MIN_ENCODED_REDACTION_LENGTH`, 8, characters), or the value itself when nothing matched. Revoked and replaced values stay redacted for the rest of the process, so output printed after a Secret expires is still hidden.
+
+## Queued Steers
+
+`@ian-pascoe/pi-utils/queued-steer` is the process-wide signal that lets waiting tools end with a Steer Yield ([ADR-0009](../../docs/adr/0009-steer-yield-signal-in-pi-utils.md)). Pi hands a Queued Steer to an agent only after every tool call in the batch has returned, so a long wait would hold it back. Every copy of pi-utils in one process shares the signal, keyed by Pi session ID, so a package can raise it for a Child Agent session it runs in-process.
+
+- `trackQueuedSteers(pi)` raises the signal for every steer queued through Pi's `input` event (`streamingBehavior: "steer"`, from the user, RPC, or `sendUserMessage`) and settles it at the next `turn_start` or `agent_end`. Each package that yields calls it on its own `pi`; a second call with the same `pi` does nothing. Follow-ups never raise it.
+- `raiseQueuedSteer(sessionId)` records a steer a package sent itself, such as a custom message with `deliverAs: "steer"`. Pi gives extensions no way to see another extension's custom-message steers, so those cannot cause a Steer Yield.
+- `hasQueuedSteer(sessionId)`, `onQueuedSteer(sessionId, listener)` (runs when a steer becomes pending), and `settleQueuedSteers(sessionId)` read and drive the signal directly.
+- `watchQueuedSteer(sessionId)` returns `{ signal, dispose }` for one wait: an `AbortSignal` aborted once a steer is pending, at once when one already is. Call `dispose` when the wait ends.
+
+A steer stays pending from when it is queued until Pi starts the next turn, so every wait that starts in between yields at once. An `input` handler that consumes the input still raises the signal, because Pi does not tell other handlers.
 
 ## Null for optional tool arguments
 

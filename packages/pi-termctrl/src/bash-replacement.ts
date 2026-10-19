@@ -19,6 +19,7 @@ import {
   type TruncationResult,
 } from "@earendil-works/pi-coding-agent";
 import { matchesKey } from "@earendil-works/pi-tui";
+import { hasQueuedSteer, onQueuedSteer } from "@ian-pascoe/pi-utils/queued-steer";
 import { noticeText } from "@ian-pascoe/pi-utils/ui";
 import { Type, type TSchema } from "typebox";
 import { KILLED_EXIT, TermctrlRegistry } from "./termctrl-registry.js";
@@ -47,9 +48,14 @@ export function backgroundLogPath(id: string): string {
   return join(termctrlTemporaryDirectory(), `${process.pid}-${id}.log`);
 }
 
+/** What moved a running call to the background without the model asking: the user, or a Steer Yield. */
+export type BackgroundCause = "user" | "steer";
+
 /** What a backgrounded call reports to the agent. */
 interface BackgroundOutcome {
   readonly id: string;
+  /** What moved the call; undefined when the model asked for the background. */
+  readonly cause: BackgroundCause | undefined;
   readonly logPath: string;
   readonly output: string;
   /** What the in-memory buffer dropped from the head of `output`. */
@@ -85,9 +91,11 @@ class BashCall {
   private resolveBackground!: (outcome: BackgroundOutcome) => void;
   readonly backgrounded: Promise<BackgroundOutcome>;
   private isBackgrounded = false;
+  /** Runs right after the command was handed to Pi's `exec`, before it can print anything. */
+  onStarted: (() => void) | undefined;
 
   constructor(
-    private readonly owner: string,
+    readonly owner: string,
     private readonly command: string,
     private readonly local: BashOperations,
   ) {
@@ -142,7 +150,9 @@ class BashCall {
         signal: this.controller.signal,
       };
       if (env !== undefined) localOptions.env = env;
-      const result = await this.local.exec(command, cwd, localOptions);
+      const running = this.local.exec(command, cwd, localOptions);
+      this.onStarted?.();
+      const result = await running;
       this.finish({ code: result.exitCode, signal: null });
       return result;
     } catch (error) {
@@ -188,7 +198,7 @@ class BashCall {
   }
 
   /** Move the running command to the background. Returns false when it already finished. */
-  background(registry: TermctrlRegistry): boolean {
+  background(registry: TermctrlRegistry, cause?: BackgroundCause): boolean {
     if (this.isBackgrounded || this.settled || !this.started) return false;
     // An aborted or timed-out command is already dying; let Pi report it.
     if (this.controller.signal.aborted) return false;
@@ -226,6 +236,7 @@ class BashCall {
     this.remember(output);
     this.resolveBackground({
       id: entry.id,
+      cause,
       logPath: entry.child.logPath,
       output,
       dropped: this.dropped(),
@@ -234,22 +245,31 @@ class BashCall {
   }
 }
 
-/** The agent `bash` calls running in one session, and the Ctrl+B subscription while any run. */
+/** Pi's `bash` calls running in one session, and the Ctrl+B and Queued Steer subscriptions while any run. */
 export class RunningBashCalls {
   private readonly calls = new Set<BashCall>();
   private unsubscribe: (() => void) | undefined;
 
   constructor(private readonly registry: () => TermctrlRegistry) {}
 
-  /** Track a call; the first one subscribes to Ctrl+B. */
+  /** Track a call; the first one subscribes to Ctrl+B and to Queued Steers for its session. */
   add(call: BashCall, ui: ExtensionUIContext): void {
     this.calls.add(call);
+    // A call that starts while a steer is pending moves at once; later steers reach it below.
+    call.onStarted = () => {
+      if (hasQueuedSteer(call.owner)) this.backgroundOne(call, ui, "steer");
+    };
     if (this.unsubscribe !== undefined) return;
-    this.unsubscribe = ui.onTerminalInput((data) => {
+    const stopSteers = onQueuedSteer(call.owner, () => this.backgroundAll(ui, "steer"));
+    const stopInput = ui.onTerminalInput((data) => {
       if (!matchesKey(data, "ctrl+b")) return undefined;
       this.backgroundAll(ui);
       return { consume: true };
     });
+    this.unsubscribe = () => {
+      stopSteers();
+      stopInput();
+    };
   }
 
   /** Stop tracking a call; the last one releases Ctrl+B back to the editor. */
@@ -259,17 +279,29 @@ export class RunningBashCalls {
     this.dispose();
   }
 
-  /** Move every running call to the background. */
-  backgroundAll(ui: Pick<ExtensionUIContext, "notify">): void {
-    for (const call of this.calls) {
-      try {
-        call.background(this.registry());
-      } catch (error) {
-        ui.notify(
-          noticeText("Termctrl", error instanceof Error ? error.message : String(error)),
-          "warning",
-        );
-      }
+  /** Move every running call to the background, as Ctrl+B does and as a Queued Steer does. */
+  backgroundAll(ui: Pick<ExtensionUIContext, "notify">, cause: BackgroundCause = "user"): void {
+    for (const call of this.calls) this.backgroundOne(call, ui, cause);
+  }
+
+  private backgroundOne(
+    call: BashCall,
+    ui: Pick<ExtensionUIContext, "notify">,
+    cause: BackgroundCause,
+  ): void {
+    try {
+      call.background(this.registry(), cause === "steer" ? cause : undefined);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      ui.notify(
+        noticeText(
+          "Termctrl",
+          cause === "steer"
+            ? `A message was queued for the agent, but its running bash call stayed in the foreground: ${reason}`
+            : reason,
+        ),
+        "warning",
+      );
     }
   }
 
@@ -416,7 +448,8 @@ function backgroundResult(
   }
   // Scripts get the same contract as a finished call's structured result: Pi's limits, not the tail.
   const structured = truncateBuffered(outcome.output, outcome.dropped, {});
-  const status = `Command moved to the background as ${outcome.id}. Its output so far and all later output go to ${outcome.logPath}. You will get an Exit notification when it ends, so do not poll the log in a loop; to block until it ends, call terminal_wait. Stop it with terminal_stop {"id": "${outcome.id}"}.`;
+  const why = outcome.cause === "steer" ? " because a message was queued for you" : "";
+  const status = `Command moved to the background as ${outcome.id}${why}. Its output so far and all later output go to ${outcome.logPath}. You will get an Exit notification when it ends, so do not poll the log in a loop; to block until it ends, call terminal_wait. Stop it with terminal_stop {"id": "${outcome.id}"}.`;
   return {
     content: [{ type: "text" as const, text: text === "" ? status : `${text}\n\n${status}` }],
     details: undefined,
@@ -513,6 +546,8 @@ export function createBashReplacement(options: BashReplacementOptions) {
             };
       const startedAt = performance.now();
       const limits = options.bashTail;
+      // Tracked before Pi's `execute` runs, which may reach `exec` at once.
+      options.calls.add(call, context.ui);
       const piRunning = inner.execute(
         toolCallId,
         params.timeout === undefined
@@ -534,7 +569,6 @@ export function createBashReplacement(options: BashReplacementOptions) {
               },
             );
       running.catch(() => {});
-      options.calls.add(call, context.ui);
       const yieldTimer =
         params.background === true
           ? setTimeout(() => {

@@ -27,6 +27,7 @@ import {
   readAgentLineage,
   type AgentLineage,
 } from "@ian-pascoe/pi-utils/agent-lineage";
+import { raiseQueuedSteer, settleQueuedSteers } from "@ian-pascoe/pi-utils/queued-steer";
 import type { Static, TSchema } from "typebox";
 import { Value } from "typebox/value";
 import {
@@ -525,11 +526,12 @@ export function findDeliveryEvidence(
           ))
       );
     }
-    // A message, timeout, or already-delivered wait result never carried the turn's terminal result.
+    // A message, timeout, steer yield, or already-delivered wait result never carried the turn's terminal result.
     if (
       waitToolResult &&
       (details.event === "message" ||
         details.event === "timeout" ||
+        details.event === "steered" ||
         details.already_delivered === true)
     )
       return false;
@@ -631,6 +633,11 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
     // Keep this child-only; AgentSession.setSteeringMode would overwrite the user's global setting.
     session.agent.steeringMode = "all";
     this.unsubscribe = session.subscribe((event) => {
+      // Child sessions get no Pi `input` events, so this runtime settles its own Queued Steers.
+      if (event.type === "turn_start" || event.type === "agent_end") {
+        settleQueuedSteers(this.sessionId);
+        return;
+      }
       if (event.type !== "entry_appended") return;
       if (
         event.entry.type === "custom_message" ||
@@ -639,6 +646,10 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
         onSessionActivity?.();
       }
     });
+  }
+
+  private get sessionId(): string {
+    return this.session.sessionManager.getSessionId();
   }
 
   get sessionLeafId(): string | undefined {
@@ -660,6 +671,8 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
   }
 
   runMessage(message: CoordinatorMessage): Promise<RuntimeTurnOutcome> {
+    // An idle child starts a turn with the message; a streaming child queues it as a steer.
+    if (this.session.isStreaming) raiseQueuedSteer(this.sessionId);
     return this.captureTurn(() =>
       this.session.sendCustomMessage(
         {
@@ -682,6 +695,7 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
       details: message.details,
       timestamp: Date.now(),
     });
+    raiseQueuedSteer(this.sessionId);
   }
 
   async abort(): Promise<void> {
@@ -691,6 +705,7 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
 
   async dispose(): Promise<void> {
     this.unsubscribe();
+    settleQueuedSteers(this.sessionId);
     try {
       await this.observer?.dispose();
       // Let child extensions release services such as MCP server connections.

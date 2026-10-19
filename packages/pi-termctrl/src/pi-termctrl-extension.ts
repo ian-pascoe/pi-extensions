@@ -8,6 +8,7 @@ import {
   type SessionShutdownEvent,
 } from "@earendil-works/pi-coding-agent";
 import { acceptNullForOptionalArguments } from "@ian-pascoe/pi-utils/null-optional-arguments";
+import { trackQueuedSteers } from "@ian-pascoe/pi-utils/queued-steer";
 import { expandMessageOnClick, noticeText } from "@ian-pascoe/pi-utils/ui";
 import { createBashReplacement, RunningBashCalls } from "./bash-replacement.js";
 import {
@@ -86,6 +87,7 @@ class PiTermctrlController {
   }
 
   register(): void {
+    trackQueuedSteers(this.pi);
     this.pi.registerMessageRenderer(
       EXIT_NOTIFICATION_TYPE,
       expandMessageOnClick(renderExitNotification),

@@ -9,6 +9,11 @@ import {
   type AgentToolUpdateCallback,
   type ExtensionToolContext,
 } from "@earendil-works/pi-coding-agent";
+import {
+  hasQueuedSteer,
+  raiseQueuedSteer,
+  settleQueuedSteers,
+} from "@ian-pascoe/pi-utils/queued-steer";
 import { Value } from "typebox/value";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type {
@@ -84,11 +89,17 @@ interface RecordedCall {
   input?: RecordedDapInput;
   readonly name: string;
   signal?: AbortSignal;
+  steerSignal?: AbortSignal;
 }
+
+/** The Pi session id the tool fixture executes in; Queued Steers are keyed by it. */
+const TOOL_SESSION_ID = "dap-tool-test-session";
 
 class RecordingDapSession {
   readonly calls: RecordedCall[] = [];
   wait: Promise<void> | undefined;
+  /** Hold each call until its steer signal aborts, as a real execution wait does. */
+  yieldOnSteer = false;
   result: DapSessionResult = {
     snapshot: { state: "idle" },
     output: "",
@@ -100,37 +111,49 @@ class RecordingDapSession {
     name: string,
     input?: RecordedDapInput,
     signal?: AbortSignal,
+    steerSignal?: AbortSignal,
   ): Promise<DapSessionResult> {
     const call: RecordedCall = { name };
     if (input !== undefined) call.input = input;
     if (signal !== undefined) call.signal = signal;
+    if (steerSignal !== undefined) call.steerSignal = steerSignal;
     this.calls.push(call);
     await this.wait;
+    if (this.yieldOnSteer && steerSignal !== undefined) {
+      await new Promise<void>((settle) => {
+        if (steerSignal.aborted) settle();
+        else steerSignal.addEventListener("abort", () => settle(), { once: true });
+      });
+    }
     return this.result;
   }
 
-  launch(input: DapLaunchInput = {}, signal?: AbortSignal): Promise<DapSessionResult> {
-    return this.record("launch", input, signal);
+  launch(
+    input: DapLaunchInput = {},
+    signal?: AbortSignal,
+    steerSignal?: AbortSignal,
+  ): Promise<DapSessionResult> {
+    return this.record("launch", input, signal, steerSignal);
   }
 
   setBreakpoints(input: DapSetBreakpointsInput, signal?: AbortSignal): Promise<DapSessionResult> {
     return this.record("setBreakpoints", input, signal);
   }
 
-  continue(signal?: AbortSignal): Promise<DapSessionResult> {
-    return this.record("continue", undefined, signal);
+  continue(signal?: AbortSignal, steerSignal?: AbortSignal): Promise<DapSessionResult> {
+    return this.record("continue", undefined, signal, steerSignal);
   }
 
-  next(signal?: AbortSignal): Promise<DapSessionResult> {
-    return this.record("next", undefined, signal);
+  next(signal?: AbortSignal, steerSignal?: AbortSignal): Promise<DapSessionResult> {
+    return this.record("next", undefined, signal, steerSignal);
   }
 
-  stepIn(signal?: AbortSignal): Promise<DapSessionResult> {
-    return this.record("stepIn", undefined, signal);
+  stepIn(signal?: AbortSignal, steerSignal?: AbortSignal): Promise<DapSessionResult> {
+    return this.record("stepIn", undefined, signal, steerSignal);
   }
 
-  stepOut(signal?: AbortSignal): Promise<DapSessionResult> {
-    return this.record("stepOut", undefined, signal);
+  stepOut(signal?: AbortSignal, steerSignal?: AbortSignal): Promise<DapSessionResult> {
+    return this.record("stepOut", undefined, signal, steerSignal);
   }
 
   pause(signal?: AbortSignal): Promise<DapSessionResult> {
@@ -173,13 +196,17 @@ async function createToolFixture(): Promise<{
   temporaryDirectories.push(cwd);
   const session = new RecordingDapSession();
   const sessionFiles = await createDapSessionFiles(cwd);
-  // SAFETY: Tool execution only observes cwd; this fixture supplies that complete public surface.
-  const context = { cwd } as ExtensionToolContext;
+  // SAFETY: Tool execution only observes cwd and the session id; this fixture supplies that complete public surface.
+  const context = {
+    cwd,
+    sessionManager: { getSessionId: () => TOOL_SESSION_ID },
+  } as ExtensionToolContext;
   return { context, cwd, runtime: { session, sessionFiles }, session };
 }
 
 afterEach(async () => {
   vi.useRealTimers();
+  settleQueuedSteers(TOOL_SESSION_ID);
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -995,6 +1022,177 @@ describe("DAP tools", () => {
     expect(result.structuredContent).toMatchObject({
       state: "running",
       execution_wait_cancelled: true,
+    });
+  });
+
+  describe("Steer Yield", () => {
+    const runningResult = (): DapSessionResult => ({
+      snapshot: { state: "running", adapterId: "node", profileId: "node" },
+      output: "",
+      discardedOutputBytes: 0,
+      desiredBreakpoints: [],
+    });
+
+    test.each(["launch", "continue", "next", "step_in", "step_out"] as const)(
+      "dap_%s ends its wait when a steer is queued during it and reports it as steered",
+      async (operation) => {
+        const fixture = await createToolFixture();
+        fixture.session.result = runningResult();
+        fixture.session.yieldOnSteer = true;
+        const controller = new AbortController();
+        const execution = dapTool(() => fixture.runtime, operation).execute(
+          "steered",
+          {},
+          controller.signal,
+          undefined,
+          fixture.context,
+        );
+        await vi.waitFor(() => expect(fixture.session.calls).toHaveLength(1));
+        const [call] = fixture.session.calls;
+        expect(call?.steerSignal?.aborted).toBe(false);
+
+        raiseQueuedSteer(TOOL_SESSION_ID);
+        const result = await execution;
+
+        expect(call?.steerSignal?.aborted).toBe(true);
+        // A Steer Yield is not the tool signal aborting.
+        expect(controller.signal.aborted).toBe(false);
+        expect(call?.signal?.aborted).toBe(false);
+        expect(result.content).toEqual([{ type: "text", text: "running (wait steered)" }]);
+        expect(result.details).toMatchObject({
+          state: "running",
+          presentation: { kind: "execution_wait", operation, steered: true },
+        });
+        expect(result.details).not.toMatchObject({ presentation: { cancelled: true } });
+        expect(result.structuredContent).toMatchObject({
+          state: "running",
+          execution_wait_steered: true,
+        });
+        expect(result.structuredContent).not.toHaveProperty("execution_wait_cancelled");
+      },
+    );
+
+    test("a steer already pending yields immediately, after the request that resumes was made", async () => {
+      const fixture = await createToolFixture();
+      fixture.session.result = runningResult();
+      fixture.session.yieldOnSteer = true;
+      raiseQueuedSteer(TOOL_SESSION_ID);
+
+      const result = await dapTool(() => fixture.runtime, "continue").execute(
+        "pending",
+        {},
+        undefined,
+        undefined,
+        fixture.context,
+      );
+
+      expect(fixture.session.calls.map(({ name }) => name)).toEqual(["continue"]);
+      expect(fixture.session.calls[0]?.steerSignal?.aborted).toBe(true);
+      expect(result.content).toEqual([{ type: "text", text: "running (wait steered)" }]);
+      // The steer stays pending until Pi starts the next turn, so the next wait yields too.
+      expect(hasQueuedSteer(TOOL_SESSION_ID)).toBe(true);
+    });
+
+    test("dap_pause ignores a pending steer and reports the stop it requested", async () => {
+      const fixture = await createToolFixture();
+      fixture.session.result = {
+        snapshot: { state: "stopped", adapterId: "node", profileId: "node", stopReason: "pause" },
+        output: "",
+        discardedOutputBytes: 0,
+        desiredBreakpoints: [],
+      };
+      fixture.session.yieldOnSteer = true;
+      raiseQueuedSteer(TOOL_SESSION_ID);
+
+      const result = await dapTool(() => fixture.runtime, "pause").execute(
+        "pause",
+        {},
+        undefined,
+        undefined,
+        fixture.context,
+      );
+
+      expect(fixture.session.calls[0]?.steerSignal).toBeUndefined();
+      expect(result.structuredContent).toMatchObject({ state: "stopped" });
+      expect(result.structuredContent).not.toHaveProperty("execution_wait_steered");
+      expect(JSON.stringify(result.content)).not.toContain("steered");
+    });
+
+    test("a wait that ended with a stop is reported as that stop, not as steered", async () => {
+      const fixture = await createToolFixture();
+      fixture.session.result = {
+        snapshot: {
+          state: "stopped",
+          adapterId: "node",
+          profileId: "node",
+          stopReason: "breakpoint",
+        },
+        output: "",
+        discardedOutputBytes: 0,
+        desiredBreakpoints: [],
+      };
+      fixture.session.yieldOnSteer = true;
+      raiseQueuedSteer(TOOL_SESSION_ID);
+
+      const result = await dapTool(() => fixture.runtime, "next").execute(
+        "stopped",
+        {},
+        undefined,
+        undefined,
+        fixture.context,
+      );
+
+      expect(result.structuredContent).not.toHaveProperty("execution_wait_steered");
+      expect(result.details).not.toMatchObject({ presentation: { kind: "execution_wait" } });
+    });
+
+    test("a cancelled wait stays cancelled when a steer is pending too", async () => {
+      const fixture = await createToolFixture();
+      fixture.session.result = runningResult();
+      raiseQueuedSteer(TOOL_SESSION_ID);
+      const controller = new AbortController();
+      controller.abort();
+
+      const result = await dapTool(() => fixture.runtime, "continue").execute(
+        "both",
+        {},
+        controller.signal,
+        undefined,
+        fixture.context,
+      );
+
+      expect(result.content).toEqual([{ type: "text", text: "running (wait cancelled)" }]);
+      expect(result.structuredContent).toMatchObject({ execution_wait_cancelled: true });
+      expect(result.structuredContent).not.toHaveProperty("execution_wait_steered");
+    });
+
+    test("ignores steers for other sessions and tools that do not wait", async () => {
+      const fixture = await createToolFixture();
+      fixture.session.result = runningResult();
+      raiseQueuedSteer("another-session");
+      try {
+        const result = await dapTool(() => fixture.runtime, "continue").execute(
+          "other",
+          {},
+          undefined,
+          undefined,
+          fixture.context,
+        );
+        expect(fixture.session.calls[0]?.steerSignal?.aborted).toBe(false);
+        expect(result.content).toEqual([{ type: "text", text: "running (wait timed out)" }]);
+
+        raiseQueuedSteer(TOOL_SESSION_ID);
+        await dapTool(() => fixture.runtime, "stack").execute(
+          "stack",
+          {},
+          undefined,
+          undefined,
+          fixture.context,
+        );
+        expect(fixture.session.calls.at(-1)?.steerSignal).toBeUndefined();
+      } finally {
+        settleQueuedSteers("another-session");
+      }
     });
   });
 

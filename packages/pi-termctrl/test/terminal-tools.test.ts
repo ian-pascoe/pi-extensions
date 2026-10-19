@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
+import { raiseQueuedSteer, settleQueuedSteers } from "@ian-pascoe/pi-utils/queued-steer";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import type { LineByteLimits } from "../src/pi-termctrl-settings.js";
 import { TermctrlRegistry } from "../src/termctrl-registry.js";
@@ -20,7 +21,7 @@ import { FakeDriverFactory, type FakeTerminal } from "./fake-driver.js";
 
 /** The `termctrl.scrollback` limits the Terminal tools read; each test starts with the default. */
 let scrollback: LineByteLimits | undefined;
-/** Whether the fake session has a message queued, for `terminal_wait`. */
+/** Whether the fake session has a follow-up queued: Pi's `hasPendingMessages()` counts it, a Steer Yield must not. */
 let pendingMessages = false;
 /** The session's working directory; `terminal_start` checks that it exists. */
 let workDir: string;
@@ -41,8 +42,8 @@ function toolContext(owner: string): ExtensionToolContext {
     sessionManager: { getSessionId: () => owner },
     hasPendingMessages: () => pendingMessages,
   };
-  // SAFETY: the Terminal tools read only `cwd`, `sessionManager.getSessionId()` and
-  // `hasPendingMessages()` from the context.
+  // SAFETY: the Terminal tools read only `cwd` and `sessionManager.getSessionId()` from the context;
+  // `hasPendingMessages()` is there to prove that a queued follow-up ends no wait.
   return context as ExtensionToolContext;
 }
 
@@ -101,6 +102,8 @@ beforeEach(() => {
 
 afterEach(async () => {
   vi.useRealTimers();
+  settleQueuedSteers("root");
+  settleQueuedSteers("child");
   await TermctrlRegistry.teardownForTests();
 });
 
@@ -1296,6 +1299,112 @@ describe("terminal_send queueing", () => {
   });
 });
 
+describe("Steer Yield", () => {
+  test("a poll ends with settle_reason steered when a Queued Steer is raised, leaving the Terminal running", async () => {
+    const { terminal } = await startTerminal();
+    busy(terminal);
+    const polling = harness.send.execute("call", { id: "t1" }, undefined, undefined, root);
+    await vi.advanceTimersByTimeAsync(2_000);
+    raiseQueuedSteer("root");
+    const value = await polling;
+    expect(value.structuredContent).toMatchObject({ settle_reason: "steered", state: "running" });
+    expect(textOf(value)).toContain("t1 running · settled: steered");
+    expect(harness.runtime.registry.get("t1")?.state).toBe("running");
+  });
+
+  test("a wait_for_text wait ends as steered, says the text was not seen, and typed its input first", async () => {
+    const { terminal } = await startTerminal();
+    busy(terminal);
+    const waiting = harness.send.execute(
+      "call",
+      { id: "t1", text: "make\n", wait_for_text: "never", wait_ms: 60_000 },
+      undefined,
+      undefined,
+      root,
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    raiseQueuedSteer("root");
+    const startedAt = Date.now();
+    const value = await waiting;
+    expect(Date.now() - startedAt).toBe(0);
+    expect(terminal.typed).toEqual(["make\n"]);
+    expect(value.structuredContent).toMatchObject({ settle_reason: "steered" });
+    expect(textOf(value)).toContain("t1 running · settled: steered");
+    expect(textOf(value)).toContain('wait_for_text "never" was not seen before the wait ended.');
+  });
+
+  test("a call that starts while a Queued Steer is pending types its input, then settles at once", async () => {
+    const { terminal } = await startTerminal();
+    busy(terminal);
+    raiseQueuedSteer("root");
+    const { value, elapsed } = await timed(
+      harness.send.execute("call", { id: "t1", text: "ls\n" }, undefined, undefined, root),
+    );
+    expect(elapsed).toBeLessThanOrEqual(60);
+    expect(terminal.typed).toEqual(["ls\n"]);
+    expect(value.structuredContent).toMatchObject({ settle_reason: "steered" });
+  });
+
+  test("terminal_start returns steered, and the Terminal keeps running", async () => {
+    harness.drivers.onLaunch = busy;
+    raiseQueuedSteer("root");
+    const { value } = await timed(
+      harness.start.execute("call", { command: "make" }, undefined, undefined, root),
+    );
+    expect(value.structuredContent).toMatchObject({
+      id: "t1",
+      state: "running",
+      settle_reason: "steered",
+    });
+    expect(textOf(value)).toContain("t1 running · settled: steered");
+  });
+
+  test("a queued follow-up (hasPendingMessages alone) does not end a settle wait", async () => {
+    const { terminal } = await startTerminal();
+    busy(terminal);
+    pendingMessages = true;
+    const { value, elapsed } = await timed(
+      harness.send.execute(
+        "call",
+        { id: "t1", text: "x", wait_ms: 1_000 },
+        undefined,
+        undefined,
+        root,
+      ),
+    );
+    expect(elapsed).toBeGreaterThanOrEqual(1_000);
+    expect(value.structuredContent).toMatchObject({ settle_reason: "timeout" });
+  });
+
+  test("calls in the Call queue still run in order, each yielding once it reaches its wait", async () => {
+    const { terminal } = await startTerminal();
+    busy(terminal);
+    const first = harness.send.execute(
+      "a",
+      { id: "t1", text: "one\n", wait_ms: 60_000 },
+      undefined,
+      undefined,
+      root,
+    );
+    const second = harness.send.execute(
+      "b",
+      { id: "t1", text: "two\n", wait_ms: 60_000 },
+      undefined,
+      undefined,
+      root,
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(terminal.typed).toEqual(["one\n"]);
+    raiseQueuedSteer("root");
+    const results = await Promise.all([first, second]);
+    expect(terminal.typed).toEqual(["one\n", "two\n"]);
+    expect(results.map((result) => result.structuredContent)).toMatchObject([
+      { settle_reason: "steered" },
+      { settle_reason: "steered" },
+    ]);
+  });
+});
+
 describe("settle reason", () => {
   test("is matched when wait_for_text is found", async () => {
     const { terminal } = await startTerminal();
@@ -1689,7 +1798,7 @@ describe("terminal_wait", () => {
     expect(delivered).toEqual(["b1"]);
   });
 
-  test("returns early when a message is queued, and clamps wait_ms to 5 minutes", async () => {
+  test("returns early with reason steered when a Queued Steer is raised, and clamps wait_ms to 5 minutes", async () => {
     job("sleep 100");
     const startedAt = Date.now();
     const waiting = harness.wait.execute(
@@ -1700,16 +1809,47 @@ describe("terminal_wait", () => {
       root,
     );
     await vi.advanceTimersByTimeAsync(2_000);
-    pendingMessages = true;
-    await vi.advanceTimersByTimeAsync(100);
+    raiseQueuedSteer("root");
     const value = await waiting;
-    expect(Date.now() - startedAt).toBe(2_100);
-    expect(value.structuredContent).toMatchObject({ reason: "message", exited: [] });
+    expect(Date.now() - startedAt).toBe(2_000);
+    expect(value.structuredContent).toMatchObject({ reason: "steered", exited: [] });
+    expect(textOf(value)).toContain("Returned early: a message is queued for you.");
+    expect(harness.runtime.registry.get("b1")?.state).toBe("running");
 
-    pendingMessages = false;
+    settleQueuedSteers("root");
     const clamped = await timed(harness.wait.execute("call", {}, undefined, undefined, root));
     expect(clamped.elapsed).toBeGreaterThanOrEqual(300_000);
     expect(clamped.elapsed).toBeLessThan(300_200);
+  });
+
+  test("a wait that starts while a Queued Steer is pending returns at once", async () => {
+    job("sleep 100");
+    raiseQueuedSteer("root");
+    const { value, elapsed } = await timed(
+      harness.wait.execute("call", {}, undefined, undefined, root),
+    );
+    expect(elapsed).toBeLessThanOrEqual(10);
+    expect(value.structuredContent).toMatchObject({ reason: "steered" });
+  });
+
+  test("a queued follow-up (hasPendingMessages alone) does not end the wait", async () => {
+    job("sleep 100");
+    pendingMessages = true;
+    const { value, elapsed } = await timed(
+      harness.wait.execute("call", { wait_ms: 3_000 }, undefined, undefined, root),
+    );
+    expect(elapsed).toBeGreaterThanOrEqual(3_000);
+    expect(value.structuredContent).toMatchObject({ reason: "timeout" });
+  });
+
+  test("a steer for another session does not end the wait", async () => {
+    job("sleep 100");
+    const waiting = harness.wait.execute("call", { wait_ms: 3_000 }, undefined, undefined, root);
+    await vi.advanceTimersByTimeAsync(1_000);
+    raiseQueuedSteer("child");
+    await vi.advanceTimersByTimeAsync(2_000);
+    const value = await waiting;
+    expect(value.structuredContent).toMatchObject({ reason: "timeout" });
   });
 
   test("returns when the call is aborted", async () => {

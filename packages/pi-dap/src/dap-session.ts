@@ -423,8 +423,10 @@ type InternalDapSessionState =
       readonly cleanupPromise: Promise<void>;
     };
 
+type ExecutionWaitOutcome = "cancelled" | "steered" | "timeout" | "transition";
+
 interface ExecutionWait {
-  readonly promise: Promise<"cancelled" | "timeout" | "transition">;
+  readonly promise: Promise<ExecutionWaitOutcome>;
   cancel(): void;
 }
 
@@ -599,8 +601,15 @@ export class DapSession {
   /** Construct an inert Debug Session controller; launch starts the first Debug Adapter. */
   constructor(private readonly options: DapSessionOptions) {}
 
-  /** Launch one configured Launch Profile and wait for its first stop, exit, cancellation, or execution timeout. */
-  async launch(input: DapLaunchInput = {}, signal?: AbortSignal): Promise<DapSessionResult> {
+  /**
+   * Launch one configured Launch Profile and wait for its first stop, exit, cancellation, Steer
+   * Yield (the steer signal aborting), or execution timeout.
+   */
+  async launch(
+    input: DapLaunchInput = {},
+    signal?: AbortSignal,
+    steerSignal?: AbortSignal,
+  ): Promise<DapSessionResult> {
     if (this.state.kind === "active") {
       throw new DapSessionError("state", "launch requires no active Debug Session");
     }
@@ -731,7 +740,7 @@ export class DapSession {
         this.transitionActiveToRunning(active);
       }
       if (this.isCurrentActive(active) && active.phase === "running") {
-        const wait = this.waitForExecutionTransition(signal);
+        const wait = this.waitForExecutionTransition(signal, steerSignal);
         await wait.promise;
       }
       await active.cleanupPromise;
@@ -807,27 +816,27 @@ export class DapSession {
     else this.desiredBreakpoints.set(filePath, breakpoints);
   }
 
-  /** Continue a stopped Debuggee and wait for its next stop or termination. */
-  continue(signal?: AbortSignal): Promise<DapSessionResult> {
-    return this.executeLifecycleRequest("continue", signal);
+  /** Continue a stopped Debuggee and wait for its next stop or termination; the steer signal aborting ends the wait early. */
+  continue(signal?: AbortSignal, steerSignal?: AbortSignal): Promise<DapSessionResult> {
+    return this.executeLifecycleRequest("continue", signal, steerSignal);
   }
 
-  /** Step over in a stopped Debuggee and wait for its next stop or termination. */
-  next(signal?: AbortSignal): Promise<DapSessionResult> {
-    return this.executeLifecycleRequest("next", signal);
+  /** Step over in a stopped Debuggee and wait for its next stop or termination; the steer signal aborting ends the wait early. */
+  next(signal?: AbortSignal, steerSignal?: AbortSignal): Promise<DapSessionResult> {
+    return this.executeLifecycleRequest("next", signal, steerSignal);
   }
 
-  /** Step into in a stopped Debuggee and wait for its next stop or termination. */
-  stepIn(signal?: AbortSignal): Promise<DapSessionResult> {
-    return this.executeLifecycleRequest("stepIn", signal);
+  /** Step into in a stopped Debuggee and wait for its next stop or termination; the steer signal aborting ends the wait early. */
+  stepIn(signal?: AbortSignal, steerSignal?: AbortSignal): Promise<DapSessionResult> {
+    return this.executeLifecycleRequest("stepIn", signal, steerSignal);
   }
 
-  /** Step out in a stopped Debuggee and wait for its next stop or termination. */
-  stepOut(signal?: AbortSignal): Promise<DapSessionResult> {
-    return this.executeLifecycleRequest("stepOut", signal);
+  /** Step out in a stopped Debuggee and wait for its next stop or termination; the steer signal aborting ends the wait early. */
+  stepOut(signal?: AbortSignal, steerSignal?: AbortSignal): Promise<DapSessionResult> {
+    return this.executeLifecycleRequest("stepOut", signal, steerSignal);
   }
 
-  /** Pause a running Debuggee and wait for its stopped event. */
+  /** Pause a running Debuggee and wait for its stopped event; a Queued Steer does not end this wait. */
   pause(signal?: AbortSignal): Promise<DapSessionResult> {
     return this.pauseTargets(signal);
   }
@@ -1038,13 +1047,14 @@ export class DapSession {
   private async executeLifecycleRequest(
     command: "continue" | "next" | "stepIn" | "stepOut",
     signal: AbortSignal | undefined,
+    steerSignal: AbortSignal | undefined,
   ): Promise<DapSessionResult> {
     const active = this.requireActivePhase("stopped", command);
     const target = active.focus;
     const threadId = await this.resolveThreadId(active, target, signal);
     target.stop = undefined;
     this.transitionActiveToRunning(active);
-    return this.waitAfter(active, signal, async () => {
+    return this.waitAfter(active, signal, steerSignal, async () => {
       await target.client.request(command, { threadId }, dapRequestOptions(signal));
     });
   }
@@ -1057,7 +1067,7 @@ export class DapSession {
       await target.client.request("pause", { threadId }, dapRequestOptions(signal));
     };
     const children = [...active.children].filter((child) => child.ready);
-    return this.waitAfter(active, signal, async () => {
+    return this.waitAfter(active, signal, undefined, async () => {
       await Promise.all([
         pause(active.primary),
         ...children.map((child) => pause(child).catch(() => undefined)),
@@ -1065,13 +1075,17 @@ export class DapSession {
     });
   }
 
-  /** Send an execution request, then wait for a stop, exit, cancellation, or the execution timeout. */
+  /**
+   * Send an execution request, then wait for a stop, exit, cancellation, Steer Yield, or the
+   * execution timeout. A wait that ends before the request returns still lets it finish.
+   */
   private async waitAfter(
     active: ActiveDapSession,
     signal: AbortSignal | undefined,
+    steerSignal: AbortSignal | undefined,
     send: () => Promise<void>,
   ): Promise<DapSessionResult> {
-    const wait = this.waitForExecutionTransition(signal);
+    const wait = this.waitForExecutionTransition(signal, steerSignal);
     try {
       await send();
     } catch (cause) {
@@ -1631,17 +1645,22 @@ export class DapSession {
     };
   }
 
-  private waitForExecutionTransition(signal: AbortSignal | undefined): ExecutionWait {
-    let finish: ((outcome: "cancelled" | "timeout" | "transition") => void) | undefined;
-    const promise = new Promise<"cancelled" | "timeout" | "transition">((resolveWait) => {
+  private waitForExecutionTransition(
+    signal: AbortSignal | undefined,
+    steerSignal: AbortSignal | undefined,
+  ): ExecutionWait {
+    let finish: ((outcome: ExecutionWaitOutcome) => void) | undefined;
+    const promise = new Promise<ExecutionWaitOutcome>((resolveWait) => {
       const timer = setTimeout(
         () => finish?.("timeout"),
         this.options.settings.timeouts.executionMs,
       );
       const onAbort = () => finish?.("cancelled");
+      const onSteer = () => finish?.("steered");
       finish = (outcome) => {
         clearTimeout(timer);
         signal?.removeEventListener("abort", onAbort);
+        steerSignal?.removeEventListener("abort", onSteer);
         this.executionWaiters.delete(onTransition);
         finish = undefined;
         resolveWait(outcome);
@@ -1649,7 +1668,10 @@ export class DapSession {
       const onTransition = () => finish?.("transition");
       this.executionWaiters.add(onTransition);
       signal?.addEventListener("abort", onAbort, { once: true });
+      steerSignal?.addEventListener("abort", onSteer, { once: true });
+      // Cancellation outranks a Steer Yield when both are already true.
       if (signal?.aborted === true) finish("cancelled");
+      else if (steerSignal?.aborted === true) finish("steered");
     });
     return { promise, cancel: () => finish?.("cancelled") };
   }

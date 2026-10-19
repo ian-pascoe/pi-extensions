@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Container, type Component, type TUI } from "@earendil-works/pi-tui";
 import { acceptNullForOptionalArguments } from "@ian-pascoe/pi-utils/null-optional-arguments";
+import { watchQueuedSteer } from "@ian-pascoe/pi-utils/queued-steer";
 import { appendDurationFooter, callDurationFooter } from "@ian-pascoe/pi-utils/ui";
 import type { MinimalSubagentsCoordinator } from "./minimal-subagents-coordinator.js";
 import { withTroubleshootingHint } from "./troubleshooting-skill.js";
@@ -359,7 +360,7 @@ export function createCoordinatorToolDefinitions(
     name: "subagent_wait",
     label: "Subagent Wait",
     description:
-      "Wait for one direct child's oldest observable turn whose result you have neither claimed nor received, or select an exact retained turn_id. An active child may first return event=message; later unconsumed items still fall back automatically. A settled turn returns event=turn, with any queued messages in messages; waiting again returns a result you claimed in full. Without turn_id, a result already delivered to you automatically returns event=turn with already_delivered=true and no output; pass its turn_id to reread it. If it was handed to you but is not yet in your conversation, delivery_pending=true and it arrives as a separate message; do not reread. Timeout returns a compact event=timeout (state, elapsed_ms, latest_activity_at, total_tokens, last few activity labels; use subagent_status for detail) and never cancels the child.",
+      "Wait for one direct child's oldest observable turn whose result you have neither claimed nor received, or select an exact retained turn_id. An active child may first return event=message; later unconsumed items still fall back automatically. A settled turn returns event=turn, with any queued messages in messages; waiting again returns a result you claimed in full. Without turn_id, a result already delivered to you automatically returns event=turn with already_delivered=true and no output; pass its turn_id to reread it. If it was handed to you but is not yet in your conversation, delivery_pending=true and it arrives as a separate message; do not reread. Timeout returns a compact event=timeout (state, elapsed_ms, latest_activity_at, total_tokens, last few activity labels; use subagent_status for detail) and never cancels the child. A queued steer for you returns event=steered with the same snapshot, immediately if one is already pending; it claims nothing and never cancels the child, so wait again to resume.",
     promptSnippet: "Wait for one direct child's exact turn",
     parameters: options.schemas.subagent_wait,
     annotations: {
@@ -368,7 +369,7 @@ export function createCoordinatorToolDefinitions(
       idempotentHint: false,
       openWorldHint: false,
     },
-    async execute(_toolCallId, parameters, signal, onUpdate) {
+    async execute(_toolCallId, parameters, signal, onUpdate, context) {
       const startedAt = Date.now();
       const updateWaitingResult = () => {
         const details: WaitProgressDetails = {
@@ -389,6 +390,8 @@ export function createCoordinatorToolDefinitions(
       updateWaitingResult();
       const waitingInterval = setInterval(updateWaitingResult, 1_000);
       waitingInterval.unref?.();
+      // Pi hands a Queued Steer over only after this tool call returns, so end the wait for it.
+      const steerWatch = watchQueuedSteer(context.sessionManager.getSessionId());
       try {
         return await runCoordinatorToolActivity(options, async () => {
           const result = await options.coordinator.wait(
@@ -397,6 +400,7 @@ export function createCoordinatorToolDefinitions(
             parameters.timeout_ms,
             signal,
             parameters.turn_id,
+            steerWatch.signal,
           );
           const details = {
             ...result,
@@ -410,6 +414,7 @@ export function createCoordinatorToolDefinitions(
           };
         });
       } finally {
+        steerWatch.dispose();
         clearInterval(waitingInterval);
       }
     },

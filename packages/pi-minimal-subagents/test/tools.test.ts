@@ -10,6 +10,7 @@ import {
   type Theme,
 } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager, setKeybindings } from "@earendil-works/pi-tui";
+import { raiseQueuedSteer, settleQueuedSteers } from "@ian-pascoe/pi-utils/queued-steer";
 import { taggedTheme } from "@ian-pascoe/pi-utils/ui-testing";
 import { Value } from "typebox/value";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -25,6 +26,7 @@ import {
 import type {
   ActiveTurnProgress,
   AgentDetail,
+  WaitSteeredResult,
   WaitTimeoutResult,
 } from "../src/minimal-subagents-types.js";
 
@@ -234,6 +236,7 @@ describe("minimal subagents coordinator tools", () => {
       50,
       signal,
       "child:older",
+      expect.any(AbortSignal),
     );
     // Script callers receive the declared object shape.
     expect(result.structuredContent).toEqual(result.details);
@@ -389,6 +392,115 @@ describe("minimal subagents coordinator tools", () => {
     expect(Value.Check(CoordinatorToolOutputSchemas.subagent_wait, result.structuredContent)).toBe(
       true,
     );
+  });
+
+  describe("steered wait", () => {
+    const steered = {
+      event: "steered",
+      agent_id: "child",
+      turn_id: "child:turn-1",
+      state: "running",
+      elapsed_ms: 60,
+      latest_activity_at: "2026-01-01T00:00:00.000Z",
+      total_tokens: 15,
+      recent_activity_labels: ["tool call read"],
+    } satisfies WaitSteeredResult;
+    const sessionIds: string[] = [];
+    afterEach(() => {
+      for (const sessionId of sessionIds.splice(0)) settleQueuedSteers(sessionId);
+    });
+
+    /** A wait that blocks until the steer signal aborts, as the coordinator's does. */
+    function blockOnSteer(options: RecordingToolOptions) {
+      options.recordedWait.mockImplementation(
+        (_caller, _agent, _timeout, _signal, _turn, steerSignal) =>
+          new Promise((resolve) => {
+            if (steerSignal?.aborted) resolve(steered);
+            else steerSignal?.addEventListener("abort", () => resolve(steered));
+          }),
+      );
+    }
+
+    it("yields when a Queued Steer is raised for the caller's session during the wait", async () => {
+      const options = toolOptions("root", true);
+      blockOnSteer(options);
+      const context = await createToolExecutionContext();
+      const sessionId = context.sessionManager.getSessionId();
+      sessionIds.push(sessionId);
+
+      const waiting = requireTool(options, "subagent_wait").execute(
+        "wait-call",
+        { agent_id: "child" },
+        undefined,
+        undefined,
+        context,
+      );
+      raiseQueuedSteer("another-session");
+      sessionIds.push("another-session");
+      raiseQueuedSteer(sessionId);
+
+      const result = await waiting;
+      expect(result.structuredContent).toEqual({
+        ...steered,
+        source_agent_id: "child",
+        source_turn_id: "child:turn-1",
+      });
+      expect(
+        Value.Check(CoordinatorToolOutputSchemas.subagent_wait, result.structuredContent),
+      ).toBe(true);
+      expect(contentText(result)).toContain("queued steer");
+      expect(contentText(result)).toContain("not cancelled");
+    });
+
+    it("yields at once when a Queued Steer is already pending, and stops watching afterwards", async () => {
+      const options = toolOptions("root", true);
+      blockOnSteer(options);
+      const context = await createToolExecutionContext();
+      const sessionId = context.sessionManager.getSessionId();
+      sessionIds.push(sessionId);
+      raiseQueuedSteer(sessionId);
+
+      await expect(
+        requireTool(options, "subagent_wait").execute(
+          "wait-call",
+          { agent_id: "child" },
+          undefined,
+          undefined,
+          context,
+        ),
+      ).resolves.toMatchObject({ details: { event: "steered" } });
+      expect(options.recordedWait.mock.calls[0]?.[5]?.aborted).toBe(true);
+
+      // A steer pending for a session that is not waiting does not abort an earlier wait.
+      settleQueuedSteers(sessionId);
+      options.recordedWait.mockReset();
+      options.recordedWait.mockResolvedValue({
+        event: "timeout",
+        agent_id: "child",
+        turn_id: "child:turn-1",
+        timeout_ms: 1,
+        state: "running",
+        recent_activity_labels: [],
+      });
+      await requireTool(options, "subagent_wait").execute(
+        "wait-call",
+        { agent_id: "child" },
+        undefined,
+        undefined,
+        context,
+      );
+      const steerSignal = options.recordedWait.mock.calls[0]?.[5];
+      raiseQueuedSteer(sessionId);
+      expect(steerSignal?.aborted).toBe(false);
+    });
+
+    it("keeps the tool description identical for every caller", () => {
+      const description = (callerId: string) =>
+        requireTool(toolOptions(callerId, true), "subagent_wait").description;
+      expect(description("root")).toBe(description("root.child"));
+      expect(description("root")).toContain("event=steered");
+      expect(description("root")).toContain("never cancels the child");
+    });
   });
 
   it("reports an already-delivered result in one line with its declared output shape", async () => {
