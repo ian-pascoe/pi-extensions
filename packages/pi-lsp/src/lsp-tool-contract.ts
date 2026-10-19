@@ -675,6 +675,13 @@ export const LspStatusOutputSchema = Type.Object({
       ]),
       root_path: Type.Optional(Type.String()),
       error: Type.Optional(Type.String()),
+      shared_with_sessions: Type.Optional(
+        Type.Integer({
+          minimum: 1,
+          description:
+            "How many other Pi sessions in this process lease the running Server Instance; absent when none",
+        }),
+      ),
       languages: Type.Record(Type.String(), Type.Array(Type.String()), {
         description:
           "Language ID to the file extensions and exact filenames the Server Definition handles",

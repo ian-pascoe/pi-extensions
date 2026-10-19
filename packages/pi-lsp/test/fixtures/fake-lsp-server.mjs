@@ -131,6 +131,23 @@ function diagnostics(message = "fake diagnostic", uri) {
     : [];
 }
 
+/** Ask the client to apply an edit inserting "fake" at the start of `uri`, unsolicited. */
+function requestFakeEdit(uri) {
+  return sendRequest("workspace/applyEdit", {
+    label: "fake edit",
+    edit: {
+      changes: {
+        [uri]: [
+          {
+            range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+            newText: "fake",
+          },
+        ],
+      },
+    },
+  });
+}
+
 async function exerciseClientRequests() {
   const results = await Promise.all([
     sendRequest("workspace/configuration", {
@@ -142,19 +159,8 @@ async function exerciseClientRequests() {
       registrations: [{ id: "fake-folding", method: "textDocument/foldingRange" }],
     }),
     sendRequest("workspace/diagnostic/refresh"),
-    sendRequest("workspace/applyEdit", {
-      label: "fake edit",
-      edit: {
-        changes: {
-          "file:///fake.ts": [
-            {
-              range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
-              newText: "fake",
-            },
-          ],
-        },
-      },
-    }),
+    // FAKE_APPLY_EDIT_ON_HOVER moves the server-initiated edit from startup to each hover.
+    process.env.FAKE_APPLY_EDIT_ON_HOVER === "1" ? null : requestFakeEdit("file:///fake.ts"),
   ]);
   state.configuration = results[0];
   state.workspaceFolders = results[1];
@@ -175,6 +181,10 @@ async function handleRequest(message) {
   }
   switch (message.method) {
     case "initialize":
+      // FAKE_INITIALIZE_DELAY_MS answers initialize only after that many milliseconds.
+      if (process.env.FAKE_INITIALIZE_DELAY_MS) {
+        await new Promise((done) => setTimeout(done, Number(process.env.FAKE_INITIALIZE_DELAY_MS)));
+      }
       state.rootUri = message.params?.rootUri ?? message.params?.workspaceFolders?.[0]?.uri ?? null;
       state.initializationOptions = message.params?.initializationOptions ?? null;
       state.textDocumentCapabilities = message.params?.capabilities?.textDocument ?? null;
@@ -200,6 +210,20 @@ async function handleRequest(message) {
         capabilities,
       });
       return;
+    case "textDocument/hover": {
+      // With FAKE_APPLY_EDIT_ON_HOVER, the hover text is the client's reply to an edit request
+      // for the hovered document, sent before the hover is answered.
+      const reply =
+        process.env.FAKE_APPLY_EDIT_ON_HOVER === "1"
+          ? await requestFakeEdit(message.params.textDocument.uri)
+          : null;
+      // FAKE_APPLY_EDIT_LOG names a file that receives each edit reply as one JSON line.
+      if (reply !== null && process.env.FAKE_APPLY_EDIT_LOG) {
+        appendFileSync(process.env.FAKE_APPLY_EDIT_LOG, `${JSON.stringify(reply)}\n`);
+      }
+      respond(message.id, { contents: { kind: "plaintext", value: JSON.stringify(reply) } });
+      return;
+    }
     case "textDocument/documentSymbol": {
       // FAKE_SYMBOLS function declarations, one per line.
       const count = Number(process.env.FAKE_SYMBOLS ?? "1");
@@ -396,6 +420,11 @@ function parseInput() {
     input = input.subarray(bodyStart + length);
     handleMessage(JSON.parse(body));
   }
+}
+
+// FAKE_LAUNCH_LOG names a file that receives this process's ID, one line per launch.
+if (process.env.FAKE_LAUNCH_LOG) {
+  appendFileSync(process.env.FAKE_LAUNCH_LOG, `${process.pid}\n`);
 }
 
 process.stdin.on("data", (chunk) => {

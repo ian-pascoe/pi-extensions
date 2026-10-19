@@ -20,6 +20,7 @@ import type {
   LspServerEnablement,
   ResolvedLspSettings,
 } from "../src/pi-lsp-settings.js";
+import { LspServerInstancePool } from "../src/lsp-server-instance-pool.js";
 import { testTimeouts } from "./lsp-timeouts.js";
 
 const configuredServers: readonly LspServerRoutingDefinition[] = [
@@ -351,6 +352,36 @@ async function createRoutedFileFixture(): Promise<{ cwd: string; filePath: strin
 }
 
 describe("session-scoped LSP server manager", () => {
+  test("a Stop whose Server Definition is gone still releases the session's lease", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    const pool = new LspServerInstancePool<RecordingLspClient>();
+    const factory = createRecordingClientFactory();
+    const parentServers = new Map([["typescript", serverDefinition("typescript")]]);
+    const parent = new LspServerManager({
+      cwd,
+      settings: { ...resolvedSettings([]), servers: parentServers },
+      startClient: factory.start,
+      pool,
+    });
+    const child = new LspServerManager({
+      cwd,
+      settings: resolvedSettings(["typescript"]),
+      startClient: factory.start,
+      pool,
+    });
+    await parent.getCapabilities("typescript", filePath);
+    await child.getCapabilities("typescript", filePath);
+    expect(child.getStatus().servers[0]).toMatchObject({ sharedWithSessions: 1 });
+
+    parentServers.delete("typescript");
+    await parent.stopServer("typescript", resolve(cwd, "packages/example"));
+
+    expect(child.getStatus().servers[0]?.sharedWithSessions).toBeUndefined();
+    await child.shutdown();
+    expect(factory.clients.map(({ shutdownCount }) => shutdownCount)).toEqual([1]);
+    await parent.shutdown();
+  });
+
   test("stops only the selected root and starts it lazily on the next request", async () => {
     const { cwd, filePath } = await createRoutedFileFixture();
     const otherRoot = resolve(cwd, "other");
@@ -866,7 +897,7 @@ describe("session-scoped LSP server manager", () => {
       await manager.setEnablement(new Map(), new Map([["typescript", false]]));
       await expect(request).resolves.toMatchObject({
         kind: "failure",
-        failure: { message: expect.stringContaining("request cancelled") },
+        failure: { message: expect.stringContaining("Instance was stopped during startup") },
       });
       const pid = Number(await readFile(stderrPath, "utf8"));
       expect(() => process.kill(pid, 0)).toThrow();
@@ -916,7 +947,7 @@ describe("session-scoped LSP server manager", () => {
       await disabling;
       await expect(request).resolves.toMatchObject({
         kind: "failure",
-        failure: { message: expect.stringContaining("request cancelled") },
+        failure: { message: expect.stringContaining("Instance was stopped during startup") },
       });
       expect(() => process.kill(processId, 0)).toThrow();
       pid = undefined;

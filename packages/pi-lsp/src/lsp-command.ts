@@ -38,9 +38,14 @@ export function notifyLspCommand(
   else process.stderr.write(`${text}\n`);
 }
 
+/** How a status line counts the other Pi sessions leasing a running Server Instance. */
+export function lspSharedWithSessionsText(otherSessions: number): string {
+  return `shared with ${otherSessions} other session${otherSessions === 1 ? "" : "s"}`;
+}
+
 function statusLabel(server: LspServerStatusEntry, manager: CommandStatusManager): string {
   const enablement = manager.getEnablement(server.serverId);
-  return `${server.serverId} — ${server.state}${server.rootPath === undefined ? "" : ` — ${server.rootPath}`} — ${enablement.enabled ? "enabled" : "disabled"} (${enablement.scope})${server.error === undefined ? "" : ` — ${server.error}`}`;
+  return `${server.serverId} — ${server.state}${server.rootPath === undefined ? "" : ` — ${server.rootPath}`} — ${enablement.enabled ? "enabled" : "disabled"} (${enablement.scope})${server.error === undefined ? "" : ` — ${server.error}`}${server.sharedWithSessions === undefined ? "" : ` — ${lspSharedWithSessionsText(server.sharedWithSessions)}`}`;
 }
 
 /** Render command status without triggering lazy startup. */

@@ -2,20 +2,17 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-/** Owns private Result Spill and bounded stderr files for one Pi session. */
+/**
+ * Owns the private Result Spill files of one Pi session. Server stderr files belong to the
+ * shared Server Instance pool instead, because an instance can outlive the session that started it.
+ */
 export interface LspSessionFiles {
   /** Private directory removed when the Pi session shuts down. */
   readonly directoryPath: string;
   /** Write complete truncated tool output to a Result Spill file. */
   writeResultSpill(output: string): Promise<string>;
-  /** Create or return the bounded stderr file path for one language server. */
-  getServerStderrPath(serverId: string): Promise<string>;
   /** Remove all session files after queued writes finish. */
   close(): Promise<void>;
-}
-
-interface ServerStderrFile {
-  readonly path: string;
 }
 
 class LspSessionFileStore implements LspSessionFiles {
@@ -23,7 +20,6 @@ class LspSessionFileStore implements LspSessionFiles {
   private closePromise: Promise<void> | undefined;
   private nextFileIndex = 0;
   private writeQueue: Promise<void> = Promise.resolve();
-  private readonly stderrFiles = new Map<string, ServerStderrFile>();
 
   /** Create a private file store rooted at the given session directory. */
   constructor(readonly directoryPath: string) {}
@@ -37,15 +33,6 @@ class LspSessionFileStore implements LspSessionFiles {
     });
   }
 
-  getServerStderrPath(serverId: string): Promise<string> {
-    const stderrFile = this.serverStderrFile(serverId);
-    return this.enqueueSessionFileWrite(async () => {
-      await writeFile(stderrFile.path, "", { mode: 0o600 });
-      await chmod(stderrFile.path, 0o600);
-      return stderrFile.path;
-    });
-  }
-
   close(): Promise<void> {
     if (this.closePromise !== undefined) return this.closePromise;
     this.closed = true;
@@ -54,16 +41,6 @@ class LspSessionFileStore implements LspSessionFiles {
       () => rm(this.directoryPath, { force: true, recursive: true }),
     );
     return this.closePromise;
-  }
-
-  private serverStderrFile(serverId: string): ServerStderrFile {
-    const existing = this.stderrFiles.get(serverId);
-    if (existing !== undefined) return existing;
-    const stderrFile = {
-      path: join(this.directoryPath, `server-stderr-${this.nextFileIndex++}.log`),
-    };
-    this.stderrFiles.set(serverId, stderrFile);
-    return stderrFile;
   }
 
   private enqueueSessionFileWrite<T>(write: () => Promise<T>): Promise<T> {
@@ -77,7 +54,7 @@ class LspSessionFileStore implements LspSessionFiles {
   }
 }
 
-/** Create a mode-safe temporary directory for Result Spills and language-server stderr files. */
+/** Create a mode-safe temporary directory for Result Spills. */
 export async function createLspSessionFiles(sessionDirectory: string): Promise<LspSessionFiles> {
   const parentDirectory = sessionDirectory.length > 0 ? sessionDirectory : tmpdir();
   await mkdir(parentDirectory, { mode: 0o700, recursive: true });
