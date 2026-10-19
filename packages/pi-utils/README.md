@@ -22,6 +22,7 @@ The Pi packages and `typebox` are optional peers; Pi's extension loader supplies
 | `./evidence`                   | `@earendil-works/pi-coding-agent` (`convertToLlm`, `estimateTokens`)             |
 | `./token-calibration`          | Nothing                                                                          |
 | `./agent-lineage`              | `typebox`                                                                        |
+| `./secret-registry`            | Nothing                                                                          |
 | `./layered-settings`           | `typebox`                                                                        |
 | `./null-optional-arguments`    | `typebox`                                                                        |
 | `./tool-testing`               | `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and `typebox`        |
@@ -35,6 +36,10 @@ Type-only imports from `@earendil-works/pi-ai` and `@earendil-works/pi-coding-ag
 ## Agent Lineage Records
 
 `@ian-pascoe/pi-utils/agent-lineage` defines the session entry through which packages share where a Child Agent sits in its agent tree without depending on each other ([ADR-0007](../../docs/adr/0007-agent-lineage-record-in-pi-utils.md)). A package that creates child sessions appends `agentLineageRecord({ sessionId, rootSessionId, agentId, parentAgentId })` as a custom entry of type `AGENT_LINEAGE_ENTRY_TYPE`; `parentAgentId` is `null` when the parent is the root session. Readers call `readAgentLineage(sessionId, entries)` with a session's ID and its branch, or entries parsed from its file, and get the latest valid record that session wrote itself, or `undefined` when it has none. A record copied into another session, as Pi copies entries into a fork, is ignored until that session writes its own.
+
+## Secret registry
+
+`@ian-pascoe/pi-utils/secret-registry` is the process-wide registry of held Secrets that Pi Secret fills and other packages read without depending on it ([ADR-0008](../../docs/adr/0008-secret-redaction-registry-in-pi-utils.md)). Every copy of pi-utils in one process shares it. `holdSecret(name, value, owner, expiresAt?)` makes a value resolve under a Secret Name (`SECRET_NAME_PATTERN`) until the same `owner` calls `revokeSecret(name, owner)` or the wall clock passes `expiresAt`, so a late revocation timer cannot extend a Secret's life. `resolveSecret(name)` and `heldSecretNames()` read what currently resolves. `redactSecrets(value)` returns a copy of a JSON-like value with every value ever held in the process replaced by its Secret Reference (`secretReference(name)`, `{{secret:NAME}}`), longest value first in one pass, or the value itself when nothing matched. Revoked and replaced values stay redacted for the rest of the process, so output printed after a Secret expires is still hidden.
 
 ## Null for optional tool arguments
 

@@ -80,6 +80,7 @@
       "./packages/pi-skills-selector/src/index.ts",
       "./packages/pi-advisor/src/index.ts",
       "./packages/pi-termctrl/src/index.ts",
+      "./packages/pi-secret/src/index.ts",
       "./packages/pi-guardian/src/index.ts"
     ],
     "skills": [
@@ -97,6 +98,7 @@
       "./packages/pi-skills-selector/skills",
       "./packages/pi-advisor/skills",
       "./packages/pi-termctrl/skills",
+      "./packages/pi-secret/skills",
       "./packages/pi-guardian/skills"
     ]
   }

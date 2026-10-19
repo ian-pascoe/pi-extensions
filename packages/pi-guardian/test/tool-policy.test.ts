@@ -224,6 +224,9 @@ describe("Tool Policy resolution", () => {
     "context_history",
     "context_rollover",
     "advisor_report",
+    "secret_ask",
+    "secret_list",
+    "secret_forget",
   ])("allows %s by default", (toolName) => {
     expect(resolveToolPolicy(call({ toolName }))).toEqual({ policy: "allow", source: "default" });
   });

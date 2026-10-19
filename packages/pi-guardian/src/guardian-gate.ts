@@ -29,6 +29,7 @@ import {
   type EscalationRecord,
   type ReviewEntry,
 } from "./guardian-audit.js";
+import { redactSecrets } from "@ian-pascoe/pi-utils/secret-registry";
 import { tokenFactor } from "@ian-pascoe/pi-utils/token-calibration";
 import {
   classifierFailure,
@@ -466,7 +467,9 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
           ),
           budgetTokens,
           capBudgetTokens,
-        }).blocks,
+          // Held Secrets the conversation quotes, such as a value pasted into the chat, are
+          // redacted like the call itself (ADR-0008).
+        }).blocks.map((block) => redactSecrets(block)),
     };
     const key = Symbol(call.toolCallId);
     reviewing.set(key, call.toolName);
@@ -928,10 +931,12 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
 
   pi.on("tool_call", async (event, ctx) => {
     // Snapshot the arguments first: the review and the argument-drift check judge this copy.
+    // Held Secrets are redacted to their Secret References, so neither the review model nor the
+    // audit journal sees a value an extension loaded before Guardian resolved (ADR-0008).
     const call: SeenCall = {
       toolCallId: event.toolCallId,
       toolName: event.toolName,
-      input: structuredClone(event.input),
+      input: redactSecrets(structuredClone(event.input)),
       parentToolCallId: event.parentToolCallId,
     };
     calls.set(call.toolCallId, call);
@@ -995,7 +1000,8 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
         Value.Check(delegationResultSchema, details)
       )
         pending.entry.delegationRecipient = details.agent_id;
-      if (!isDeepStrictEqual(pending.reviewedInput, event.input)) {
+      // Resolving Secret References after the review is not drift: compare redacted forms.
+      if (!isDeepStrictEqual(pending.reviewedInput, redactSecrets(event.input))) {
         pending.entry.argumentDrift = true;
         notify(
           ctx,

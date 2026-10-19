@@ -116,6 +116,21 @@ pi-utils range. Once `0.1.0` is published, deprecate the placeholder:
 npm deprecate @ian-pascoe/pi-guardian@0.0.0 "Name reservation only; it cannot load. Install 0.1.0 or later."
 ```
 
+## Pi Secret bootstrap
+
+Bootstrap `@ian-pascoe/pi-secret` the same way as Guardian: after the
+implementation PR merges, publish `@ian-pascoe/pi-secret@0.0.0` from
+`packages/pi-secret` with `npm publish --access public --provenance=false` after
+the release gates pass, and configure its trusted publisher. The placeholder
+cannot load, because it imports the `secret-registry` export that the pending
+`@ian-pascoe/pi-utils` minor release adds. Its `minor` Changeset releases the
+usable `0.1.0` in the version PR that releases pi-utils. Then deprecate the
+placeholder:
+
+```bash
+npm deprecate @ian-pascoe/pi-secret@0.0.0 "Name reservation only; it cannot load. Install 0.1.0 or later."
+```
+
 ## Trusted publishing and guarded automation
 
 Configure npm Trusted Publishing for every active package with repository

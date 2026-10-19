@@ -25,6 +25,7 @@ independently or together from this Git repository.
 | [`@ian-pascoe/pi-skills-selector`](packages/pi-skills-selector)       | Native `$skill-name` completion and instruction links.       | `pi install npm:@ian-pascoe/pi-skills-selector`    |
 | [`@ian-pascoe/pi-advisor`](packages/pi-advisor)                       | Optional background review and attributed corrective advice. | `pi install npm:@ian-pascoe/pi-advisor`            |
 | [`@ian-pascoe/pi-termctrl`](packages/pi-termctrl)                     | Interactive Terminals, Background jobs, and a `/ps` panel.   | `pi install npm:@ian-pascoe/pi-termctrl`           |
+| [`@ian-pascoe/pi-secret`](packages/pi-secret)                         | User-entered credentials kept from the model and transcript. | `pi install npm:@ian-pascoe/pi-secret`             |
 | [`@ian-pascoe/pi-guardian`](packages/pi-guardian)                     | Model-reviewed gating of tool calls before they run.         | `pi install npm:@ian-pascoe/pi-guardian`           |
 
 `@ian-pascoe/pi-codemode` and `@ian-pascoe/pi-mcp` are retired in favor of Pi's
@@ -79,6 +80,7 @@ packages/pi-context-management/src/index.ts
 packages/pi-skills-selector/src/index.ts
 packages/pi-advisor/src/index.ts
 packages/pi-termctrl/src/index.ts
+packages/pi-secret/src/index.ts
 packages/pi-guardian/src/index.ts
 ```
 
@@ -99,6 +101,7 @@ packages/pi-context-management/skills/pi-context-management/SKILL.md
 packages/pi-skills-selector/skills/pi-skills-selector/SKILL.md
 packages/pi-advisor/skills/pi-advisor/SKILL.md
 packages/pi-termctrl/skills/pi-termctrl/SKILL.md
+packages/pi-secret/skills/pi-secret/SKILL.md
 packages/pi-guardian/skills/pi-guardian/SKILL.md
 ```
 
@@ -173,6 +176,8 @@ pnpm --filter @ian-pascoe/pi-advisor typecheck
 pnpm --filter @ian-pascoe/pi-advisor test
 pnpm --filter @ian-pascoe/pi-termctrl typecheck
 pnpm --filter @ian-pascoe/pi-termctrl test
+pnpm --filter @ian-pascoe/pi-secret typecheck
+pnpm --filter @ian-pascoe/pi-secret test
 pnpm --filter @ian-pascoe/pi-guardian typecheck
 pnpm --filter @ian-pascoe/pi-guardian test
 pnpm test:root
