@@ -16,4 +16,4 @@ disable-model-invocation: true
 
 `lsp_status` is declared to the model. `lsp_capabilities` and `lsp_restart` are not declared by default. Call them from a `codemode` script (`await tools.lsp_capabilities({...})`) or load them with `tool_search`. If neither tool is active, ask the user to add the tools to `defaultTools` (for example `"+lsp_capabilities"`); the user can also run `/lsp` for status or `/lsp stop <server-id> <root>` to recover a server.
 
-`configured` has not routed a file yet; `stopped` permits lazy startup; `disabled` blocks startup. `unavailable` is sticky and retains stderr. Keep diagnosis read-only until a lifecycle change is authorized; stop before applying a Workspace Edit Preview.
+`configured` has not routed a file yet; `stopped` permits lazy startup; `disabled` blocks startup. `unavailable` is sticky and retains stderr. A Server Instance can be shared with other Pi sessions in the process (`shared with N other sessions`); a Stop or restart ends it for all of them, and each starts it again on its next use. Keep diagnosis read-only until a lifecycle change is authorized; stop before applying a Workspace Edit Preview.

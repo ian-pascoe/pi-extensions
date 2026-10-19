@@ -18,7 +18,6 @@ import { Value } from "typebox/value";
 import {
   DocumentDiagnosticRequest,
   DocumentSymbolRequest,
-  PositionEncodingKind,
   ReferencesRequest,
   type Diagnostic,
 } from "vscode-languageserver-protocol/node";
@@ -66,6 +65,7 @@ import {
   selectLspCommand,
 } from "./lsp-command.js";
 import { LspServerClient } from "./lsp-server-client.js";
+import { sharedLspServerInstancePool } from "./lsp-server-instance-pool.js";
 import { writeLspEnablement } from "./lsp-settings-store.js";
 import {
   LspServerManager,
@@ -540,9 +540,11 @@ export class PiLspLifecycleController {
     const manager = new LspServerManager<LspServerClient>({
       cwd: context.cwd,
       settings,
-      startClient: async ({ definition, onUnavailable, rootPath, timeouts, signal }) => {
-        let client: LspServerClient | undefined;
-        client = await LspServerClient.start({
+      pool: sharedLspServerInstancePool(),
+      // The pool may run this for a startup that outlives this session, so it captures none of
+      // the session's state: stderr, failures, and server edits go through the pool.
+      startClient: ({ definition, rootPath, timeouts, ...pooled }) =>
+        LspServerClient.start({
           serverId: definition.id,
           rootPath,
           command: definition.command,
@@ -552,20 +554,10 @@ export class PiLspLifecycleController {
           settings: definition.settings ?? null,
           maxConcurrentDiagnostics: definition.maxConcurrentDiagnostics,
           timeouts,
-          signal,
-          stderrPath: await sessionFiles.getServerStderrPath(`${definition.id}\u0000${rootPath}`),
-          onUnavailable,
-          onWorkspaceEdit: async (edit) =>
-            (
-              await workspaceEdits.createPreview({
-                edit,
-                serverId: definition.id,
-                positionEncoding: client?.positionEncoding ?? PositionEncodingKind.UTF16,
-              })
-            ).preview_id,
-        });
-        return client;
-      },
+          ...pooled,
+        }),
+      onWorkspaceEdit: async ({ edit, serverId, positionEncoding }) =>
+        (await workspaceEdits.createPreview({ edit, serverId, positionEncoding })).preview_id,
     });
     this.session = {
       cwd: context.cwd,

@@ -123,9 +123,11 @@ Invalid server definitions, timeout fields, and `includeHintDiagnostics` are qua
 individually and remain visible through `status`; unrelated valid settings continue to work. An invalid project server replacement
 still shadows the global definition. Untrusted project settings are ignored.
 
-Pi's `/reload` reloads configuration. Servers start lazily on first use and live for one Pi session.
-After a process or protocol failure, recovery requires stopping the affected Instance, disabling
-then enabling its Definition, using the existing `restart` tool operation, or `/reload`.
+Pi's `/reload` reloads configuration. Servers start lazily on first use and are shared by the Pi
+sessions in one Pi process, such as a main session and its in-process subagents, that resolve the
+same Server Definition configuration and root (see [Limits and lifecycle](#limits-and-lifecycle)).
+After a process or protocol failure, recovery requires stopping the affected Instance, using the
+existing `restart` tool operation, or ending every session that uses it.
 
 ## `/lsp` command
 
@@ -141,12 +143,17 @@ roots and the effective enablement scope; opening it never starts a server. Text
 /lsp enable typescript --global
 ```
 
-- **Stop** ends one known Server Instance and clears its failure state. The next matching request
-  can start it again. Omit the root when only one is known; otherwise choose a root in the picker
-  or supply its path, relative to Pi's working directory or absolute.
-- **Disable** prevents automatic and explicit startup of the entire Server Definition, stops all
-  its Instances in this session, and clears their failed runtime state.
+- **Stop** ends one known Server Instance and clears its failure state, for every session sharing
+  it. The next matching request in any of them can start it again. Omit the root when only one is
+  known; otherwise choose a root in the picker or supply its path, relative to Pi's working
+  directory or absolute.
+- **Disable** prevents automatic and explicit startup of the entire Server Definition in this
+  session and releases this session's leases on its Instances. An Instance stops only when no
+  other session still uses it; other sessions keep using it.
 - **Enable** permits lazy startup without launching a process.
+
+The status and picker rows of a running Instance that other sessions also use end with
+`shared with N other sessions`.
 
 Unflagged enable/disable choices are custom session entries. They survive `/reload` and saved-session
 resume, but follow the selected branch: navigating before a choice rolls it back, and forks inherit
@@ -305,6 +312,9 @@ Diagnostics, hover, status, code actions, and apply results are compact text too
   documentation; servers that only answer plaintext render as sent.
 - `lsp_status` lists one `server_id state [root] language(extensions,...) [error: ...]` line per
   Server Instance (running, starting, unavailable, or stopped) and per Disabled Server Definition.
+  A running Instance that other Pi sessions in the process also lease ends its line with
+  `shared with N other sessions`, and its structured entry has a matching `shared_with_sessions`.
+  An Instance this session holds no lease on reads `stopped`, even while other sessions use it.
   One `+N configured, not started (pass all: true to list)` line counts the other Server
   Definitions, followed by settings warnings. Pass `all: true` to list every configured Server
   Definition. Its structured result applies the same filter, reports the omitted count as
@@ -653,14 +663,42 @@ excluded from model context; the model sees diagnostics only in the original mut
 ## Limits and lifecycle
 
 Every LSP tool uses Pi's 2,000-line/50-KB output limit for model-visible text. Complete truncated text is saved as a
-Result Spill and the result names its path. Each server's latest 1 MB of stderr is saved in the
-session temp directory and failure messages name that path. With `--no-session`, Pi provides no
-session directory, so these files use a private directory under the OS temporary directory instead.
-Normal session teardown removes it; forced termination may leave temporary files behind.
+Result Spill and the result names its path. Result Spills are saved in the session temp directory.
+With `--no-session`, Pi provides no session directory, so they use a private directory under the
+OS temporary directory instead. Normal session teardown removes it; forced termination may leave
+temporary files behind. Each server's latest 1 MB of stderr is saved in a private directory of its
+own under the OS temporary directory, and failure messages name that path. It belongs to the
+Server Instance, not to a session, so it outlives the session that started the server and is
+removed when the Instance stops.
 
-Documents must be valid UTF-8. Each server keeps at most 100 synchronized documents and closes
-least-recently-used documents. Session shutdown requests a graceful LSP shutdown, then terminates
-the process within the configured timeout.
+Server Instances are shared by every Pi session in one Pi process (main sessions, Minimal Subagents
+children, Advisor sessions) whose Server Definition resolves to the same command, arguments,
+environment, `initializationOptions`, `settings`, `lsp.timeouts`, and `maxConcurrentDiagnostics`
+for the same workspace root, with the same pi-lsp version. Sessions that differ in any of these,
+for example because only one trusts the project's settings, get their own Instances. There is no
+opt-out, and Pi processes never share Instances.
+
+- A session takes a lease on an Instance the first time it routes a request to it, never at
+  startup, so a session that never touches code starts nothing. Sessions that need an Instance
+  that is still starting share its one startup, which continues while any of them waits for it.
+- A session releases its leases when it shuts down or disables the Server Definition, and every
+  lease on an Instance ends when the Instance stops. The Instance stops as soon as its last lease
+  is released.
+- A failure makes the Instance unavailable to every session using it. `/lsp stop` or `lsp_restart`
+  from any of them stops the process for all of them and clears the failure; each starts it again
+  lazily on its next use.
+- Each Instance has one set of synchronized documents, diagnostics caches, capabilities, and
+  `maxConcurrentDiagnostics` limit, shared by its sessions. Workspace Edit Previews, Result
+  Spills, enablement overrides, Post-edit Diagnostics, and the roots that references and rename
+  warn about stay per session.
+- A server-initiated edit (`workspace/applyEdit`) becomes a held Workspace Edit Preview in the
+  session using the Instance when only one session does. When two or more do, the edit cannot be
+  attributed to one of them, so the server is told it was not applied and no preview is created.
+
+Documents must be valid UTF-8. Each Server Instance keeps at most 100 synchronized documents, for
+all the sessions sharing it, and closes least-recently-used documents, so one session's activity
+can close another's documents, which only costs a re-open. Stopping an Instance requests a
+graceful LSP shutdown, then terminates the process within the configured timeout.
 
 ## Security
 

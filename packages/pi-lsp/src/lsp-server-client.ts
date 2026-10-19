@@ -110,10 +110,16 @@ export interface LspServerClientOptions {
    * wait in a first-in, first-out queue. Push-diagnostics waits are not requests and never queue.
    */
   readonly maxConcurrentDiagnostics: number;
-  /** Mode-safe session file that retains the latest 1 MB of server stderr. */
+  /** Mode-safe file that retains the latest 1 MB of server stderr; its directory is created if missing. */
   readonly stderrPath: string;
-  /** Convert a server-initiated edit into a Workspace Edit Preview. */
-  readonly onWorkspaceEdit?: (workspaceEdit: WorkspaceEdit) => Promise<string>;
+  /**
+   * Convert a server-initiated edit, with the negotiated position encoding, into a Workspace Edit
+   * Preview and return its ID; a rejection becomes the reply's failure reason.
+   */
+  readonly onWorkspaceEdit?: (
+    workspaceEdit: WorkspaceEdit,
+    positionEncoding: LspPositionEncoding,
+  ) => Promise<string>;
   /** Mark the owning Server Instance unavailable after its first terminal process/protocol failure. */
   readonly onUnavailable?: (error: LspServerClientError) => void;
   /** Cancel startup before initialization completes; running clients use shutdown instead. */
@@ -1331,7 +1337,10 @@ export class LspServerClient {
       return { applied: false, failureReason: "Pi LSP: workspace edit requires a preview" };
     }
     try {
-      const previewId = await this.options.onWorkspaceEdit(parameters.edit);
+      const previewId = await this.options.onWorkspaceEdit(
+        parameters.edit,
+        this.positionEncodingValue,
+      );
       return {
         applied: false,
         failureReason: `Pi LSP: workspace edit captured as preview ${previewId}`,

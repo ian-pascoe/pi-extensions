@@ -30,17 +30,10 @@ test.each(["persisted", "in-memory"])(
   },
 );
 
-test("reserves empty mode-safe stderr paths and removes session files on shutdown", async () => {
+test("rejects writes after removing session files on shutdown", async () => {
   const sessionDirectory = await mkdtemp(join(tmpdir(), "pi-lsp-session-"));
   const files = await createLspSessionFiles(sessionDirectory);
   try {
-    const emptyStderrPath = await files.getServerStderrPath("empty-server");
-    const traversalStderrPath = await files.getServerStderrPath("../../outside-session-files");
-
-    expect(await readFile(emptyStderrPath)).toEqual(Buffer.alloc(0));
-    expect(dirname(traversalStderrPath)).toBe(files.directoryPath);
-    expect((await stat(emptyStderrPath)).mode & 0o777).toBe(0o600);
-
     await files.close();
     await expect(stat(files.directoryPath)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(files.writeResultSpill("late output")).rejects.toThrow(

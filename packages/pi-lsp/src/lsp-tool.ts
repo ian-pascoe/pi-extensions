@@ -56,6 +56,7 @@ import {
   type ServerCapabilities,
   type TextDocumentPositionParams,
 } from "vscode-languageserver-protocol/node";
+import { lspSharedWithSessionsText } from "./lsp-command.js";
 import { formatLspDiagnosticsReadText, isLspDiagnosticsOperation } from "./lsp-diagnostics-text.js";
 import { formatLspHoverReadText } from "./lsp-hover-text.js";
 import { LspInputError } from "./lsp-input-error.js";
@@ -1090,7 +1091,8 @@ function listedStatusServers(status: LspServerManagerStatus, all: boolean) {
 }
 
 /**
- * Render status as one `server_id state [root] language(extensions,...)... [error: ...]` line per
+ * Render status as one `server_id state [root] language(extensions,...)... [error: ...] [shared
+ * with N other sessions]` line per
  * Server Definition or Server Instance, followed by settings warnings. Unless `all` is set, only
  * the `LISTED_STATES` get a line, and the enabled Server Definitions without a Server Instance
  * are counted in one summary line.
@@ -1110,6 +1112,9 @@ function formatStatusText(
       ...(server.rootPath === undefined ? [] : [lspDisplayPath(cwd, server.rootPath)]),
       ...languages,
       ...(server.error === undefined ? [] : [`error: ${collapseLspWhitespace(server.error)}`]),
+      ...(server.sharedWithSessions === undefined
+        ? []
+        : [lspSharedWithSessionsText(server.sharedWithSessions)]),
     ].join(" ");
   });
   // Every omitted entry is a Server Definition without a Server Instance, so extra roots and
@@ -2041,6 +2046,7 @@ async function executeLspOperation(
           languages: statusLanguages(server.languages),
           root_path: server.rootPath,
           server_id: server.serverId,
+          shared_with_sessions: server.sharedWithSessions,
           state: server.state,
         })),
         not_started: status.servers.length - listed.length,

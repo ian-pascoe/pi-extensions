@@ -87,7 +87,6 @@ function memorySessionFiles() {
       spills.push(output);
       return Promise.resolve(`/tmp/spill/${spills.length - 1}.txt`);
     },
-    getServerStderrPath: () => Promise.resolve("/tmp/spill/stderr.log"),
     close: () => Promise.resolve(),
   };
   return { sessionFiles, spills };

@@ -1,5 +1,5 @@
 import { toToolContext } from "./tool-context.js";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -8,25 +8,13 @@ import { getModel } from "@earendil-works/pi-ai/compat";
 import {
   type AgentSession,
   createAgentSession,
-  DefaultResourceLoader,
-  ExtensionRunner,
   initTheme,
-  ModelRegistry,
-  ModelRuntime,
-  SessionManager,
-  SettingsManager,
-  type SessionShutdownEvent,
-  type SessionStartEvent,
   type ToolResultEvent,
   type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { expectClickToggles } from "@ian-pascoe/pi-utils/ui-testing";
-import {
-  createPiLspExtension,
-  failureDiagnosticOutcome,
-  normalizedDiagnosticOutcome,
-} from "../src/pi-lsp-extension.js";
+import { failureDiagnosticOutcome, normalizedDiagnosticOutcome } from "../src/pi-lsp-extension.js";
 import { appendPostEditDiagnostics } from "../src/lsp-post-edit-diagnostics.js";
 import { POST_EDIT_DIAGNOSTICS_ENTRY_TYPE } from "../src/lsp-post-edit-diagnostics-rendering.js";
 import { LspWorkspaceEditStore } from "../src/lsp-workspace-edit.js";
@@ -35,9 +23,14 @@ import {
   LSP_OPERATION_NAMES,
   type LspWorkspaceEditPreviewRecord,
 } from "../src/lsp-tool-contract.js";
-import type { LspSettingsDocumentInput } from "../src/pi-lsp-settings.js";
+import {
+  createExtensionHarness,
+  removeHarnessDirectories,
+  resetSharedServerInstancePool,
+  shutdownExtension,
+  startExtension,
+} from "./extension-harness.js";
 
-const temporaryDirectories: string[] = [];
 const agentSessions: AgentSession[] = [];
 
 const typescriptSettings = {
@@ -50,141 +43,6 @@ const typescriptSettings = {
     },
   },
 };
-
-interface ExtensionHarness {
-  readonly agentDirectory: string;
-  readonly notifications: string[];
-  readonly resourceLoader: DefaultResourceLoader;
-  readonly runner: ExtensionRunner;
-  readonly sessionDirectory: string;
-  readonly sessionManager: SessionManager;
-  readonly settingsManager: SettingsManager;
-}
-
-async function makeTemporaryDirectory(prefix: string): Promise<string> {
-  const directory = await mkdtemp(resolve(tmpdir(), prefix));
-  temporaryDirectories.push(directory);
-  return directory;
-}
-
-async function createExtensionHarness(
-  projectTrusted: boolean,
-  globalSettings: LspSettingsDocumentInput = {},
-  noSession = false,
-): Promise<ExtensionHarness> {
-  const cwd = await makeTemporaryDirectory("pi-lsp-extension-cwd-");
-  const agentDirectory = await makeTemporaryDirectory("pi-lsp-extension-agent-");
-  const sessionDirectory = await makeTemporaryDirectory("pi-lsp-extension-sessions-");
-  await writeFile(resolve(agentDirectory, "settings.json"), JSON.stringify(globalSettings));
-  await mkdir(resolve(cwd, ".pi"));
-  await writeFile(
-    resolve(cwd, ".pi/settings.json"),
-    JSON.stringify({ lsp: { unknownField: true } }),
-  );
-
-  if (noSession) {
-    for (const name of ["TMPDIR", "TMP", "TEMP"]) vi.stubEnv(name, sessionDirectory);
-  }
-  const sessionManager = noSession
-    ? SessionManager.inMemory(cwd)
-    : SessionManager.create(cwd, sessionDirectory);
-  const settingsManager = SettingsManager.create(cwd, agentDirectory, { projectTrusted });
-  const resourceLoader = new DefaultResourceLoader({
-    cwd,
-    agentDir: agentDirectory,
-    settingsManager,
-    extensionFactories: [
-      {
-        name: "pi-lsp-lifecycle-test",
-        factory: createPiLspExtension({ getAgentDirectory: () => agentDirectory }),
-      },
-    ],
-    noContextFiles: true,
-    noPromptTemplates: true,
-    noSkills: true,
-    noThemes: true,
-  });
-  await resourceLoader.reload();
-  const extensions = resourceLoader.getExtensions();
-  expect(extensions.errors).toEqual([]);
-  expect(extensions.extensions).toHaveLength(1);
-
-  const modelRuntime = await ModelRuntime.create({
-    authPath: resolve(agentDirectory, "auth.json"),
-    modelsPath: null,
-    refreshOnCreate: false,
-  });
-  const runner = new ExtensionRunner(
-    extensions.extensions,
-    extensions.runtime,
-    cwd,
-    sessionManager,
-    new ModelRegistry(modelRuntime),
-  );
-  runner.bindCore(
-    {
-      sendMessage: () => undefined,
-      sendUserMessage: () => undefined,
-      appendEntry: (customType, data) => sessionManager.appendCustomEntry(customType, data),
-      setSessionName: (name) => sessionManager.appendSessionInfo(name),
-      getSessionName: () => sessionManager.getSessionName(),
-      setLabel: (entryId, label) => sessionManager.appendLabelChange(entryId, label),
-      getActiveTools: () => [],
-      getAllTools: () => [],
-      getSettings: () => ({}),
-      setActiveTools: () => undefined,
-      refreshTools: () => undefined,
-      getCommands: () => [],
-      setModel: async () => true,
-      getThinkingLevel: () => "medium",
-      setThinkingLevel: () => undefined,
-    },
-    {
-      getModel: () => undefined,
-      getScopedModels: () => [],
-      isIdle: () => true,
-      isProjectTrusted: () => projectTrusted,
-      getSignal: () => undefined,
-      abort: () => undefined,
-      hasPendingMessages: () => false,
-      shutdown: () => undefined,
-      getContextUsage: () => undefined,
-      compact: () => undefined,
-      getSystemPrompt: () => "Pi LSP lifecycle test",
-    },
-  );
-  const notifications: string[] = [];
-  runner.setUIContext(
-    {
-      ...runner.getUIContext(),
-      notify: (message) => notifications.push(message),
-    },
-    "rpc",
-  );
-  return {
-    agentDirectory,
-    notifications,
-    resourceLoader,
-    runner,
-    sessionDirectory,
-    sessionManager,
-    settingsManager,
-  };
-}
-
-async function startExtension(harness: ExtensionHarness): Promise<void> {
-  await harness.runner.emit({
-    type: "session_start",
-    reason: "startup",
-  } satisfies SessionStartEvent);
-}
-
-async function shutdownExtension(harness: ExtensionHarness): Promise<void> {
-  await harness.runner.emit({
-    type: "session_shutdown",
-    reason: "quit",
-  } satisfies SessionShutdownEvent);
-}
 
 function completedAssistantMessage(): AssistantMessage {
   return {
@@ -219,11 +77,9 @@ afterEach(async () => {
       session.dispose();
     }
   }
-  await Promise.all(
-    temporaryDirectories
-      .splice(0)
-      .map((directory) => rm(directory, { force: true, recursive: true })),
-  );
+  const leftOver = resetSharedServerInstancePool();
+  await removeHarnessDirectories();
+  expect(leftOver).toBe(0);
 });
 
 describe("Pi LSP extension lifecycle", () => {

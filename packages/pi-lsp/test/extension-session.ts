@@ -10,6 +10,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { LspSettingsDocumentInput } from "../src/pi-lsp-settings.js";
 import { createPiLspExtension, type PiLspLifecycleEffects } from "../src/pi-lsp-extension.js";
+import { resetSharedServerInstancePool } from "./extension-harness.js";
 
 /** The lifecycle events this harness delivers to the extension. */
 type HarnessEvent =
@@ -71,14 +72,19 @@ export interface ExtensionSessionOptions {
 const temporaryDirectories: string[] = [];
 const shutdowns: Array<() => Promise<ToolResultEventResult | undefined>> = [];
 
-/** Shut down every started session and remove its temporary directories. */
+/**
+ * Shut down every started session, reset the shared Server Instance pool, and remove the
+ * sessions' temporary directories. Throws when the pool still held an instance.
+ */
 export async function closeExtensionSessions(): Promise<void> {
   await Promise.all(shutdowns.splice(0).map((shutdown) => shutdown()));
+  const leftOver = resetSharedServerInstancePool();
   await Promise.all(
     temporaryDirectories
       .splice(0)
       .map((directory) => rm(directory, { force: true, recursive: true })),
   );
+  if (leftOver > 0) throw new Error(`${leftOver} Server Instances outlived their sessions`);
 }
 
 /** Drive the extension factory exactly as Pi does, in a fresh temporary project. */

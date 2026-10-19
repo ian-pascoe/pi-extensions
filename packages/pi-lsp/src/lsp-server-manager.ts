@@ -10,8 +10,16 @@ import {
   resolve,
   sep,
 } from "node:path";
+import type { WorkspaceEdit } from "vscode-languageserver-protocol";
 import { LspInputError } from "./lsp-input-error.js";
+import type { LspPositionEncoding } from "./lsp-position-encoding.js";
 import { LspServerClientError } from "./lsp-server-client.js";
+import {
+  type LspServerInstanceLease,
+  type LspServerInstanceLeaseHolder,
+  lspServerInstanceKey,
+  LspServerInstancePool,
+} from "./lsp-server-instance-pool.js";
 import type {
   LspServerDefinition,
   LspServerEnablement,
@@ -76,12 +84,22 @@ export interface LspManagedServerClient {
 export interface LspServerStartInput {
   /** Complete configured Server Definition. */
   readonly definition: LspServerDefinition;
-  /** Marks a started instance unavailable after a process or protocol failure. */
+  /** Marks a started instance unavailable, for every leaseholder, after a process or protocol failure. */
   readonly onUnavailable: (cause: unknown) => void;
+  /**
+   * Hands a server-initiated Workspace Edit to the only leaseholder's session, returning its
+   * preview ID, or rejects it when the shared instance cannot attribute it to one session.
+   */
+  readonly onWorkspaceEdit: (
+    edit: WorkspaceEdit,
+    positionEncoding: LspPositionEncoding,
+  ) => Promise<string>;
   /** Workspace root selected for this Server Instance. */
   readonly rootPath: string;
-  /** Cancels initialization when the Instance is stopped before startup completes. */
+  /** Cancels initialization when the last lease is released before startup completes. */
   readonly signal: AbortSignal;
+  /** Pool-owned stderr file, kept until the Server Instance stops. */
+  readonly stderrPath: string;
   /** Resolved request and lifecycle timeout policy. */
   readonly timeouts: LspTimeouts;
 }
@@ -177,7 +195,12 @@ export interface LspServerStatusEntry {
   readonly rootPath?: string;
   /** Configured server ID. */
   readonly serverId: string;
-  /** Session lifecycle state. */
+  /** How many other Pi sessions lease this running Server Instance; absent when none does. */
+  readonly sharedWithSessions?: number;
+  /**
+   * Lifecycle state as this session sees it: an instance it holds no Server Instance Lease on
+   * is `stopped`, even while other sessions use it.
+   */
   readonly state: "configured" | "disabled" | "running" | "starting" | "stopped" | "unavailable";
 }
 
@@ -253,6 +276,16 @@ export const LSP_ROOT_DISCOVERY_DIRECTORY_LIMIT = 4096;
 /** Directories root-marker discovery never descends into: installed dependencies. */
 const ROOT_DISCOVERY_SKIPPED_DIRECTORIES: ReadonlySet<string> = new Set(["node_modules"]);
 
+/** A server-initiated Workspace Edit for this session to hold as a preview. */
+export interface LspServerWorkspaceEditInput {
+  /** Configured server ID of the instance that sent it. */
+  readonly serverId: string;
+  /** The server's Workspace Edit, unvalidated. */
+  readonly edit: WorkspaceEdit;
+  /** Position encoding the instance negotiated. */
+  readonly positionEncoding: LspPositionEncoding;
+}
+
 /** Construction inputs for one session-scoped language-server manager. */
 export interface LspServerManagerInput<TClient extends LspManagedServerClient> {
   /** Pi session working directory used for relative paths and root fallback. */
@@ -270,6 +303,16 @@ export interface LspServerManagerInput<TClient extends LspManagedServerClient> {
   readonly homeDirectory?: string;
   /** Most directories one root-marker discovery lists; defaults to `LSP_ROOT_DISCOVERY_DIRECTORY_LIMIT`. */
   readonly rootDiscoveryDirectoryLimit?: number;
+  /**
+   * Server Instances shared with other sessions' managers; defaults to a pool of this manager's
+   * own, which shares nothing.
+   */
+  readonly pool?: LspServerInstancePool<TClient>;
+  /**
+   * Hold a server-initiated Workspace Edit as a preview in this session and return its ID; a
+   * session without it rejects such edits.
+   */
+  readonly onWorkspaceEdit?: (input: LspServerWorkspaceEditInput) => Promise<string>;
 }
 
 /** Removes Pi's optional leading path sigil before file routing. */
@@ -640,14 +683,15 @@ async function runServerOperation<TClient extends LspManagedServerClient, T>(
   }
 }
 
-/** Own lazy Server Instance creation, routing, failure state, restart, and session shutdown. */
+/**
+ * Own one session's routing, enablement, known routes, and status, and its Server Instance
+ * Leases on the pool's lazily started, shared Server Instances.
+ */
 export class LspServerManager<TClient extends LspManagedServerClient = LspManagedServerClient> {
-  private readonly clients = new Map<string, TClient>();
-  private readonly inFlightStarts = new Map<string, Promise<LspServerResolution<TClient>>>();
-  private readonly inFlightStops = new Map<string, Promise<void>>();
   private readonly knownRoutes = new Map<string, LspServerRoute>();
-  private readonly unavailable = new Map<string, string>();
-  private readonly instanceLifetimes = new Map<string, AbortController>();
+  /** This session's Server Instance Lease for each known route that holds one. */
+  private readonly leases = new Map<string, LspServerInstanceLease<TClient>>();
+  private readonly pool: LspServerInstancePool<TClient>;
   private closed = false;
 
   private configuredEnablement: ReadonlyMap<string, LspServerEnablement>;
@@ -656,6 +700,7 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
   /** Bind parsed settings and one concrete client constructor to the current Pi session. */
   constructor(private readonly input: LspServerManagerInput<TClient>) {
     this.configuredEnablement = input.settings.enablement;
+    this.pool = input.pool ?? new LspServerInstancePool<TClient>();
   }
 
   /** Resolve eligibility independently of whether any Instance is running. */
@@ -668,7 +713,11 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     return this.configuredEnablement.get(serverId) ?? { enabled: true, scope: "default" };
   }
 
-  /** Apply current settings and branch choices, stopping all effectively disabled Instances. */
+  /**
+   * Apply current settings and branch choices, releasing this session's leases on every
+   * effectively disabled Server Definition's instances. An instance stops only when that was its
+   * last lease.
+   */
   async setEnablement(
     configured: ReadonlyMap<string, LspServerEnablement>,
     session: ReadonlyMap<string, boolean>,
@@ -676,9 +725,9 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     this.configuredEnablement = new Map(configured);
     this.sessionEnablement = new Map(session);
     await Promise.all(
-      [...this.knownRoutes.values()]
-        .filter((route) => !this.getEnablement(route.serverId).enabled)
-        .map((route) => this.stopServer(route.serverId, route.rootPath)),
+      [...this.knownRoutes.entries()]
+        .filter(([, route]) => !this.getEnablement(route.serverId).enabled)
+        .map(([key]) => this.releaseLease(key)),
     );
   }
 
@@ -698,18 +747,19 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
         continue;
       }
       for (const [key, route] of routes) {
-        const error = this.unavailable.get(key);
+        const lease = this.leases.get(key);
         const instance = { languages, rootPath: route.rootPath, serverId };
+        const state = lease?.state ?? "stopped";
+        const error = lease?.error;
+        const others = lease?.otherLeaseholders ?? 0;
         if (!this.getEnablement(serverId).enabled) {
           servers.push({ ...instance, state: "disabled" });
-        } else if (error !== undefined) {
-          servers.push({ ...instance, error, state: "unavailable" });
-        } else if (this.inFlightStarts.has(key)) {
-          servers.push({ ...instance, state: "starting" });
-        } else if (this.clients.has(key)) {
-          servers.push({ ...instance, state: "running" });
+        } else if (state === "unavailable" && error !== undefined) {
+          servers.push({ ...instance, error, state });
+        } else if (state === "running" && others > 0) {
+          servers.push({ ...instance, sharedWithSessions: others, state });
         } else {
-          servers.push({ ...instance, state: "stopped" });
+          servers.push({ ...instance, state });
         }
       }
     }
@@ -877,7 +927,7 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     });
     if (!collectPackages) return { otherRoots };
 
-    const client = this.clients.get(lspInstanceKey(serverId, searchedRoot));
+    const client = this.leases.get(lspInstanceKey(serverId, searchedRoot))?.client;
     const loadedPackages = new Set<string>();
     for (const filePath of [
       resolve(this.input.cwd, normalizeLspFilePath(loaded.queriedFilePath)),
@@ -1070,45 +1120,49 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     return this.ensureClient(route);
   }
 
-  /** Stop one known Instance without preventing its next lazy startup. */
+  /**
+   * Stop one known Instance for every session that leases it, clearing its failure state,
+   * without preventing a later lazy startup in any of them.
+   */
   async stopServer(serverId: string, rootPath: string): Promise<void> {
     const key = lspInstanceKey(serverId, resolve(this.input.cwd, normalizeLspFilePath(rootPath)));
-    if (!this.knownRoutes.has(key)) {
+    const route = this.knownRoutes.get(key);
+    if (route === undefined) {
       throw new Error(`Pi LSP: no known instance of ${serverId} for ${rootPath}`);
     }
-    const existingStop = this.inFlightStops.get(key);
-    if (existingStop !== undefined) return existingStop;
-    const lifetime = this.instanceLifetimes.get(key);
-    this.instanceLifetimes.delete(key);
-    lifetime?.abort();
-    const client = this.clients.get(key);
-    this.clients.delete(key);
-    this.unavailable.delete(key);
-    const stop = (async () => {
-      await this.inFlightStarts.get(key);
-      await client?.shutdown();
-    })();
-    this.inFlightStops.set(key, stop);
-    try {
-      await stop;
-    } finally {
-      this.inFlightStops.delete(key);
-    }
+    this.leases.delete(key);
+    const definition = this.input.settings.servers.get(serverId);
+    if (definition === undefined) return;
+    await this.pool.stop(this.poolKey(definition, route));
   }
 
-  /** Gracefully stop every client once and clear all session-scoped instance state. */
+  /** Release every Server Instance Lease once and clear all session-scoped instance state. */
   async shutdown(): Promise<void> {
     this.closed = true;
-    await Promise.allSettled(
-      [...this.knownRoutes.values()].map((route) =>
-        this.stopServer(route.serverId, route.rootPath),
-      ),
-    );
-    this.clients.clear();
-    this.inFlightStarts.clear();
-    this.instanceLifetimes.clear();
-    this.unavailable.clear();
+    await Promise.allSettled([...this.leases.keys()].map((key) => this.releaseLease(key)));
     this.knownRoutes.clear();
+  }
+
+  /** Release this session's lease on one route's instance, which stops if it was the last. */
+  private async releaseLease(key: string): Promise<void> {
+    const lease = this.leases.get(key);
+    this.leases.delete(key);
+    await lease?.release();
+  }
+
+  private poolKey(definition: LspServerDefinition, route: LspServerRoute): string {
+    return lspServerInstanceKey(definition, route.rootPath, this.input.settings.timeouts);
+  }
+
+  /** This session's side of a lease on one Server Definition's instance: its edits become previews here. */
+  private leaseHolder(serverId: string): LspServerInstanceLeaseHolder {
+    const { onWorkspaceEdit } = this.input;
+    return {
+      onWorkspaceEdit: (edit, positionEncoding) =>
+        onWorkspaceEdit === undefined
+          ? Promise.reject(new Error("this session holds no Workspace Edit Previews"))
+          : onWorkspaceEdit({ serverId, edit, positionEncoding }),
+    };
   }
 
   /**
@@ -1167,105 +1221,61 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     return { code: "no-matching-server", message, serverId: serverId ?? "*" };
   }
 
-  private ensureClient(route: LspServerRoute): Promise<LspServerResolution<TClient>> {
+  private async ensureClient(route: LspServerRoute): Promise<LspServerResolution<TClient>> {
     if (this.closed) {
-      return Promise.resolve({
+      return {
         kind: "failure",
         failure: unavailableFailure(route, "session runtime is shut down"),
-      });
+      };
     }
     if (!this.getEnablement(route.serverId).enabled) {
-      return Promise.resolve({
+      return {
         kind: "failure",
         failure: {
           code: "server-disabled",
           message: `Pi LSP: server ${route.serverId} is disabled; enable it with /lsp enable ${route.serverId} first`,
           serverId: route.serverId,
         },
-      });
+      };
+    }
+    const definition = this.input.settings.servers.get(route.serverId);
+    if (definition === undefined) {
+      return { kind: "failure", failure: this.noMatchingFailure(route.serverId, route.rootPath) };
     }
     const key = lspInstanceKey(route.serverId, route.rootPath);
-    const stopping = this.inFlightStops.get(key);
-    if (stopping !== undefined) {
-      return stopping.then(
-        () => this.ensureClient(route),
-        (cause): LspServerResolution<TClient> => ({
-          kind: "failure",
-          failure: unavailableFailure(route, describeLspError(cause)),
-        }),
-      );
-    }
     this.knownRoutes.set(key, route);
-    const unavailableReason = this.unavailable.get(key);
-    if (unavailableReason !== undefined) {
-      return Promise.resolve({
+    let lease = this.leases.get(key);
+    if (lease?.active !== true) {
+      lease = this.pool.acquire(
+        this.poolKey(definition, route),
+        this.leaseHolder(route.serverId),
+        (start) =>
+          this.input.startClient({
+            ...start,
+            definition,
+            rootPath: route.rootPath,
+            timeouts: this.input.settings.timeouts,
+          }),
+      );
+      this.leases.set(key, lease);
+    }
+    const outcome = await lease.ready();
+    if (this.closed) {
+      // A startup this session triggered may outlive it for other leaseholders, but not for it.
+      return {
         kind: "failure",
-        failure: unavailableFailure(route, unavailableReason),
-      });
+        failure: unavailableFailure(route, "session runtime is shut down"),
+      };
     }
-    const client = this.clients.get(key);
-    const definition = this.input.settings.servers.get(route.serverId);
-    if (client !== undefined && definition !== undefined) {
-      return Promise.resolve({
-        kind: "success",
-        instance: { client, definition, route },
-      });
+    if (outcome.kind === "running") {
+      return { kind: "success", instance: { client: outcome.client, definition, route } };
     }
-    const inFlight = this.inFlightStarts.get(key);
-    if (inFlight !== undefined) return inFlight;
-    if (definition === undefined) {
-      return Promise.resolve({
-        kind: "failure",
-        failure: this.noMatchingFailure(route.serverId, route.rootPath),
-      });
-    }
-
-    const lifetime = new AbortController();
-    this.instanceLifetimes.set(key, lifetime);
-    const start = this.startClient(key, route, definition, lifetime);
-    this.inFlightStarts.set(key, start);
-    void start.finally(() => {
-      if (this.inFlightStarts.get(key) === start) this.inFlightStarts.delete(key);
-    });
-    return start;
-  }
-
-  private async startClient(
-    key: string,
-    route: LspServerRoute,
-    definition: LspServerDefinition,
-    lifetime: AbortController,
-  ): Promise<LspServerResolution<TClient>> {
-    try {
-      const client = await this.input.startClient({
-        definition,
-        onUnavailable: (error) => {
-          if (this.instanceLifetimes.get(key) === lifetime) {
-            this.unavailable.set(key, describeLspError(error));
-          }
-        },
-        rootPath: route.rootPath,
-        signal: lifetime.signal,
-        timeouts: this.input.settings.timeouts,
-      });
-      if (this.instanceLifetimes.get(key) !== lifetime) {
-        await client.shutdown();
-        return {
-          kind: "failure",
-          failure: unavailableFailure(route, "Instance was stopped during startup"),
-        };
-      }
-      const failure = this.unavailable.get(key);
-      if (failure !== undefined) {
-        await client.shutdown().catch(() => {});
-        return { kind: "failure", failure: unavailableFailure(route, failure) };
-      }
-      this.clients.set(key, client);
-      return { kind: "success", instance: { client, definition, route } };
-    } catch (error) {
-      const message = describeLspError(error);
-      if (this.instanceLifetimes.get(key) === lifetime) this.unavailable.set(key, message);
-      return { kind: "failure", failure: unavailableFailure(route, message) };
-    }
+    return {
+      kind: "failure",
+      failure: unavailableFailure(
+        route,
+        outcome.kind === "unavailable" ? outcome.error : "Instance was stopped during startup",
+      ),
+    };
   }
 }
