@@ -34,7 +34,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { getKeybindings, type Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import rootManifest from "../package.json" with { type: "json" };
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -61,6 +61,34 @@ const agentModel: Model<"openai-completions"> = {
 
 const directories: string[] = [];
 const sessions: AgentSession[] = [];
+
+/**
+ * Pi compiles extension TypeScript with jiti and caches it on disk; on a fresh CI runner the first
+ * load of pi-secret and pi-guardian runs past the test timeout under a cold `pnpm verify`. Loading
+ * both once here keeps that one-time cost out of the first test. The hook timeout only guards
+ * against a hang.
+ */
+beforeAll(async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-secret-guardian-warm-up-"));
+  try {
+    const loader = new DefaultResourceLoader({
+      cwd,
+      agentDir: cwd,
+      settingsManager: SettingsManager.inMemory(),
+      additionalExtensionPaths: collectionOrder.map((entrypoint) =>
+        resolve(repositoryRoot, entrypoint),
+      ),
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+    });
+    await loader.reload();
+    expect(loader.getExtensions().errors).toEqual([]);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+}, 120_000);
 
 afterEach(async () => {
   for (const session of sessions.splice(0)) {
