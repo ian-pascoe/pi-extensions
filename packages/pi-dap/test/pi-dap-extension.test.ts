@@ -14,6 +14,7 @@ import {
   type SessionShutdownEvent,
   type SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
+import { hasQueuedSteer, settleQueuedSteers } from "@ian-pascoe/pi-utils/queued-steer";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { DAP_OPERATIONS } from "../src/dap-tool-contract.js";
 import { createPiDapExtension } from "../src/pi-dap-extension.js";
@@ -137,6 +138,9 @@ async function piDapSessionDirectories(sessionDirectory: string): Promise<string
 
 afterEach(async () => {
   vi.unstubAllEnvs();
+  for (const session of agentSessions) {
+    settleQueuedSteers(session.extensionRunner.createContext().sessionManager.getSessionId());
+  }
   for (const session of agentSessions.splice(0)) {
     try {
       await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
@@ -210,6 +214,18 @@ describe("Pi DAP extension lifecycle", () => {
       expect(await piDapSessionDirectories(harness.sessionDirectory)).toEqual([]);
     },
   );
+
+  test("tracks Queued Steers so execution waits can yield, ignoring follow-ups", async () => {
+    const harness = await createExtensionHarness(false, {});
+    const sessionId = harness.runner.createContext().sessionManager.getSessionId();
+
+    await harness.runner.emitInput("later", undefined, "interactive", "followUp");
+    expect(hasQueuedSteer(sessionId)).toBe(false);
+    await harness.runner.emitInput("now", undefined, "interactive", "steer");
+    expect(hasQueuedSteer(sessionId)).toBe(true);
+    await harness.runner.emit({ type: "agent_end", messages: [] });
+    expect(hasQueuedSteer(sessionId)).toBe(false);
+  });
 
   test("loads the tool eagerly, reloads trust-aware settings, and shuts down idempotently", async () => {
     const harness = await createExtensionHarness(false, {

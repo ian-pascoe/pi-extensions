@@ -117,7 +117,7 @@ Session and grouped under the `dap` namespace:
 
 Every tool is declared to the model (`direct` exposure). Use `dap_stop` to end
 a runaway Debuggee and `dap_pause` to interrupt one whose execution wait timed
-out.
+out or yielded to a steer.
 
 `dap_launch` selects a profile (it may be omitted only when exactly one valid
 profile exists). `program`, `args`, and `cwd` replace the same profile
@@ -148,8 +148,8 @@ Pi 1.0.0 and later, so they never overlap on the Debug Session. A script cannot
 use one call to interrupt another's execution wait: a `dap_pause` started with
 `dap_continue` runs only after the wait ends.
 
-Execution waits end on a stop, exit, cancellation, or `executionMs`; an
-execution timeout reports `running`. Request, startup, and shutdown timeouts
+Execution waits end on a stop, exit, cancellation, a Steer Yield, or
+`executionMs`; an execution timeout reports `running`. Request, startup, and shutdown timeouts
 are errors. A natural exit leaves a terminal snapshot available from
 `dap_status` until the next launch, with `exit_code` when it is known:
 
@@ -221,7 +221,8 @@ Session). Your breakpoint lists ids and an adapter's entry stop has none, so the
 reason and the ids tell them apart. Only `dap_set_breakpoints`, `dap_launch`, and
 `dap_status` list Desired Breakpoints in text (the latter two only when some
 exist), so a stepping result never repeats them. A call
-that waits and ends still `running` says `(wait timed out)`.
+that waits and ends still `running` says `(wait timed out)`, `(wait cancelled)`
+when the call was cancelled, or `(wait steered)` after a Steer Yield.
 
 Stack Frames, variables, and evaluations are one line per row. In `dap_stack`
 text, each run of two or more Stack Frames the adapter hints as noise (a frame
@@ -252,7 +253,26 @@ owned by one Pi conversation session. `dap_stop`, launch cancellation, adapter
 failure, and session shutdown attempt DAP termination and disconnect before
 terminating owned Linux process groups. Session shutdown removes session files.
 Cancelling an execution wait only ends that wait; the live Debug Session remains
-recoverable.
+recoverable. The tool result reports it as `execution_wait_cancelled: true`.
+
+### Steer Yield
+
+Pi hands a Queued Steer to the agent only after every tool call in the current
+batch has returned, so a long execution wait would delay the user's or a parent
+agent's redirection. `dap_launch`, `dap_continue`, `dap_next`, `dap_step_in`,
+and `dap_step_out` therefore end their wait early, as a Steer Yield,
+when a Queued Steer is pending for the tool's Pi session (the shared signal in
+`@ian-pascoe/pi-utils/queued-steer`; follow-ups never count). A yield behaves like
+a cancelled wait: the request that started or resumed the Debuggee was still
+sent, the Debug Session stays `running` and the Debuggee is untouched, and
+`dap_pause` or `dap_stop` can act on it later. A wait that starts while a steer is
+pending ends right after that request is sent, because a steer stays pending
+until Pi starts the next turn. It is not the tool's abort signal: the result
+reports `execution_wait_steered: true` beside `execution_wait_cancelled`, with
+text `running (wait steered)`. A wait that ended because the Debuggee stopped or
+exited reports that, even if a steer was pending. `dap_pause` never yields: it
+only confirms the stop it requested, and yielding would report the Debuggee as
+`running` moments before it stops.
 
 ### Observer UI
 

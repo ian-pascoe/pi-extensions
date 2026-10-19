@@ -387,6 +387,18 @@ Launch Contract; targeted `subagent_status` returns the full detail.
 It removes only the waiter, leaving the child
 running and all pending delivery unclaimed. Abort signals remain errors.
 
+A wait that would block also ends early when a Queued Steer is pending for the
+caller's session, because Pi hands a steer to an agent only after every tool call in
+the current batch returns. It returns an `event: "steered"` Wait Event with the
+requested turn identity and the same compact progress snapshot as a timeout, and,
+like a timeout, removes only its waiter: nothing is claimed, the child is not
+cancelled, and later messages and the terminal result keep automatic fallback.
+A wait that starts while a steer is pending returns `steered` at once, but a
+retained result or pending Coordination Message is still returned first. Only steers
+count (a user's mid-run message, a parent's Coordination Message into a busy child, or
+another child's result steered into the caller); follow-ups never do. A child
+session's steer clears when its next turn starts or its run ends.
+
 The persisted Delivery Ledger records Coordination Messages, terminal results,
 globally increasing sequence, and wait ownership before delivery. Existing items
 retain their sequence; gaps from skipped malformed records are valid. Claims can

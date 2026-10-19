@@ -163,6 +163,16 @@ const WaitTimeoutDetailsSchema = Type.Object({
   /** Pre-compact timeout results carried the full child status. */
   agent: Type.Optional(RenderStatusAgentSchema),
 });
+const WaitSteeredDetailsSchema = Type.Object({
+  event: Type.Literal("steered"),
+  agent_id: Type.String(),
+  turn_id: Type.String(),
+  state: Type.Optional(Type.String()),
+  elapsed_ms: Type.Optional(Type.Number()),
+  latest_activity_at: Type.Optional(Type.String()),
+  total_tokens: Type.Optional(Type.Number()),
+  recent_activity_labels: Type.Optional(Type.Array(Type.String())),
+});
 const StatusDetailsSchema = Type.Union([
   Type.Object({
     parent_id: Type.Optional(Type.String()),
@@ -331,6 +341,17 @@ export const CoordinatorToolOutputSchemas = {
       recent_activity_labels: Type.Array(Type.String()),
       ...CoordinatorWaitSourceOutputSchema,
     }),
+    Type.Object({
+      event: Type.Literal("steered"),
+      agent_id: Type.String(),
+      turn_id: Type.String(),
+      state: Type.Union([Type.Literal("running"), Type.Literal("idle")]),
+      elapsed_ms: Type.Optional(Type.Number()),
+      latest_activity_at: Type.Optional(Type.String()),
+      total_tokens: Type.Optional(Type.Number()),
+      recent_activity_labels: Type.Array(Type.String()),
+      ...CoordinatorWaitSourceOutputSchema,
+    }),
   ]),
   subagent_status: Type.Union([
     Type.Object({
@@ -351,6 +372,7 @@ const WaitRenderDetailsSchema = Type.Union([
   WaitMessageDetailsSchema,
   WaitTurnDetailsSchema,
   WaitTimeoutDetailsSchema,
+  WaitSteeredDetailsSchema,
 ]);
 
 /** Partial `subagent_wait` updates: elapsed wait time and, while the child runs, its progress. */

@@ -1856,6 +1856,144 @@ describe("minimal subagents coordinator", () => {
     });
   });
 
+  describe("steer yield", () => {
+    it("ends a blocking wait with a steered event, claims nothing, and still delivers the result automatically", async () => {
+      let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
+      const runtime = childRuntime();
+      runtime.runPrompt.mockImplementation(
+        () => new Promise<RuntimeTurnOutcome>((resolve) => (finishPrompt = resolve)),
+      );
+      const { coordinator, queuedMessages } = coordinatorFixture(runtime, 0);
+      const spawned = await coordinator.spawn("root", { task: "Slow", agent_id: "worker" }, caller);
+      const steer = new AbortController();
+
+      const waiting = coordinator.wait(
+        "root",
+        "worker",
+        undefined,
+        undefined,
+        undefined,
+        steer.signal,
+      );
+      steer.abort();
+
+      const steered = await waiting;
+      expect(steered).toMatchObject({
+        event: "steered",
+        agent_id: "worker",
+        turn_id: spawned.turn_id,
+        state: "running",
+        recent_activity_labels: [],
+      });
+      expect(steered).not.toHaveProperty("timeout_ms");
+      expect(runtime.abort).not.toHaveBeenCalled();
+      // The waiter is gone: a later wait on the same turn is not a duplicate.
+      const later = coordinator.wait("root", "worker", 1);
+      await expect(later).resolves.toMatchObject({ event: "timeout" });
+
+      finishPrompt({ status: "completed", output: "late result" });
+
+      await vi.waitFor(() => expect(queuedMessages).toHaveLength(1));
+      expect(queuedMessages[0]).toMatchObject({
+        customType: "minimal-subagents.result",
+        content: expect.stringContaining("late result"),
+      });
+    });
+
+    it("steers immediately when a Queued Steer is already pending", async () => {
+      let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
+      const runtime = childRuntime();
+      runtime.runPrompt.mockImplementation(
+        () => new Promise<RuntimeTurnOutcome>((resolve) => (finishPrompt = resolve)),
+      );
+      const { coordinator } = coordinatorFixture(runtime, 0);
+      const spawned = await coordinator.spawn("root", { task: "Slow", agent_id: "worker" }, caller);
+      const steer = new AbortController();
+      steer.abort();
+
+      await expect(
+        coordinator.wait("root", "worker", undefined, undefined, undefined, steer.signal),
+      ).resolves.toMatchObject({ event: "steered", turn_id: spawned.turn_id, state: "running" });
+
+      finishPrompt({ status: "completed", output: "done" });
+      // Nothing was claimed, so a wait without a steer still receives the terminal result.
+      await expect(coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
+        event: "turn",
+        output: "done",
+      });
+    });
+
+    it("returns a retained result even when a Queued Steer is pending", async () => {
+      const runtime = childRuntime();
+      const { coordinator } = coordinatorFixture(runtime, 200);
+      const spawned = await coordinator.spawn("root", { task: "Fast", agent_id: "worker" }, caller);
+      await vi.waitFor(() => {
+        const status = coordinator.status("root", "worker");
+        expect("agent" in status && status.agent.latest_turn).toMatchObject({
+          turn_id: spawned.turn_id,
+          status: "completed",
+        });
+      });
+      const steer = new AbortController();
+      steer.abort();
+
+      await expect(
+        coordinator.wait("root", "worker", undefined, undefined, undefined, steer.signal),
+      ).resolves.toMatchObject({ event: "turn", turn_id: spawned.turn_id, output: "done" });
+    });
+
+    it("does not count a steered wait result as Delivery Evidence for the terminal result", () => {
+      const entries: SessionEntry[] = [
+        {
+          type: "message",
+          id: "steered-result",
+          parentId: null,
+          timestamp: "2026-01-01T00:00:00.000Z",
+          message: {
+            role: "toolResult",
+            toolCallId: "call-1",
+            toolName: "subagent_wait",
+            content: [{ type: "text", text: "steered" }],
+            details: {
+              event: "steered",
+              source_agent_id: "worker",
+              source_turn_id: "worker:turn-1",
+            },
+            isError: false,
+            timestamp: 1,
+          },
+        },
+      ];
+      expect(findDeliveryEvidence(entries, "worker", "worker:turn-1")).toBe(false);
+    });
+
+    it("rejects the real abort signal as a cancellation rather than steering", async () => {
+      let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
+      const runtime = childRuntime();
+      runtime.runPrompt.mockImplementation(
+        () => new Promise<RuntimeTurnOutcome>((resolve) => (finishPrompt = resolve)),
+      );
+      const { coordinator } = coordinatorFixture(runtime, 0);
+      await coordinator.spawn("root", { task: "Slow", agent_id: "worker" }, caller);
+      const cancelled = new AbortController();
+      const steer = new AbortController();
+
+      const waiting = coordinator.wait(
+        "root",
+        "worker",
+        undefined,
+        cancelled.signal,
+        undefined,
+        steer.signal,
+      );
+      cancelled.abort();
+      steer.abort();
+
+      await expect(waiting).rejects.toThrow(/wait cancelled/);
+      finishPrompt({ status: "completed", output: "done" });
+    });
+  });
+
   it("keeps skipping a claimed turn after a reload", async () => {
     const source = coordinatorFixture(childRuntime(), 200);
     const first = await source.coordinator.spawn(

@@ -263,7 +263,8 @@ const ExecutionWaitPresentationSchema = Type.Object(
   {
     kind: Type.Literal("execution_wait"),
     operation: DapExecutionWaitOperationSchema,
-    cancelled: Type.Literal(true),
+    cancelled: Type.Optional(Type.Literal(true)),
+    steered: Type.Optional(Type.Literal(true)),
   },
   { additionalProperties: false },
 );
@@ -466,10 +467,25 @@ const DapRejectedChildSessionOutputFields = {
     ),
   ),
 };
+/** How a wait that ended early without a stop or exit ended; absent when it did not. */
+const DapExecutionWaitEndFields = {
+  execution_wait_cancelled: Type.Optional(
+    Type.Boolean({
+      description:
+        "True when the tool call was cancelled during the wait: the Debuggee is untouched and still running.",
+    }),
+  ),
+  execution_wait_steered: Type.Optional(
+    Type.Boolean({
+      description:
+        "True when the wait ended early because a Queued Steer is pending (a Steer Yield): the Debuggee is untouched and still running, so check dap_status or dap_pause after acting on the steer.",
+    }),
+  ),
+};
 const DapExecutionOutputFields = {
   ...DapStopOutputFields,
   ...DapRejectedChildSessionOutputFields,
-  execution_wait_cancelled: Type.Optional(Type.Boolean()),
+  ...DapExecutionWaitEndFields,
 };
 const DapLaunchOutputSchema = Type.Object(
   { ...DapOutputBaseFields, ...DapDesiredBreakpointsOutputFields, ...DapExecutionOutputFields },

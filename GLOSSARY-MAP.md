@@ -21,7 +21,7 @@ glossary relevant to the work:
 | `@ian-pascoe/pi-skills-selector`    | [`packages/pi-skills-selector/GLOSSARY.md`](packages/pi-skills-selector/GLOSSARY.md)       | Explicit Skill References in user input  |
 | `@ian-pascoe/pi-guardian`           | [`packages/pi-guardian/GLOSSARY.md`](packages/pi-guardian/GLOSSARY.md)                     | Model-reviewed tool-call gating          |
 | `@ian-pascoe/pi-secret`             | [`packages/pi-secret/GLOSSARY.md`](packages/pi-secret/GLOSSARY.md)                         | User-entered secrets kept from the model |
-| `@ian-pascoe/pi-utils`              | [`packages/pi-utils/GLOSSARY.md`](packages/pi-utils/GLOSSARY.md)                           | Shared extension UI conventions          |
+| `@ian-pascoe/pi-utils`              | [`packages/pi-utils/GLOSSARY.md`](packages/pi-utils/GLOSSARY.md)                           | Shared UI conventions and Steer Yield    |
 
 `pi-context-management` implements session-owned Notes, selected-branch History retrieval with
 a read-only Lineage scope over related agents' sessions, and native Context Checkpoints for

@@ -18,4 +18,4 @@ For `vscode-js-debug`, a stop with reason `entry` that repeats inside the progra
 
 For `vscode-js-debug`, worker threads and child processes are debugged as child sessions: a stop in one names it in `child_session`, and only one stop is reported at a time. A result listing `rejected_child_sessions` names a child Pi DAP could not debug, where breakpoints never bind; debug the child's own file as the `program`. If child processes are not wanted, pass `launch_arguments: { autoAttachChildProcesses: false }` to `dap_launch`.
 
-Ask before starting, pausing, stopping, or otherwise changing a Debuggee. An execution timeout may leave it running, so inspect `dap_status` first.
+Ask before starting, pausing, stopping, or otherwise changing a Debuggee. An execution timeout or a steer yield (`execution_wait_steered`) may leave it running, so inspect `dap_status` first.

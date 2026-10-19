@@ -8,7 +8,9 @@ import {
   type ToolAnnotations,
   type ToolDefinition,
   type ToolRenderResultOptions,
+  type ExtensionToolContext,
 } from "@earendil-works/pi-coding-agent";
+import { watchQueuedSteer } from "@ian-pascoe/pi-utils/queued-steer";
 import type { Static, TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { DapProtocolClientError } from "./dap-protocol-client.js";
@@ -47,7 +49,7 @@ import {
   renderDapToolResult,
   type DapResultRenderContext,
 } from "./dap-tool-rendering.js";
-import { formatDapToolText, visibleDapText } from "./dap-tool-text.js";
+import { formatDapToolText, visibleDapText, type DapExecutionWaitEnd } from "./dap-tool-text.js";
 import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 
 type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
@@ -105,7 +107,7 @@ export const DAP_TOOL_NAMESPACE = {
     "Every dap_* tool acts on the same single Debug Session of this Pi session. dap_launch fails while one is active; dap_stop ends it.",
     "Relative paths resolve from Pi's project directory.",
     "Desired Breakpoints set with dap_set_breakpoints apply to the active Debug Session and to every later launch.",
-    "dap_launch, dap_continue, dap_next, dap_step_in, and dap_step_out wait until the Debuggee stops, exits, or the execution timeout passes; after a timeout the state is running, so use dap_pause or dap_stop.",
+    "dap_launch, dap_continue, dap_next, dap_step_in, and dap_step_out wait until the Debuggee stops, exits, the execution timeout passes, or a steer message is queued for this session; after a timeout or such a steer yield the state is running (execution_wait_steered is true for a yield), so use dap_status, dap_pause, or dap_stop.",
     "dap_stack, dap_variables, and dap_evaluate need a stopped Debuggee. Stack Frame ids from dap_stack feed dap_variables and dap_evaluate; a non-zero variables_reference lists child values with dap_variables, and dap_variables with frame_id lists expensive scopes such as Global without expanding them.",
     "Each successful call drains unread Debuggee output. Text results are limited to 2,000 lines or 50 KB and save the complete result as a Result Spill; script results carry complete data (a frame's expensive scopes stay unexpanded).",
     "A call that fails because of the Debug Session state returns the current state with an error field instead of throwing.",
@@ -306,7 +308,7 @@ function snapshotFields(snapshot: DapSessionSnapshot): DapSnapshotFields {
 function toolResultDetails(
   operation: DapOperation,
   result: DapSessionResult,
-  executionWaitCancelled: boolean,
+  executionWaitEnd: DapExecutionWaitEnd | undefined,
 ): DapToolResultDetails {
   const details: DapToolResultDetails = {
     operation,
@@ -318,8 +320,14 @@ function toolResultDetails(
     details.stack_frame_ids = result.stackFrames.map((frame) => frame.id);
   }
   const presentation =
-    executionWaitCancelled && isDapExecutionWaitOperation(operation)
-      ? { kind: "execution_wait" as const, operation, cancelled: true as const }
+    executionWaitEnd !== undefined && isDapExecutionWaitOperation(operation)
+      ? {
+          kind: "execution_wait" as const,
+          operation,
+          ...(executionWaitEnd === "cancelled"
+            ? { cancelled: true as const }
+            : { steered: true as const }),
+        }
       : dapPresentationDetails(result);
   if (presentation !== undefined) details.presentation = presentation;
   return Value.Parse(DapToolResultDetailsSchema, details);
@@ -423,15 +431,19 @@ function desiredBreakpointsOutput(result: DapSessionResult): DapDesiredBreakpoin
 function toolOutput(
   operation: DapOperation,
   result: DapSessionResult,
-  executionWaitCancelled: boolean,
+  executionWaitEnd: DapExecutionWaitEnd | undefined,
   warnings: readonly string[],
 ): DapToolOutput {
   const base = baseOutput(result);
-  const withWaitCancelled = <TOutput extends object>(output: TOutput) =>
-    executionWaitCancelled ? { ...output, execution_wait_cancelled: true } : output;
+  const withWaitEnd = <TOutput extends object>(output: TOutput) =>
+    executionWaitEnd === undefined
+      ? output
+      : executionWaitEnd === "cancelled"
+        ? { ...output, execution_wait_cancelled: true }
+        : { ...output, execution_wait_steered: true };
   switch (operation) {
     case "launch":
-      return withWaitCancelled({
+      return withWaitEnd({
         ...base,
         ...desiredBreakpointsOutput(result),
         ...stopOutput(result),
@@ -441,7 +453,7 @@ function toolOutput(
     case "next":
     case "step_in":
     case "step_out":
-      return withWaitCancelled({
+      return withWaitEnd({
         ...base,
         ...stopOutput(result),
         ...rejectedChildSessionOutput(result),
@@ -527,12 +539,12 @@ async function createDapToolOutput(
   result: DapSessionResult,
   sessionFiles: DapSessionFiles,
   cwd: string,
-  executionWaitCancelled: boolean,
+  executionWaitEnd: DapExecutionWaitEnd | undefined,
   warnings: readonly string[],
 ): Promise<DapToolResult> {
-  const text = formatDapToolText({ operation, result, cwd, executionWaitCancelled, warnings });
-  const details = toolResultDetails(operation, result, executionWaitCancelled);
-  const structuredContent = toolOutput(operation, result, executionWaitCancelled, warnings);
+  const text = formatDapToolText({ operation, result, cwd, executionWaitEnd, warnings });
+  const details = toolResultDetails(operation, result, executionWaitEnd);
+  const structuredContent = toolOutput(operation, result, executionWaitEnd, warnings);
   const visible = visibleDapText(text);
   if (!visible.truncated) {
     return { content: [{ type: "text", text }], details, structuredContent };
@@ -590,10 +602,11 @@ async function dispatchDapOperation(
   session: DapToolSession,
   cwd: string,
   signal: AbortSignal | undefined,
+  steerSignal: AbortSignal | undefined,
 ): Promise<DapDispatch> {
   if (parameters.operation !== "set_breakpoints") {
     return {
-      result: await dispatchSessionOperation(parameters, session, cwd, signal),
+      result: await dispatchSessionOperation(parameters, session, cwd, signal, steerSignal),
       warnings: [],
     };
   }
@@ -611,6 +624,7 @@ async function dispatchSessionOperation(
   session: DapToolSession,
   cwd: string,
   signal: AbortSignal | undefined,
+  steerSignal: AbortSignal | undefined,
 ): Promise<DapSessionResult> {
   switch (parameters.operation) {
     case "launch": {
@@ -622,16 +636,16 @@ async function dispatchSessionOperation(
       if (parameters.launch_arguments !== undefined) {
         input.launchArguments = parameters.launch_arguments;
       }
-      return session.launch(input, signal);
+      return session.launch(input, signal, steerSignal);
     }
     case "continue":
-      return session.continue(signal);
+      return session.continue(signal, steerSignal);
     case "next":
-      return session.next(signal);
+      return session.next(signal, steerSignal);
     case "step_in":
-      return session.stepIn(signal);
+      return session.stepIn(signal, steerSignal);
     case "step_out":
-      return session.stepOut(signal);
+      return session.stepOut(signal, steerSignal);
     case "pause":
       return session.pause(signal);
     case "stack": {
@@ -673,17 +687,34 @@ function notifyDapToolObserver(operation: () => void): void {
   }
 }
 
+/** How an execution wait that returned without the Debuggee stopping or exiting was cut short. */
+function executionWaitEnd(
+  waits: boolean,
+  signal: AbortSignal | undefined,
+  steerSignal: AbortSignal | undefined,
+  state: DapSessionSnapshot["state"],
+): DapExecutionWaitEnd | undefined {
+  if (waits && signal?.aborted === true && state !== "stopped") return "cancelled";
+  // A Steer Yield leaves the Debuggee running; a stop or exit that raced it is reported as itself.
+  if (steerSignal?.aborted === true && state === "running") return "steered";
+  return undefined;
+}
+
 async function executeDapOperation(
   parameters: DapToolParameters,
   runtime: DapToolRuntime | undefined,
-  cwd: string,
+  context: ExtensionToolContext,
   signal: AbortSignal | undefined,
   onUpdate: AgentToolUpdateCallback<DapToolRenderDetails | undefined> | undefined,
 ): Promise<DapToolResult> {
   if (runtime === undefined) throw piDapError("Pi conversation session is not active");
   notifyDapToolObserver(() => runtime.observer?.onToolStart(parameters));
   const operation = parameters.operation;
+  const cwd = context.cwd;
   const waits = isDapExecutionWaitOperation(operation);
+  // dap_pause only confirms the stop it requested, so it never yields: a Steer Yield there would
+  // report a Debuggee as running moments before it stops.
+  const steerWatch = waits ? watchQueuedSteer(context.sessionManager.getSessionId()) : undefined;
   const startedAt = Date.now();
   const updateProgress = () => {
     if (!isDapExecutionWaitOperation(operation)) return;
@@ -701,13 +732,14 @@ async function executeDapOperation(
       runtime.session,
       cwd,
       signal,
+      steerWatch?.signal,
     );
     const output = await createDapToolOutput(
       operation,
       result,
       runtime.sessionFiles,
       cwd,
-      waits && signal?.aborted === true && result.snapshot.state !== "stopped",
+      executionWaitEnd(waits, signal, steerWatch?.signal, result.snapshot.state),
       warnings,
     );
     notifyDapToolObserver(() => runtime.observer?.onToolSuccess(parameters, result));
@@ -723,6 +755,7 @@ async function executeDapOperation(
       : error;
   } finally {
     if (progressInterval !== undefined) clearInterval(progressInterval);
+    steerWatch?.dispose();
   }
 }
 
@@ -764,7 +797,7 @@ const RUNS_DEBUGGEE_CODE: ToolAnnotations = {
   openWorldHint: true,
 };
 const EXECUTION_WAIT =
-  "and wait until the Debuggee stops, exits, or the execution timeout passes (then it is still running).";
+  "and wait until the Debuggee stops, exits, the execution timeout passes, or a steer message is queued for this session (then it is still running; check with dap_status or interrupt it with dap_pause).";
 const STATE_FAILURE =
   "A call the Debug Session state does not allow returns an error result with the current `state` and an `error` message.";
 
@@ -799,7 +832,7 @@ function createNoParametersTool(
       executeDapOperation(
         { operation, ...parseNoParameters(input) },
         getRuntime(),
-        context.cwd,
+        context,
         signal,
         onUpdate,
       ),
@@ -826,7 +859,7 @@ export function createDapToolDefinitions(getRuntime: () => DapToolRuntime | unde
         executeDapOperation(
           { operation: "launch", ...parseLaunchParameters(input) },
           getRuntime(),
-          context.cwd,
+          context,
           signal,
           onUpdate,
         ),
@@ -845,7 +878,7 @@ export function createDapToolDefinitions(getRuntime: () => DapToolRuntime | unde
         executeDapOperation(
           { operation: "set_breakpoints", ...parseSetBreakpointsParameters(input) },
           getRuntime(),
-          context.cwd,
+          context,
           signal,
           onUpdate,
         ),
@@ -898,7 +931,7 @@ export function createDapToolDefinitions(getRuntime: () => DapToolRuntime | unde
         executeDapOperation(
           { operation: "stack", ...parseStackParameters(input) },
           getRuntime(),
-          context.cwd,
+          context,
           signal,
           onUpdate,
         ),
@@ -916,7 +949,7 @@ export function createDapToolDefinitions(getRuntime: () => DapToolRuntime | unde
         executeDapOperation(
           { operation: "variables", ...parseVariablesParameters(input) },
           getRuntime(),
-          context.cwd,
+          context,
           signal,
           onUpdate,
         ),
@@ -934,7 +967,7 @@ export function createDapToolDefinitions(getRuntime: () => DapToolRuntime | unde
         executeDapOperation(
           { operation: "evaluate", ...parseEvaluateParameters(input) },
           getRuntime(),
-          context.cwd,
+          context,
           signal,
           onUpdate,
         ),

@@ -17,7 +17,9 @@ import type {
   ToolSelection,
   WaitDeliveredTurnResult,
   WaitMessageResult,
+  WaitProgressSnapshot,
   WaitResult,
+  WaitSteeredResult,
   WaitTimeoutResult,
   WaitTurnResult,
 } from "./minimal-subagents-types.js";
@@ -157,12 +159,8 @@ function formatWaitTurnText(result: WaitTurnResult): string {
   return `${lines.join("\n")}\n\n${result.output || "(no output)"}`;
 }
 
-/** The observational timeout snapshot; the wait never cancels the child. */
-function formatWaitTimeoutText(result: WaitTimeoutResult): string {
-  const lines = [
-    `Wait timed out after ${formatSubagentDuration(result.timeout_ms) ?? `${result.timeout_ms}ms`}; ${result.agent_id} is ${result.state} on turn ${result.turn_id} and was not cancelled.`,
-  ];
-  const progress = joinParts([
+function waitProgressText(result: WaitProgressSnapshot): string {
+  return joinParts([
     result.elapsed_ms === undefined
       ? undefined
       : `elapsed ${formatSubagentDuration(result.elapsed_ms)}`,
@@ -171,6 +169,14 @@ function formatWaitTimeoutText(result: WaitTimeoutResult): string {
       ? undefined
       : `${formatSubagentTokenCount(result.total_tokens)} tokens`,
   ]);
+}
+
+/** The observational timeout snapshot; the wait never cancels the child. */
+function formatWaitTimeoutText(result: WaitTimeoutResult): string {
+  const lines = [
+    `Wait timed out after ${formatSubagentDuration(result.timeout_ms) ?? `${result.timeout_ms}ms`}; ${result.agent_id} is ${result.state} on turn ${result.turn_id} and was not cancelled.`,
+  ];
+  const progress = waitProgressText(result);
   if (progress) lines.push(progress);
   if (result.recent_activity_labels.length > 0) {
     lines.push(`recent activity: ${result.recent_activity_labels.join(", ")}`);
@@ -178,7 +184,20 @@ function formatWaitTimeoutText(result: WaitTimeoutResult): string {
   return lines.join("\n");
 }
 
-/** Any Wait Event: a message, a settled or already-delivered turn, or a timeout. */
+/** The Steer Yield snapshot: a Queued Steer ended the wait, and the child was not cancelled. */
+function formatWaitSteeredText(result: WaitSteeredResult): string {
+  const lines = [
+    `Wait ended early: a queued steer is waiting for you. ${result.agent_id} is ${result.state} on turn ${result.turn_id} and was not cancelled; wait again to resume.`,
+  ];
+  const progress = waitProgressText(result);
+  if (progress) lines.push(progress);
+  if (result.recent_activity_labels.length > 0) {
+    lines.push(`recent activity: ${result.recent_activity_labels.join(", ")}`);
+  }
+  return lines.join("\n");
+}
+
+/** Any Wait Event: a message, a settled or already-delivered turn, a timeout, or a steer yield. */
 export function formatWaitResultText(result: WaitResult): string {
   if ("already_delivered" in result) return formatWaitDeliveredText(result);
   switch (result.event) {
@@ -188,6 +207,8 @@ export function formatWaitResultText(result: WaitResult): string {
       return formatWaitTurnText(result);
     case "timeout":
       return formatWaitTimeoutText(result);
+    case "steered":
+      return formatWaitSteeredText(result);
   }
 }
 

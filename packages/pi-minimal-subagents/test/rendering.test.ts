@@ -822,6 +822,34 @@ describe("minimal subagents rendering", () => {
     expect(render(legacy, true)).toContain("State: running");
   });
 
+  it("renders a steered wait with its progress snapshot", () => {
+    const details = {
+      event: "steered",
+      agent_id: "child",
+      turn_id: "child:turn-1",
+      state: "running",
+      elapsed_ms: 2_000,
+      total_tokens: 1_234,
+      recent_activity_labels: ["tool call read"],
+    };
+    const render = (isExpanded: boolean) =>
+      renderLines(
+        renderCoordinatorToolResult(
+          "subagent_wait",
+          { content: [{ type: "text", text: "steered" }], details },
+          { expanded: isExpanded, isPartial: false },
+          plainTheme,
+          { agent_id: "child" },
+        ),
+      );
+    const collapsed = render(false);
+    expect(collapsed).toContain("steered");
+    expect(collapsed).toContain("tool call read");
+    const expanded = render(true);
+    expect(expanded).toContain("State: running");
+    expect(expanded).toContain("Turn: child:turn-1");
+  });
+
   it("renders legacy details and falls back to historical text for malformed partial errors", () => {
     const legacy = renderCoordinatorToolResult(
       "agent_message",

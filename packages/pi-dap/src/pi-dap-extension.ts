@@ -6,6 +6,7 @@ import {
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import { acceptNullForOptionalArguments } from "@ian-pascoe/pi-utils/null-optional-arguments";
+import { trackQueuedSteers } from "@ian-pascoe/pi-utils/queued-steer";
 import { noticeText } from "@ian-pascoe/pi-utils/ui";
 import { DapSession } from "./dap-session.js";
 import { createDapSessionFiles, type DapSessionFiles } from "./dap-session-files.js";
@@ -32,6 +33,8 @@ export class PiDapLifecycleController {
 
   /** Register the stable tool definitions and Pi conversation session lifecycle handlers. */
   register(): void {
+    // Execution waits end early on a Queued Steer (Steer Yield).
+    trackQueuedSteers(this.pi);
     for (const tool of createDapToolDefinitions(() => this.activeSession)) {
       this.pi.registerTool(acceptNullForOptionalArguments(tool));
     }
