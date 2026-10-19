@@ -49,6 +49,7 @@ Pi LSP reads only the `lsp` key from Pi's global `settings.json` and trusted pro
         ],
         "requireRootMarker": true,
         "rootMarkers": ["tsconfig.json", "package.json", ".git"],
+        "maxConcurrentDiagnostics": 2,
         "initializationOptions": {},
         "settings": {},
         "environment": {}
@@ -99,6 +100,17 @@ again is named again. The packages are found by the same bounded search as other
 (below); when it stops early, the warning says so instead of claiming other roots outside the
 workspace. A server without `rootMarkers` gets no package warning. One server for a whole
 workspace also uses more memory than one per package.
+
+`maxConcurrentDiagnostics` (a positive integer, default `2`) caps how many diagnostics requests
+one running server process has in flight at once; further requests wait in a first-in, first-out
+queue. It covers every document-pull (`textDocument/diagnostic`) and workspace-pull
+(`workspace/diagnostic`) request: Post-edit Diagnostics, the Pre-edit Baseline, dependent-file
+scans, `lsp_diagnostics`, and workspace diagnostics. Each server process has its own queue, so a
+slow server never holds up another. Raise it for a server that answers from one resident program
+(such as `tsc --lsp`); lower it to `1` for a server whose every request is expensive (such as
+oxlint with `"typeAware": true`, which starts a fresh `tsgolint` per request). Waiting for pushed
+diagnostics is not a request and is never queued. An invalid value is reported as a settings
+warning and the default is used; the rest of the definition still applies.
 
 `includeHintDiagnostics` (default `false`) controls whether Post-edit Diagnostics include
 hint-severity findings; a project value overrides the global one. Global and project timeouts
@@ -610,6 +622,12 @@ Scope and caps:
 - At most 10 touched declarations are searched, and at most **20** dependent files are checked
   (the first 20 by path). Files past the cap, or whose diagnostics timed out, are reported as
   `N dependent files not checked`.
+- Dependent-file pulls are queued per Server Instance: each server process has at most
+  `maxConcurrentDiagnostics` (default 2) diagnostics requests in flight, so a server that is
+  costly per request is not saturated by a 20-file scan, and a slow server never delays another.
+  The changed file's own pull goes first. The `diagnosticsMs` timeout starts when a request is
+  sent, not while it waits; time in the queue is bounded only by the per-call budget below and
+  the tool call's own cancellation, and requests still queued then are dropped without being sent.
 - Only **error**-severity findings are reported; errors a dependent file already had are not.
 - The before-edit scan shares the 20-second **per edit call** pre-edit budget with the Pre-edit
   Baseline pull; when it runs out, the edit proceeds and its result says

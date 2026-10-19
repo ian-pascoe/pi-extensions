@@ -233,6 +233,7 @@ function resolvedSettings(
           args: [],
           environment: {},
           languages: [{ extensions: [".ts"], fileNames: [], languageId: "typescript" }],
+          maxConcurrentDiagnostics: 2,
           requireRootMarker: false,
           rootMarkers: [...rootMarkers],
         },

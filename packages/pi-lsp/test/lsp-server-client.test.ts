@@ -32,6 +32,8 @@ interface FakeServerState {
   readonly saved: readonly unknown[];
   readonly closed: readonly unknown[];
   readonly cancellations: number;
+  readonly diagnosticRequests: number;
+  readonly peakDiagnosticsInFlight: number;
   readonly configuration: readonly unknown[];
   readonly workspaceFolders: readonly { readonly name: string; readonly uri: string }[];
   readonly progressCreated: boolean;
@@ -46,6 +48,7 @@ async function startFakeServer(
     readonly onUnavailable?: LspServerClientOptions["onUnavailable"];
     readonly onWorkspaceEdit?: LspServerClientOptions["onWorkspaceEdit"];
     readonly diagnosticsMs?: number;
+    readonly maxConcurrentDiagnostics?: number;
     readonly requestMs?: number;
     readonly workspaceRequestMs?: number;
   } = {},
@@ -57,6 +60,7 @@ async function startFakeServer(
     args: [fixturePath],
     environment: { ...process.env, ...options.environment },
     initializationOptions: { fakeInitialization: true },
+    maxConcurrentDiagnostics: options.maxConcurrentDiagnostics ?? 2,
     settings: { typescript: { preferences: { quoteStyle: "single" } } },
     stderrPath: resolve(directory, "fake.stderr.log"),
     timeouts: testTimeouts({
@@ -674,6 +678,192 @@ describe("LspServerClient", () => {
       status: "fresh",
       source: "push_cache",
       diagnosticsByUri: new Map([[document.uri, [expect.objectContaining({ source: "fake" })]]]),
+    });
+  });
+
+  describe("diagnostics concurrency cap", () => {
+    const pullOnly = { FAKE_DIAGNOSTICS: "one", FAKE_PUSH: "none" };
+
+    async function createFiles(directory: string, count: number): Promise<string[]> {
+      const filePaths = Array.from({ length: count }, (_, index) =>
+        resolve(directory, `file-${index}.ts`),
+      );
+      await Promise.all(filePaths.map((filePath) => writeFile(filePath, "export const a = 1;\n")));
+      return filePaths;
+    }
+
+    async function serverState(client: LspServerClient): Promise<FakeServerState> {
+      return await client.request<FakeServerState>("fake/state", {});
+    }
+
+    test("keeps at most the configured number of document pulls in flight, answering every file", async () => {
+      const directory = await createTemporaryDirectory();
+      const filePaths = await createFiles(directory, 5);
+      const client = await startFakeServer(directory, {
+        maxConcurrentDiagnostics: 1,
+        environment: { ...pullOnly, FAKE_DIAGNOSTIC_LATENCY_MS: "40" },
+      });
+
+      const results = await Promise.all(
+        filePaths.map((filePath) => client.documentDiagnostics(filePath, "typescript")),
+      );
+
+      expect(results.map(({ status }) => status)).toEqual(Array(5).fill("fresh"));
+      const state = await serverState(client);
+      expect(state.diagnosticRequests).toBe(5);
+      expect(state.peakDiagnosticsInFlight).toBe(1);
+    });
+
+    test("lets a larger limit run that many pulls at once", async () => {
+      const directory = await createTemporaryDirectory();
+      const filePaths = await createFiles(directory, 6);
+      const client = await startFakeServer(directory, {
+        maxConcurrentDiagnostics: 3,
+        environment: { ...pullOnly, FAKE_DIAGNOSTIC_LATENCY_MS: "40" },
+      });
+
+      await Promise.all(
+        filePaths.map((filePath) => client.documentDiagnostics(filePath, "typescript")),
+      );
+
+      expect((await serverState(client)).peakDiagnosticsInFlight).toBe(3);
+    });
+
+    test("shares the limit between document pulls and workspace pulls", async () => {
+      const directory = await createTemporaryDirectory();
+      const [first, second] = await createFiles(directory, 2);
+      if (first === undefined || second === undefined) throw new Error("Fake LSP test: no files");
+      const client = await startFakeServer(directory, {
+        maxConcurrentDiagnostics: 1,
+        environment: { ...pullOnly, FAKE_DIAGNOSTIC_LATENCY_MS: "40" },
+      });
+
+      const results = await Promise.all([
+        client.documentDiagnostics(first, "typescript"),
+        client.workspaceDiagnostics(),
+        client.documentDiagnostics(second, "typescript"),
+        client.workspaceDiagnostics(),
+      ]);
+
+      expect(results.map(({ status }) => status)).toEqual(Array(4).fill("fresh"));
+      const state = await serverState(client);
+      expect(state.diagnosticRequests).toBe(4);
+      expect(state.peakDiagnosticsInFlight).toBe(1);
+    });
+
+    test("does not count time in the queue toward the diagnostics timeout", async () => {
+      const directory = await createTemporaryDirectory();
+      const filePaths = await createFiles(directory, 4);
+      const client = await startFakeServer(directory, {
+        maxConcurrentDiagnostics: 1,
+        // Each pull takes 120 ms, so the last one waits 360 ms: longer than the 250 ms timeout.
+        diagnosticsMs: 250,
+        environment: { ...pullOnly, FAKE_DIAGNOSTIC_LATENCY_MS: "120" },
+      });
+
+      const results = await Promise.all(
+        filePaths.map((filePath) => client.documentDiagnostics(filePath, "typescript")),
+      );
+
+      expect(results.map(({ status }) => status)).toEqual(Array(4).fill("fresh"));
+    });
+
+    test("times out a request that was sent and never answered, not one still queued", async () => {
+      const directory = await createTemporaryDirectory();
+      const filePaths = await createFiles(directory, 2);
+      const client = await startFakeServer(directory, {
+        maxConcurrentDiagnostics: 1,
+        diagnosticsMs: 100,
+        environment: { ...pullOnly, FAKE_DIAGNOSTIC_LATENCY_MS: "5000" },
+      });
+
+      const startedAt = Date.now();
+      const results = await Promise.all(
+        filePaths.map((filePath) => client.documentDiagnostics(filePath, "typescript")),
+      );
+
+      expect(results.map(({ status }) => status)).toEqual(["timeout", "timeout"]);
+      // The second pull's own 100 ms starts only once the first one's ends.
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(190);
+      expect((await serverState(client)).diagnosticRequests).toBe(2);
+    });
+
+    test("drains queued requests without sending them when the caller aborts", async () => {
+      const directory = await createTemporaryDirectory();
+      const filePaths = await createFiles(directory, 4);
+      const [first, ...queued] = filePaths;
+      if (first === undefined) throw new Error("Fake LSP test: no files");
+      const client = await startFakeServer(directory, {
+        maxConcurrentDiagnostics: 1,
+        environment: { ...pullOnly, FAKE_DIAGNOSTIC_LATENCY_MS: "250" },
+      });
+      const controller = new AbortController();
+
+      const cancellations = [first, ...queued].map((filePath) =>
+        expect(
+          client.documentDiagnostics(filePath, "typescript", controller.signal),
+        ).rejects.toMatchObject({ kind: "cancelled" }),
+      );
+      await expect.poll(async () => (await serverState(client)).diagnosticRequests).toBe(1);
+      controller.abort();
+
+      await Promise.all(cancellations);
+      // Past when the queue would have reached the server had it been left in place.
+      await new Promise((resolveWait) => setTimeout(resolveWait, 600));
+      expect((await serverState(client)).diagnosticRequests).toBe(1);
+    });
+
+    test("frees the aborted request's slot for another caller's queued request", async () => {
+      const directory = await createTemporaryDirectory();
+      const [first, second] = await createFiles(directory, 2);
+      if (first === undefined || second === undefined) throw new Error("Fake LSP test: no files");
+      const client = await startFakeServer(directory, {
+        maxConcurrentDiagnostics: 1,
+        diagnosticsMs: 2_000,
+        environment: { ...pullOnly, FAKE_DIAGNOSTIC_LATENCY_MS: "5000" },
+      });
+      const controller = new AbortController();
+      const cancellation = expect(
+        client.documentDiagnostics(first, "typescript", controller.signal),
+      ).rejects.toMatchObject({ kind: "cancelled" });
+      await expect.poll(async () => (await serverState(client)).diagnosticRequests).toBe(1);
+      const waiting = client.documentDiagnostics(second, "typescript");
+      controller.abort();
+
+      await cancellation;
+      await expect
+        .poll(async () => (await serverState(client)).diagnosticRequests, { timeout: 1_000 })
+        .toBe(2);
+      await client.shutdown();
+      await waiting.catch(() => undefined);
+    });
+
+    test("does not delay another Server Instance covering the same files", async () => {
+      const cappedDirectory = await createTemporaryDirectory();
+      const otherDirectory = await createTemporaryDirectory();
+      const cappedFiles = await createFiles(cappedDirectory, 4);
+      const otherFiles = await createFiles(otherDirectory, 4);
+      const capped = await startFakeServer(cappedDirectory, {
+        maxConcurrentDiagnostics: 1,
+        environment: { ...pullOnly, FAKE_DIAGNOSTIC_LATENCY_MS: "250" },
+      });
+      const other = await startFakeServer(otherDirectory, {
+        maxConcurrentDiagnostics: 4,
+        environment: pullOnly,
+      });
+
+      let cappedSettled = 0;
+      const cappedResults = cappedFiles.map((filePath) =>
+        capped.documentDiagnostics(filePath, "typescript").finally(() => cappedSettled++),
+      );
+      await expect.poll(async () => (await serverState(capped)).diagnosticRequests).toBe(1);
+      const otherResults = await Promise.all(
+        otherFiles.map((filePath) => other.documentDiagnostics(filePath, "typescript")),
+      );
+
+      expect(otherResults.map(({ status }) => status)).toEqual(Array(4).fill("fresh"));
+      expect(cappedSettled).toBeLessThan(4);
+      await Promise.all(cappedResults);
     });
   });
 

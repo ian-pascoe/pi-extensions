@@ -247,6 +247,69 @@ describe("resolveLspSettings", () => {
     delete process.env.PI_LSP_SETTINGS_INHERITED;
   });
 
+  describe("maxConcurrentDiagnostics", () => {
+    test("defaults to 2 when unset", async () => {
+      const settings = resolveLspSettings(
+        await createSettingsReader(
+          { lsp: { servers: { typescript: typescriptServer("tsc-lsp") } } },
+          {},
+          true,
+        ),
+      );
+
+      expect(settings.servers.get("typescript")?.maxConcurrentDiagnostics).toBe(2);
+      expect(settings.warnings).toEqual([]);
+    });
+
+    test("resolves a configured positive integer onto its Server Definition only", async () => {
+      const settings = resolveLspSettings(
+        await createSettingsReader(
+          {
+            lsp: {
+              servers: {
+                capped: { ...typescriptServer("oxlint"), maxConcurrentDiagnostics: 1 },
+                other: typescriptServer("tsc-lsp"),
+              },
+            },
+          },
+          {},
+          true,
+        ),
+      );
+
+      expect(settings.servers.get("capped")?.maxConcurrentDiagnostics).toBe(1);
+      expect(settings.servers.get("other")?.maxConcurrentDiagnostics).toBe(2);
+      expect(settings.warnings).toEqual([]);
+    });
+
+    test.each([0, -1, 1.5, "3", null, true])(
+      "warns about %j and keeps the Server Definition with the default",
+      async (invalid) => {
+        const settings = resolveLspSettings(
+          await createSettingsReader(
+            {
+              lsp: {
+                servers: {
+                  typescript: { ...typescriptServer("tsc-lsp"), maxConcurrentDiagnostics: invalid },
+                },
+              },
+            },
+            {},
+            true,
+          ),
+        );
+
+        expect(settings.servers.get("typescript")).toMatchObject({
+          command: "tsc-lsp",
+          maxConcurrentDiagnostics: 2,
+        });
+        expect(settings.warnings).toEqual([
+          "global lsp.servers.typescript.maxConcurrentDiagnostics: expected a positive integer",
+        ]);
+      },
+    );
+  });
+
   test("quarantines an invalid global server while preserving valid global servers", async () => {
     const settingsManager = await createSettingsReader(
       {

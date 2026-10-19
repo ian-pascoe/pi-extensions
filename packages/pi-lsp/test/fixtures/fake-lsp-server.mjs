@@ -1,4 +1,4 @@
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
@@ -15,6 +15,8 @@ const state = {
   saved: [],
   closed: [],
   cancellations: 0,
+  diagnosticRequests: 0,
+  peakDiagnosticsInFlight: 0,
   configuration: null,
   workspaceFolders: null,
   progressCreated: false,
@@ -74,6 +76,38 @@ function contentDiagnostics(uri) {
 }
 
 let documentDiagnosticRequests = 0;
+let diagnosticsInFlight = 0;
+const heldDiagnosticRequests = new Map();
+
+/**
+ * FAKE_DIAGNOSTIC_LATENCY_MS holds every document and workspace pull for that long and counts how
+ * many are held at once (`peakDiagnosticsInFlight`, also written to FAKE_PEAK_LOG when set).
+ * A cancelled request stops counting at once. Resolves false when the request was cancelled.
+ */
+function holdDiagnosticRequest(id) {
+  state.diagnosticRequests++;
+  const latencyMs = Number(process.env.FAKE_DIAGNOSTIC_LATENCY_MS ?? "0");
+  if (latencyMs <= 0) return Promise.resolve(true);
+  diagnosticsInFlight++;
+  if (diagnosticsInFlight > state.peakDiagnosticsInFlight) {
+    state.peakDiagnosticsInFlight = diagnosticsInFlight;
+    if (process.env.FAKE_PEAK_LOG) {
+      writeFileSync(process.env.FAKE_PEAK_LOG, String(state.peakDiagnosticsInFlight));
+    }
+  }
+  return new Promise((resolve) => {
+    const finish = (answered) => {
+      heldDiagnosticRequests.delete(id);
+      diagnosticsInFlight--;
+      resolve(answered);
+    };
+    const timer = setTimeout(() => finish(true), latencyMs);
+    heldDiagnosticRequests.set(id, () => {
+      clearTimeout(timer);
+      finish(false);
+    });
+  });
+}
 
 function diagnostics(message = "fake diagnostic", uri) {
   if (process.env.FAKE_DIAGNOSTICS === "content")
@@ -187,22 +221,22 @@ async function handleRequest(message) {
       if (process.env.FAKE_REFERENCES_DELAY_MS) {
         await new Promise((done) => setTimeout(done, Number(process.env.FAKE_REFERENCES_DELAY_MS)));
       }
-      // FAKE_REFERENCE_FILE is a path relative to the workspace root that references the symbol.
+      // FAKE_REFERENCE_FILE is a comma-separated list of paths, relative to the workspace root,
+      // that reference the symbol.
       respond(
         message.id,
         process.env.FAKE_REFERENCE_FILE && state.rootUri
-          ? [
-              {
-                uri: new URL(process.env.FAKE_REFERENCE_FILE, `${state.rootUri}/`).href,
-                range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
-              },
-            ]
+          ? process.env.FAKE_REFERENCE_FILE.split(",").map((file) => ({
+              uri: new URL(file, `${state.rootUri}/`).href,
+              range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+            }))
           : [],
       );
       return;
     case "textDocument/diagnostic":
       documentDiagnosticRequests++;
       if (process.env.FAKE_DELAY_DIAGNOSTICS === "1") return;
+      if (!(await holdDiagnosticRequest(message.id))) return;
       // FAKE_DELAY_FIRST_DIAGNOSTICS never answers the first document pull, such as a pre-edit one.
       if (process.env.FAKE_DELAY_FIRST_DIAGNOSTICS === "1" && documentDiagnosticRequests === 1) {
         return;
@@ -215,6 +249,7 @@ async function handleRequest(message) {
       return;
     case "workspace/diagnostic":
       if (process.env.FAKE_DELAY_DIAGNOSTICS === "1") return;
+      if (!(await holdDiagnosticRequest(message.id))) return;
       respond(message.id, {
         items: state.opened.map((document) => ({
           uri: document.uri,
@@ -326,6 +361,7 @@ function handleNotification(message) {
     case "$/cancelRequest":
       state.cancellations++;
       cancelledRequests.add(message.params.id);
+      heldDiagnosticRequests.get(message.params.id)?.();
       respondError(message.params.id, -32800, "Request cancelled");
       return;
     case "exit":
