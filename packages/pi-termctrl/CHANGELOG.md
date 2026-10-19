@@ -1,5 +1,16 @@
 # @ian-pascoe/pi-termctrl
 
+## 0.9.0
+
+### Minor Changes
+
+- 16eaaf1: Waiting tools end early with a Steer Yield when a steer is queued, so the user's or parent agent's message reaches the agent without waiting for the tool batch to finish. Agent `bash` calls move to the background as with Ctrl+B. `terminal_wait` returns `reason: "steered"` (renamed from `"message"`, and follow-ups no longer end it). `terminal_start` and `terminal_send` settle with `settle_reason: "steered"`. `subagent_wait` returns `event: "steered"` with the timeout progress snapshot. Pi DAP execution waits report `running (wait steered)` with `execution_wait_steered`. A parent's Coordination Message to a busy Child Agent counts as a steer in that child.
+
+### Patch Changes
+
+- Updated dependencies [16eaaf1]
+  - @ian-pascoe/pi-utils@0.9.0
+
 ## 0.8.3
 
 ### Patch Changes

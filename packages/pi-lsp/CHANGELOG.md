@@ -1,5 +1,17 @@
 # @ian-pascoe/pi-lsp
 
+## 0.15.0
+
+### Minor Changes
+
+- 060d8ca: Cap how many diagnostics requests each Server Instance has in flight with the new optional per-Server-Definition `maxConcurrentDiagnostics` setting (positive integer, default 2). Document-pull and workspace-pull requests from Post-edit Diagnostics, the Pre-edit Baseline, dependent-file scans, `lsp_diagnostics`, and workspace diagnostics wait in a first-in, first-out queue per Server Instance, so a server that is costly per request (oxlint with `typeAware`) no longer saturates the machine and a slow server never delays another. The `diagnosticsMs` timeout starts when a request is sent, and aborting a call drops its queued requests unsent. An invalid value warns and falls back to the default. The diagnostics reported do not change.
+- 47b232c: Share Server Instances among the Pi sessions in one Pi process, so a main session and its in-process subagents or Advisor sessions no longer each start and load their own copy of every language server. Sessions whose Server Definition resolves to the same command, arguments, environment, `initializationOptions`, `settings`, `lsp.timeouts`, and `maxConcurrentDiagnostics` for the same workspace root lease one process; any difference, such as a project override only one session trusts, still gets its own. A session takes its lease on first use and releases it at shutdown or when it disables the Server Definition, and the process stops when the last lease is released. A crash makes the instance unavailable in every session using it, and `/lsp stop` or `lsp_restart` from any of them stops it for all, each starting it again on next use. `lsp_status` and `/lsp` add `shared with N other sessions` to a running instance other sessions also lease, with a matching `shared_with_sessions` structured field. A server-initiated edit becomes a preview only when one session uses the instance; otherwise it is declined because it cannot be attributed to a session. Server stderr files now live in a private temporary directory per Server Instance, removed when it stops, instead of in the session directory.
+
+### Patch Changes
+
+- Updated dependencies [16eaaf1]
+  - @ian-pascoe/pi-utils@0.9.0
+
 ## 0.14.3
 
 ### Patch Changes

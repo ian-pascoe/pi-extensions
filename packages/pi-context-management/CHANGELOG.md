@@ -1,5 +1,12 @@
 # @ian-pascoe/pi-context-management
 
+## 0.8.2
+
+### Patch Changes
+
+- Updated dependencies [16eaaf1]
+  - @ian-pascoe/pi-utils@0.9.0
+
 ## 0.8.1
 
 ### Patch Changes
