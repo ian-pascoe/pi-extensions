@@ -133,8 +133,48 @@ describe("Secret Request and Secret References", () => {
 
     expect(harness.received).toEqual([]);
     expect(harness.resultText("call-echo")).toBe(
-      'The call did not run. "bad name" is not a valid Secret Name: a Secret Name uses uppercase letters, digits, and underscores, and does not start with a digit. It references {{secret:NEVER_PROVIDED}}, which this session does not hold. The Secret expired, was forgotten, or was never provided. Call secret_ask to request it again.',
+      'The call did not run. "bad name" is not a valid Secret Name: a Secret Name uses uppercase letters, digits, and underscores, and does not start with a digit. It references {{secret:NEVER_PROVIDED}}, which this session does not hold. The Secret expired, was forgotten, or was never provided. Call secret_ask to request it again. To write a reference as literal text instead, put a backslash right before it; Pi Secret removes the backslash.',
     );
+  });
+
+  it("runs a call whose references are escaped with a backslash, passing them on as literal text", async () => {
+    const harness = await createSecretHarness();
+    const text = "Use \\{{secret:NAME}} in arguments and $\\PI_SECRET_NAME in shell commands.";
+    harness.responses.push(toolCalls(["echo", { text }, "call-echo"]), reply("Done."));
+    await harness.session.prompt("Document the syntax.");
+
+    expect(harness.received).toEqual([
+      {
+        tool: "echo",
+        args: { text: "Use {{secret:NAME}} in arguments and $PI_SECRET_NAME in shell commands." },
+      },
+    ]);
+    // The transcript keeps the call as the model wrote it.
+    expect(JSON.stringify(harness.session.messages)).toContain("Use \\\\{{secret:NAME}}");
+  });
+
+  it("leaves a shell-escaped expansion exactly as written, since the shell prints it literally", async () => {
+    const harness = await createSecretHarness();
+    const text = 'echo "\\$PI_SECRET_NEVER_PROVIDED and \\${PI_SECRET_NEVER_PROVIDED}"';
+    harness.responses.push(toolCalls(["echo", { text }, "call-echo"]), reply("Done."));
+    await harness.session.prompt("Explain the variable.");
+
+    expect(harness.received).toEqual([{ tool: "echo", args: { text } }]);
+  });
+
+  it("resolves a held Secret next to an escaped reference in the same argument", async () => {
+    const value = "mixed-value-3e4f5a6b";
+    const harness = await createSecretHarness({ dialogs: [[keys.paste(value), keys.enter]] });
+    harness.responses.push(
+      toolCalls(["secret_ask", { names: ["MIXED"] }, "call-ask"]),
+      toolCalls(["echo", { text: "\\{{secret:MIXED}}={{secret:MIXED}}" }, "call-echo"]),
+      reply("Done."),
+    );
+    await harness.session.prompt("Go.");
+
+    expect(harness.received).toEqual([
+      { tool: "echo", args: { text: `{{secret:MIXED}}=${value}` } },
+    ]);
   });
 
   it("runs a call that only mentions the environment prefix, such as listing held Secrets' variables", async () => {

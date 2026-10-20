@@ -14,10 +14,13 @@ export interface SecretOwner {
 }
 
 interface HeldSecret {
-  readonly value: string;
+  /** The value last held or read; undefined until a refreshable Secret is first read. */
+  value: string | undefined;
   readonly owner: SecretOwner;
   /** Milliseconds since the epoch after which the Secret no longer resolves, if it expires. */
   readonly expiresAt: number | undefined;
+  /** Reads the current value from where it lives, such as a Secret Provider (ADR-0010). */
+  readonly refresh: (() => Promise<string>) | undefined;
 }
 
 /** Secrets that resolve, by Secret Name. */
@@ -67,8 +70,51 @@ export function holdSecret(
 ): void {
   assertSecretName(name);
   if (value === "") throw new Error(`Secret ${name} cannot be empty`);
-  held().set(name, { value, owner, expiresAt });
+  held().set(name, { value, owner, expiresAt, refresh: undefined });
   redacted().set(value, name);
+}
+
+export interface RefreshableSecretOptions {
+  /** Reads the current value; every value it returns is redacted for the rest of the process. */
+  refresh: () => Promise<string>;
+  /** A value already read, if any; otherwise nothing resolves until the first refresh. */
+  value?: string;
+  /** Milliseconds since the epoch after which the Secret no longer resolves. */
+  expiresAt?: number;
+}
+
+/**
+ * Hold a Secret whose value lives elsewhere, such as in a Secret Provider, for `owner`, replacing
+ * any value already held under `name`. {@link refreshSecret} reads it again through `refresh`, so
+ * every session in the process, including Child Agents, uses the current value (ADR-0010).
+ */
+export function holdRefreshableSecret(
+  name: string,
+  owner: SecretOwner,
+  options: RefreshableSecretOptions,
+): void {
+  assertSecretName(name);
+  const value = options.value === "" ? undefined : options.value;
+  held().set(name, { value, owner, expiresAt: options.expiresAt, refresh: options.refresh });
+  if (value !== undefined) redacted().set(value, name);
+}
+
+/**
+ * Read the current value of the Secret held under `name` through its refresh callback, keep it,
+ * and return it; a Secret without one returns its held value. Undefined when no Secret by that
+ * name is held. Rejects, keeping the last value read, when the refresh fails or reads nothing.
+ */
+export async function refreshSecret(name: string): Promise<string | undefined> {
+  const secret = held().get(name);
+  if (secret === undefined || !current(secret)) return undefined;
+  if (secret.refresh === undefined) return secret.value;
+  const value = await secret.refresh();
+  if (value === "") throw new Error(`Secret ${name} read as empty`);
+  redacted().set(value, name);
+  // The Secret may have been revoked or replaced while it was read.
+  if (held().get(name) !== secret) return undefined;
+  secret.value = value;
+  return value;
 }
 
 /** Stop resolving `name` if `owner` holds it; its values are still redacted. */
@@ -86,6 +132,12 @@ function current(secret: HeldSecret): boolean {
 export function resolveSecret(name: string): string | undefined {
   const secret = held().get(name);
   return secret !== undefined && current(secret) ? secret.value : undefined;
+}
+
+/** Whether a Secret by that name is held, even one not read yet. */
+export function isSecretHeld(name: string): boolean {
+  const secret = held().get(name);
+  return secret !== undefined && current(secret);
 }
 
 /** Secret Names that currently resolve. */

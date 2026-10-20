@@ -29,6 +29,7 @@ import { getKeybindings, type Component } from "@earendil-works/pi-tui";
 import { taggedTheme } from "@ian-pascoe/pi-utils/ui-testing";
 import { Type } from "typebox";
 import { createPiSecretExtension } from "../../src/pi-secret-extension.js";
+import type { SecretProvider } from "../../src/secret-provider.js";
 
 /** Raw terminal input, one element per keypress or paste, typed into one Secret Request dialog. */
 export type DialogScript = readonly string[];
@@ -63,6 +64,8 @@ export interface SecretHarnessOptions {
   builtinTools?: boolean;
   /** Extensions loaded before Pi Secret. */
   before?: ExtensionFactory[];
+  /** Secret Providers; none by default, so tests never reach a real 1Password CLI. */
+  providers?: SecretProvider[];
 }
 
 /** What a test tool received, after every `tool_call` handler ran. */
@@ -158,7 +161,11 @@ export async function createSecretHarness(options: SecretHarnessOptions = {}) {
     extensionFactories: [
       ...(options.before ?? []),
       testTools(received),
-      createPiSecretExtension({ getAgentDirectory: () => dir, now: () => clock.now }),
+      createPiSecretExtension({
+        getAgentDirectory: () => dir,
+        now: () => clock.now,
+        providers: () => options.providers ?? [],
+      }),
     ],
     systemPromptOverride: () => "Standing instructions: finish the user's task.",
   });

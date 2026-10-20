@@ -17,7 +17,7 @@ export type SecretRenderTheme = Pick<UiTheme, "fg" | "bold">;
 /** What a `secret_*` call row shows: Secret Names only, since the tools never take values. */
 export interface SecretCallArguments {
   readonly names?: readonly string[];
-  readonly reason?: string | null;
+  readonly reason?: string | null | undefined;
 }
 
 /** A `secret_*` call row: the tool name, the Secret Names it targets, then the reason. */
