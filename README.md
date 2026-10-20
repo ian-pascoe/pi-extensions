@@ -149,7 +149,7 @@ pnpm install
 pnpm verify
 ```
 
-`pnpm verify` runs through Turborepo, which caches each check by its inputs. A rerun on unchanged files, including the pre-push hook after a commit, replays from `.turbo/cache`.
+`pnpm verify` runs through Turborepo, which caches each check by its inputs. A rerun on unchanged files replays from `.turbo/cache`. The pre-push hook runs `pnpm verify:push`, the same checks without the test suites; CI runs the full `pnpm verify`.
 A package task's inputs cover only its own files and its declared workspace dependencies. When a test imports another package by relative path or reads a repository file, add that path to the task's `inputs` in `turbo.json`; otherwise a change there replays a stale pass.
 
 Focused package checks:

@@ -8,7 +8,7 @@
 - **Coexistence** — When changing tool activation, context delivery, or a package's tool-result text, trace other extensions using the same Pi APIs. Test affected standalone and combined modes: combined-mode tests live in the root `test/` and run with `pnpm test:root`, which `pnpm --filter` skips.
 - **Tool registration** — Register every extension tool through `acceptNullForOptionalArguments` from `@ian-pascoe/pi-utils/null-optional-arguments` so `null` for an optional parameter behaves like omitting it, and cover new tools with `expectNullOptionalArgumentsOmitted` from `@ian-pascoe/pi-utils/tool-testing`.
 - **Cache proofs** — Prove prefix stability in offline SDK integration tests by comparing the affected ordered tool definitions, system prompt, or message history. Equal name sets or token estimates alone are insufficient.
-- **Verification** — While iterating, run focused checks such as `pnpm --filter <package> test`. `pnpm verify` and the pre-push hook share a Turborepo cache keyed on file contents, so rerunning either on unchanged files replays instantly; never bypass the hook with `--no-verify`.
+- **Verification** — While iterating, run focused checks such as `pnpm --filter <package> test`. The pre-push hook runs `pnpm verify:push` (format, lint, and typechecks); CI runs the full `pnpm verify`, including every test suite, so leave full test runs to CI. Both share a Turborepo cache keyed on file contents, so reruns on unchanged files replay instantly; never bypass the hook with `--no-verify`.
 - **PR completion** — Include a Changeset covering every package with releasable changes before opening a PR; test-only package edits need no bump. Follow [docs/releases.md](docs/releases.md) for versioning and release gates.
 
 ## Context pointers
