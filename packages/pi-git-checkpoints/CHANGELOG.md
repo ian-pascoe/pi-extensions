@@ -1,5 +1,12 @@
 # @ian-pascoe/pi-git-checkpoints
 
+## 0.3.6
+
+### Patch Changes
+
+- Updated dependencies [911033b]
+  - @ian-pascoe/pi-utils@0.10.0
+
 ## 0.3.5
 
 ### Patch Changes

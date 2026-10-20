@@ -1,5 +1,12 @@
 # @ian-pascoe/pi-todo
 
+## 0.6.8
+
+### Patch Changes
+
+- Updated dependencies [911033b]
+  - @ian-pascoe/pi-utils@0.10.0
+
 ## 0.6.7
 
 ### Patch Changes

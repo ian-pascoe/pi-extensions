@@ -1,5 +1,12 @@
 # @ian-pascoe/pi-command-deck
 
+## 0.2.7
+
+### Patch Changes
+
+- Updated dependencies [911033b]
+  - @ian-pascoe/pi-utils@0.10.0
+
 ## 0.2.6
 
 ### Patch Changes

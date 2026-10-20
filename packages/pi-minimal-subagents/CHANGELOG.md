@@ -1,5 +1,12 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.20.1
+
+### Patch Changes
+
+- Updated dependencies [911033b]
+  - @ian-pascoe/pi-utils@0.10.0
+
 ## 0.20.0
 
 ### Minor Changes
