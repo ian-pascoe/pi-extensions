@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-secret",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": false,
   "description": "Let Pi agents use Secrets the user enters without the values reaching the model, the session file, or the screen.",
   "keywords": [
