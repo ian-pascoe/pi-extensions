@@ -44,7 +44,7 @@ function graphemes(text: string): string[] {
   return Array.from(graphemeSegmenter.segment(text), (segment) => segment.segment);
 }
 
-function lifetimeText(minutes: number): string {
+export function lifetimeText(minutes: number): string {
   if (minutes % 60 === 0) {
     const hours = minutes / 60;
     return `${hours} hour${hours === 1 ? "" : "s"}`;

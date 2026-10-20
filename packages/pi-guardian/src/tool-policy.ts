@@ -30,10 +30,13 @@ export const allowedByDefault: readonly string[] = [
   "context_rollover",
   // pi-advisor: finishes an Advisor Review; no side effects outside Pi.
   "advisor_report",
-  // Pi Secret: asks the user, lists, or forgets Secrets; none reveals a value. Calls that use a
-  // Secret Reference are judged by their own tool's policy.
+  // Pi Secret: asks the user for, lists, saves, or forgets Secrets; none reveals a value, and
+  // grants and saves need the user's approval in Pi Secret's own dialog. Calls that use a Secret
+  // Reference are judged by their own tool's policy.
   "secret_ask",
+  "secret_ask_grant",
   "secret_list",
+  "secret_save",
   "secret_forget",
 ];
 /** Tools reviewed by default regardless of their annotations. */

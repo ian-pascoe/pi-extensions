@@ -1,6 +1,7 @@
 import { readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { FakeProvider } from "./fixtures/fake-provider.js";
 import { createSecretHarness, keys, reply, toolCalls } from "./fixtures/secret-harness.js";
 
 describe("Secret Request and Secret References", () => {
@@ -133,8 +134,48 @@ describe("Secret Request and Secret References", () => {
 
     expect(harness.received).toEqual([]);
     expect(harness.resultText("call-echo")).toBe(
-      'The call did not run. "bad name" is not a valid Secret Name: a Secret Name uses uppercase letters, digits, and underscores, and does not start with a digit. It references {{secret:NEVER_PROVIDED}}, which this session does not hold. The Secret expired, was forgotten, or was never provided. Call secret_ask to request it again.',
+      'The call did not run. "bad name" is not a valid Secret Name: a Secret Name uses uppercase letters, digits, and underscores, and does not start with a digit. It references {{secret:NEVER_PROVIDED}}, which this session does not hold. The Secret expired, was forgotten, or was never provided. Call secret_ask to request it again. To write a reference as literal text instead, put a backslash right before it; Pi Secret removes the backslash.',
     );
+  });
+
+  it("runs a call whose references are escaped with a backslash, passing them on as literal text", async () => {
+    const harness = await createSecretHarness();
+    const text = "Use \\{{secret:NAME}} in arguments and $\\PI_SECRET_NAME in shell commands.";
+    harness.responses.push(toolCalls(["echo", { text }, "call-echo"]), reply("Done."));
+    await harness.session.prompt("Document the syntax.");
+
+    expect(harness.received).toEqual([
+      {
+        tool: "echo",
+        args: { text: "Use {{secret:NAME}} in arguments and $PI_SECRET_NAME in shell commands." },
+      },
+    ]);
+    // The transcript keeps the call as the model wrote it.
+    expect(JSON.stringify(harness.session.messages)).toContain("Use \\\\{{secret:NAME}}");
+  });
+
+  it("leaves a shell-escaped expansion exactly as written, since the shell prints it literally", async () => {
+    const harness = await createSecretHarness();
+    const text = 'echo "\\$PI_SECRET_NEVER_PROVIDED and \\${PI_SECRET_NEVER_PROVIDED}"';
+    harness.responses.push(toolCalls(["echo", { text }, "call-echo"]), reply("Done."));
+    await harness.session.prompt("Explain the variable.");
+
+    expect(harness.received).toEqual([{ tool: "echo", args: { text } }]);
+  });
+
+  it("resolves a held Secret next to an escaped reference in the same argument", async () => {
+    const value = "mixed-value-3e4f5a6b";
+    const harness = await createSecretHarness({ dialogs: [[keys.paste(value), keys.enter]] });
+    harness.responses.push(
+      toolCalls(["secret_ask", { names: ["MIXED"] }, "call-ask"]),
+      toolCalls(["echo", { text: "\\{{secret:MIXED}}={{secret:MIXED}}" }, "call-echo"]),
+      reply("Done."),
+    );
+    await harness.session.prompt("Go.");
+
+    expect(harness.received).toEqual([
+      { tool: "echo", args: { text: `{{secret:MIXED}}=${value}` } },
+    ]);
   });
 
   it("runs a call that only mentions the environment prefix, such as listing held Secrets' variables", async () => {
@@ -348,5 +389,31 @@ describe("provider requests", () => {
     expect(second).toBeDefined();
     expect(third?.slice(0, second?.length)).toEqual(second);
     expect(JSON.stringify(second)).toContain("Oops, I pasted it here too: {{secret:CHAT_TYPED}}");
+  });
+
+  it("leaves messages already sent unchanged when a later Secret's value appears in them, so the cached prefix survives", async () => {
+    const value = "deploy-user@example.com";
+    const locator = "fake://Dev/Deploy/username";
+    const harness = await createSecretHarness({
+      providers: [new FakeProvider({ [locator]: value })],
+      dialogs: [[keys.enter]],
+    });
+    await harness.session.prompt(`The deploy account is ${value}.`);
+    harness.responses.push(
+      toolCalls(["secret_ask_grant", { grants: [{ name: "DEPLOY_USER", locator }] }, "call-grant"]),
+      toolCalls(["echo", { text: "user={{secret:DEPLOY_USER}}" }, "call-echo"]),
+      reply("Done."),
+    );
+    await harness.session.prompt("Grant it.");
+    await harness.session.prompt(`Was it ${value}?`);
+
+    // Each request's messages begin with the previous request's messages, unchanged.
+    for (const [index, earlier] of harness.requestMessages.slice(0, -1).entries())
+      expect(harness.requestMessages[index + 1]?.slice(0, earlier.length)).toEqual(earlier);
+    // The message sent before the grant keeps the value; everything after it is redacted.
+    const last = JSON.stringify(harness.requestMessages.at(-1));
+    expect(last).toContain(`The deploy account is ${value}.`);
+    expect(last).toContain("echo: user={{secret:DEPLOY_USER}}");
+    expect(last).toContain("Was it {{secret:DEPLOY_USER}}?");
   });
 });

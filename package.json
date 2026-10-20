@@ -26,6 +26,7 @@
     "typecheck": "turbo run typecheck:root typecheck",
     "typecheck:root": "tsc --noEmit",
     "verify": "turbo run format:check lint typecheck:root typecheck test test:root --output-logs=errors-only",
+    "verify:push": "turbo run format:check lint typecheck:root typecheck --output-logs=errors-only",
     "version-packages": "changeset version && pnpm install --lockfile-only"
   },
   "devDependencies": {

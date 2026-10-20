@@ -1,8 +1,11 @@
 import { expect, test } from "vitest";
 import {
   heldSecretNames,
+  holdRefreshableSecret,
   holdSecret,
+  redactionGeneration,
   redactSecrets,
+  refreshSecret,
   resolveSecret,
   revokeSecret,
   secretReference,
@@ -118,6 +121,22 @@ test("holding a Secret again replaces its value and keeps redacting the old one"
   );
 });
 
+test("redacting at an earlier Redaction Generation leaves values held since then as written", () => {
+  holdSecret("REGISTRY_EARLIER", "earlier-value-2468", owner);
+  const generation = redactionGeneration();
+  holdSecret("REGISTRY_LATER", "later-value-1357", owner);
+  // Holding a value again, even under another name, keeps the generation.
+  holdSecret("REGISTRY_EARLIER_AGAIN", "earlier-value-2468", owner);
+  expect(redactionGeneration()).toBe(generation + 1);
+
+  const text = "earlier-value-2468 later-value-1357";
+  expect(redactSecrets(text, generation)).toBe(
+    "{{secret:REGISTRY_EARLIER_AGAIN}} later-value-1357",
+  );
+  expect(redactSecrets(text, generation + 1)).toBe(redactSecrets(text));
+  expect(redactSecrets(text, 0)).toBe(text);
+});
+
 test("every copy of pi-utils in the process shares one registry", async () => {
   // A second module instance, as when two packages each install their own pi-utils.
   const copy: typeof import("../src/secret-registry.js") = await import(
@@ -135,4 +154,44 @@ test("Secret Names must be environment-variable style and values non-empty", () 
   expect(() => holdSecret("1STARTS_WITH_DIGIT", "value-1", owner)).toThrow(/Secret Name/);
   expect(() => holdSecret("EMPTY_VALUE", "", owner)).toThrow(/empty/);
   expect(secretReference("OPENCODE_API_KEY")).toBe("{{secret:OPENCODE_API_KEY}}");
+});
+
+test("a refreshable Secret reads its value on each refresh, and every value read stays redacted", async () => {
+  const codes = ["otp-code-111111", "otp-code-222222"];
+  const refresh = async () => codes.shift() ?? "exhausted";
+  holdRefreshableSecret("REGISTRY_OTP", owner, { refresh });
+  expect(heldSecretNames()).toContain("REGISTRY_OTP");
+  // Nothing has been read yet, so nothing resolves until it is refreshed.
+  expect(resolveSecret("REGISTRY_OTP")).toBeUndefined();
+
+  expect(await refreshSecret("REGISTRY_OTP")).toBe("otp-code-111111");
+  expect(resolveSecret("REGISTRY_OTP")).toBe("otp-code-111111");
+  expect(await refreshSecret("REGISTRY_OTP")).toBe("otp-code-222222");
+  expect(redactSecrets("otp-code-111111 otp-code-222222")).toBe(
+    "{{secret:REGISTRY_OTP}} {{secret:REGISTRY_OTP}}",
+  );
+  revokeSecret("REGISTRY_OTP", owner);
+  expect(await refreshSecret("REGISTRY_OTP")).toBeUndefined();
+});
+
+test("refreshing a Secret without a refresh callback returns its held value", async () => {
+  holdSecret("REGISTRY_TYPED", "typed-value-9e8d7c", owner);
+  expect(await refreshSecret("REGISTRY_TYPED")).toBe("typed-value-9e8d7c");
+  revokeSecret("REGISTRY_TYPED", owner);
+});
+
+test("a failed refresh rejects and keeps the last value read", async () => {
+  let fail = false;
+  holdRefreshableSecret("REGISTRY_FLAKY", owner, {
+    value: "flaky-value-5a5a5a",
+    refresh: async () => {
+      if (fail) throw new Error("1Password is locked");
+      return "flaky-value-6b6b6b";
+    },
+  });
+  expect(resolveSecret("REGISTRY_FLAKY")).toBe("flaky-value-5a5a5a");
+  fail = true;
+  await expect(refreshSecret("REGISTRY_FLAKY")).rejects.toThrow("1Password is locked");
+  expect(resolveSecret("REGISTRY_FLAKY")).toBe("flaky-value-5a5a5a");
+  revokeSecret("REGISTRY_FLAKY", owner);
 });
