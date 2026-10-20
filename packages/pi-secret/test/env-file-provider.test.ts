@@ -195,6 +195,9 @@ describe("EnvFileProvider path rules", () => {
     const env = provider([{ path: "~/.config/tool/.env", scope: "global" }]);
 
     expect(await env.read("dotenv://~/.config/tool/.env#TOKEN")).toBe("home-value");
+    expect(await env.describe("dotenv://~/.config/tool/.env#TOKEN")).toMatchObject({
+      locator: `dotenv://${join(outside, ".config/tool/.env")}#TOKEN`,
+    });
     expect((await env.search({ limit: 20 })).entries).toEqual([
       expect.objectContaining({ title: join(outside, ".config/tool/.env") }),
     ]);
@@ -215,6 +218,14 @@ describe("EnvFileProvider path rules", () => {
     expect(await provider().read("dotenv://.env.inner#INNER")).toBe("inner-value");
     const listed = provider([{ path: join(outside, "real.env"), scope: "global" }]);
     expect(await listed.read("dotenv://.env#LINKED")).toBe("linked-value");
+    // Shown as outside the project, where the value really is, and listed once.
+    expect(await listed.describe("dotenv://.env#LINKED")).toMatchObject({
+      vault: "outside project",
+    });
+    const titles = (await listed.search({ limit: 20 })).entries.map(
+      (entry) => entry.kind === "item" && entry.title,
+    );
+    expect(titles).toEqual([".env", ".env.inner"]);
   });
 });
 

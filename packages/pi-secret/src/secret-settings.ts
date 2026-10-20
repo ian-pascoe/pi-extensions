@@ -4,6 +4,7 @@ import {
   type LayeredSettingScope,
 } from "@ian-pascoe/pi-utils/layered-settings";
 import { Type, type Static } from "typebox";
+import { Value } from "typebox/value";
 import { isInsideProject, type EnvFileSettings, type ListedEnvFile } from "./env-file-provider.js";
 import type { OnePasswordSettings } from "./one-password-provider.js";
 
@@ -128,17 +129,25 @@ export function readSecretSettings(
   return { settings, warnings };
 }
 
+/** A raw settings document with `secret.providers.dotenv.enabled: false`, valid or not otherwise. */
+const DisabledSchema = Type.Object({
+  secret: Type.Object({
+    providers: Type.Object({ dotenv: Type.Object({ enabled: Type.Literal(false) }) }),
+  }),
+});
+
 /**
  * Whether global settings turn the Env File Secret Provider on (`true`) or off (`false`), or
  * leave it to the project directory (undefined). Read once at load, from global settings only:
  * Pi tells extensions neither the session directory nor project trust before a session starts.
  */
 export function globalEnvFileSwitch(cwd: string, agentDirectory: string): boolean | undefined {
-  const global = layered.readLayers(
-    SettingsManager.create(cwd, agentDirectory, { projectTrusted: false }),
-  ).global;
-  // Invalid settings list no files, so only a project Env File can turn the provider on.
-  if (global instanceof Error) return undefined;
+  const manager = SettingsManager.create(cwd, agentDirectory, { projectTrusted: false });
+  const global = layered.readLayers(manager).global;
+  // Invalid settings list no files, so only a project Env File can turn the provider on, and
+  // an `enabled: false` among them still turns it off: an unrelated typo must not re-enable it.
+  if (global instanceof Error)
+    return Value.Check(DisabledSchema, manager.getGlobalSettings()) ? false : undefined;
   const dotenv = global.providers?.dotenv;
   if (dotenv?.enabled !== undefined) return dotenv.enabled;
   return (dotenv?.files?.length ?? 0) > 0 ? true : undefined;

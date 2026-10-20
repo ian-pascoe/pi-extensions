@@ -972,7 +972,7 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
             "The user cancelled the Grant Request. Do not ask again unless they want to.",
           );
         }
-        for (const [row, { index, provider }] of pending.entries()) {
+        for (const [row, { index, provider, description }] of pending.entries()) {
           const outcome = outcomes[index];
           const grant = params.grants[index];
           if (outcome === undefined || grant === undefined) continue;
@@ -983,16 +983,19 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
           let value: string;
           try {
             // Read now, so a wrong locator or a locked Secret Provider shows up here.
-            value = await provider.read(grant.locator, signal);
+            value = await provider.read(description.locator, signal);
           } catch (cause) {
             outcome.error = errorMessage(cause);
             continue;
           }
+          // The provider's own form of the locator, such as a full path for `~`.
+          const { locator } = description;
           const expiresAt = now() + lifetimeMinutes * 60_000;
-          recordGrant(grant.name, grant.locator, expiresAt);
+          recordGrant(grant.name, locator, expiresAt);
           await discard(grant.name);
-          adoptGrant(grant.name, grant.locator, provider, expiresAt, value);
+          adoptGrant(grant.name, locator, provider, expiresAt, value);
           Object.assign(outcome, {
+            locator,
             status: "granted",
             reference: secretReference(grant.name),
             env: secretEnvName(grant.name),
@@ -1009,9 +1012,8 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
       name: "secret_list",
       label: "Secret List",
       description:
-        providers.length === 0
-          ? "List the Secrets this session can use and when each expires; never values."
-          : `List the Secrets this session can use and when each expires, and search Secret Providers such as ${providerNames(providers)} for items and fields to request with secret_ask_grant; never values.`,
+        // Without a provider, today's text, so that tool set stays exactly as it was.
+        `List the Secrets this session can use and when each expires, and search Secret Providers such as ${providers.length === 0 ? "1Password" : providerNames(providers)} for items and fields to request with secret_ask_grant; never values.`,
       parameters: ListParameters,
       annotations: {
         readOnlyHint: true,

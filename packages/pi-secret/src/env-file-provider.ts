@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { constants, readdirSync } from "node:fs";
 import { lstat, open, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -105,6 +105,10 @@ interface ParsedLocator {
   readonly key: string;
 }
 
+function formatLocator(path: string, key: string): string {
+  return `${SCHEME}${path}#${key}`;
+}
+
 function parseLocator(locator: string): ParsedLocator {
   if (!locator.startsWith(SCHEME))
     throw new Error(`${JSON.stringify(locator)} is not an Env File locator: ${LOCATOR_HELP}`);
@@ -131,8 +135,20 @@ interface EnvFilePath {
 interface PermittedFile extends EnvFilePath {
   /** Where the file really is, links followed: the only path read or written. */
   readonly real: string;
+  /** Whether the real path is in the project, so a link out of it counts as outside. */
+  readonly inRealProject: boolean;
   readonly exists: boolean;
 }
+
+/** A checked save: where it goes, and the file's text before it. */
+interface PlannedSave {
+  readonly file: PermittedFile;
+  readonly key: string;
+  readonly existing: string;
+}
+
+/** Append, never truncate, and never through a link swapped in after the check. */
+const APPEND = constants.O_WRONLY | constants.O_APPEND | (constants.O_NOFOLLOW ?? 0);
 
 function notFound(file: EnvFilePath, cause: unknown): Error {
   if (isMissing(cause)) return new Error(`${file.shown} does not exist`, { cause });
@@ -193,8 +209,8 @@ export class EnvFileProvider implements SecretProvider {
   }
 
   /** The vault an Env File is shown in: the project directory's name, or `outside project`. */
-  private vault(file: EnvFilePath): string {
-    return file.inProject === undefined ? "outside project" : basename(this.project());
+  private vault(file: PermittedFile): string {
+    return file.inRealProject ? basename(this.project()) : "outside project";
   }
 
   /**
@@ -229,23 +245,23 @@ export class EnvFileProvider implements SecretProvider {
         `secret_save creates only files named .env or .env.*, not ${basename(file.absolute)}`,
       );
     const realProject = await realpath(this.project()).catch(() => this.project());
-    const inRealProject = inside(realProject, real) !== undefined;
+    const inRealProject = file.inProject !== undefined && inside(realProject, real) !== undefined;
+    const permitted: PermittedFile = { ...file, real, inRealProject, exists };
     for (const listed of this.options.settings().files) {
       const path = resolve(expandHome(listed.path));
       const listedReal = await realpath(path).catch(() => path);
       if (path !== file.absolute && listedReal !== real) continue;
-      if (listed.scope === "global") return { ...file, real, exists };
-      if (inside(this.project(), path) !== undefined && inRealProject)
-        return { ...file, real, exists };
+      if (listed.scope === "global") return permitted;
+      if (inside(this.project(), path) !== undefined && inside(realProject, real) !== undefined)
+        return permitted;
     }
     const segments = file.inProject?.split(sep) ?? [];
     if (
-      file.inProject !== undefined &&
       inRealProject &&
       isEnvFileName(basename(file.absolute)) &&
       !segments.some((segment) => SKIPPED_DIRECTORIES.has(segment))
     )
-      return { ...file, real, exists };
+      return permitted;
     throw new Error(
       `${file.shown} is not an Env File Pi Secret may use: use a .env or .env.* file in the project, outside .git and node_modules, or list the file in global secret.providers.dotenv.files`,
     );
@@ -264,7 +280,7 @@ export class EnvFileProvider implements SecretProvider {
     file: PermittedFile,
     signal?: AbortSignal,
   ): Promise<{ warning?: string }> {
-    if (file.inProject === undefined) return {};
+    if (!file.inRealProject) return {};
     return (await this.checkIgnored(file.absolute, signal)) === false
       ? { warning: "not ignored by git" }
       : {};
@@ -276,7 +292,8 @@ export class EnvFileProvider implements SecretProvider {
     if (!Object.hasOwn(await this.keys(file, signal), key))
       throw new Error(`${file.shown} has no key ${JSON.stringify(key)}`);
     return {
-      locator,
+      // The full path for `~`, and relative in the project, so a grant follows the project.
+      locator: formatLocator(file.shown, key),
       vault: this.vault(file),
       item: file.shown,
       field: key,
@@ -284,10 +301,11 @@ export class EnvFileProvider implements SecretProvider {
     };
   }
 
-  async describeSave(
+  /** Check a save: a new key, in a permitted file that exists or may be created. */
+  private async planSave(
     request: Omit<SaveRequest, "value">,
     signal?: AbortSignal,
-  ): Promise<LocatorDescription> {
+  ): Promise<PlannedSave> {
     if (request.category !== undefined)
       throw new Error("Env Files have no item categories; call secret_save without category");
     const { path, key } = parseLocator(request.locator);
@@ -296,12 +314,21 @@ export class EnvFileProvider implements SecretProvider {
         `${JSON.stringify(key)} is not a key secret_save writes: use letters, digits, and underscores, not starting with a digit`,
       );
     const file = await this.permit(this.path(path), true);
-    if (Object.hasOwn(await this.keys(file, signal), key))
+    const existing = file.exists ? await readFile(file.real, { encoding: "utf8", signal }) : "";
+    if (Object.hasOwn(parseEnv(existing), key))
       throw new Error(
         `${file.shown} already defines ${key}; secret_save only adds keys, so choose another key or file`,
       );
+    return { file, key, existing };
+  }
+
+  async describeSave(
+    request: Omit<SaveRequest, "value">,
+    signal?: AbortSignal,
+  ): Promise<LocatorDescription> {
+    const { file, key } = await this.planSave(request, signal);
     return {
-      locator: request.locator,
+      locator: formatLocator(file.shown, key),
       vault: this.vault(file),
       item: file.shown,
       field: key,
@@ -322,19 +349,17 @@ export class EnvFileProvider implements SecretProvider {
   }
 
   async save(request: SaveRequest, signal?: AbortSignal): Promise<string> {
-    await this.describeSave(request, signal);
-    const { path, key } = parseLocator(request.locator);
-    const file = await this.permit(this.path(path), true);
-    const existing = file.exists ? await readFile(file.real, { encoding: "utf8", signal }) : "";
+    const { file, key, existing } = await this.planSave(request, signal);
     const line = appendedLine(existing, key, request.value);
     // Appended, never rewritten; a new file is created exclusively, readable by its owner only.
-    const handle = await open(file.real, file.exists ? "a" : "ax", 0o600);
+    const flags = file.exists ? APPEND : APPEND | constants.O_CREAT | constants.O_EXCL;
+    const handle = await open(file.real, flags, 0o600);
     try {
       await handle.appendFile(line, "utf8");
     } finally {
       await handle.close();
     }
-    return `${SCHEME}${file.shown}#${key}`;
+    return formatLocator(file.shown, key);
   }
 
   /** Every Env File in the project, outside skipped directories, without following links. */
@@ -367,15 +392,17 @@ export class EnvFileProvider implements SecretProvider {
       ...(await this.projectFiles(signal)),
       ...this.options.settings().files.map((listed) => listed.path),
     ];
+    // By real path, so a project link to a listed file is listed once, under the link.
     const files = new Map<string, PermittedFile>();
     for (const candidate of candidates) {
-      const path = this.path(candidate);
-      if (files.has(path.absolute)) continue;
+      let file: PermittedFile;
       try {
-        files.set(path.absolute, await this.permit(path));
+        file = await this.permit(this.path(candidate));
       } catch {
         // Missing, or not permitted: not listed.
+        continue;
       }
+      if (!files.has(file.real)) files.set(file.real, file);
     }
     return [...files.values()];
   }
@@ -383,7 +410,7 @@ export class EnvFileProvider implements SecretProvider {
   async search(search: ProviderSearch, signal?: AbortSignal): Promise<ProviderListing> {
     const query = search.query?.toLowerCase();
     const matches = (text: string) => query === undefined || text.toLowerCase().includes(query);
-    const inVault = (file: EnvFilePath) =>
+    const inVault = (file: PermittedFile) =>
       search.vault === undefined || this.vault(file).toLowerCase() === search.vault.toLowerCase();
     const entries: AvailableEntry[] = [];
     if (search.item !== undefined) {
@@ -399,7 +426,7 @@ export class EnvFileProvider implements SecretProvider {
               vault: this.vault(file),
               label: key,
               type: "key",
-              locator: `${SCHEME}${file.shown}#${key}`,
+              locator: formatLocator(file.shown, key),
             });
     } else {
       for (const file of await this.files(signal)) {

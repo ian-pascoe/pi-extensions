@@ -6,7 +6,7 @@
 
 /** Where a Secret Locator points, as the user sees it when approving a grant or a save. */
 export interface LocatorDescription {
-  /** The Secret Locator, as the agent wrote it. */
+  /** The Secret Locator, in the form a grant records it, such as with `~` expanded. */
   readonly locator: string;
   readonly vault: string;
   readonly item: string;

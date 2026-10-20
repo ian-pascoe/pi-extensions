@@ -98,7 +98,8 @@ describe("Env File Secret Provider activation", () => {
     const tools = await registered({ "packages/api/.env": "NESTED=1\n", ".envrc": "x" });
     expect(names(tools)).toEqual(withoutProviders);
     expect(tools.find(({ name }) => name === "secret_list")).toMatchObject({
-      description: "List the Secrets this session can use and when each expires; never values.",
+      description:
+        "List the Secrets this session can use and when each expires, and search Secret Providers such as 1Password for items and fields to request with secret_ask_grant; never values.",
     });
   });
 
@@ -112,10 +113,18 @@ describe("Env File Secret Provider activation", () => {
     ).toEqual(withoutProviders);
     expect(names(await registered({}, dotenv({ files: ["~/.env.tool"] })))).toEqual(withProviders);
     expect(names(await registered({}, dotenv({ enabled: true })))).toEqual(withProviders);
-    // Invalid settings list no files.
+    // Invalid settings list no files, and an `enabled: false` among them still turns it off.
     expect(names(await registered({}, dotenv({ files: ["relative/.env"] })))).toEqual(
       withoutProviders,
     );
+    expect(
+      names(
+        await registered(
+          { ".env": "K=v\n" },
+          { secret: { lifetimeMinutes: 0, providers: { dotenv: { enabled: false } } } },
+        ),
+      ),
+    ).toEqual(withoutProviders);
   });
 });
 
@@ -131,7 +140,7 @@ describe("Env File Secret Grants", () => {
         {
           grants: [
             { name: "API_TOKEN", locator: "dotenv://.env#API_TOKEN" },
-            { name: "LITERAL", locator: "dotenv://.env#OTHER" },
+            { name: "LITERAL", locator: `dotenv://${join(harness.dir, ".env")}#OTHER` },
           ],
         },
         "call-grant",
@@ -144,11 +153,14 @@ describe("Env File Secret Grants", () => {
       details: {
         secrets: [
           { name: "API_TOKEN", status: "granted", locator: "dotenv://.env#API_TOKEN" },
-          { name: "LITERAL", status: "granted" },
+          // Recorded relative to the project, so the grant follows it.
+          { name: "LITERAL", status: "granted", locator: "dotenv://.env#OTHER" },
         ],
       },
     });
     expect(harness.frames[0]?.join("\n")).toContain("Env files · ");
+    // Outside a git repository, no git warning.
+    expect(harness.frames[0]?.join("\n")).not.toContain("not ignored by git");
     expect(harness.frames[0]?.join("\n")).toContain(" / .env / API_TOKEN");
     expect(harness.received).toEqual([
       { tool: "echo", args: { text: "a=env-token-0a1b2c3d b=${API_TOKEN}" } },
