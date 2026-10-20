@@ -47,3 +47,7 @@ _Avoid_: TTL, session lifetime, timeout
 **Redaction**:
 Replacing every occurrence of a held Secret's value, as is or in a common encoding such as base64, with its Secret Reference in what a tool returns or the provider receives.
 _Avoid_: Masking, scrubbing
+
+**Redaction Generation**:
+How many values have been held in the process so far. A message is redacted at the generation it was first sent at, so values held later never change what the provider already cached.
+_Avoid_: Redaction version, epoch

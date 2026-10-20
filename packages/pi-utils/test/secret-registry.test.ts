@@ -3,6 +3,7 @@ import {
   heldSecretNames,
   holdRefreshableSecret,
   holdSecret,
+  redactionGeneration,
   redactSecrets,
   refreshSecret,
   resolveSecret,
@@ -118,6 +119,22 @@ test("holding a Secret again replaces its value and keeps redacting the old one"
   expect(redactSecrets("first-value-1234 second-value-5678")).toBe(
     "{{secret:REGISTRY_ROTATED}} {{secret:REGISTRY_ROTATED}}",
   );
+});
+
+test("redacting at an earlier Redaction Generation leaves values held since then as written", () => {
+  holdSecret("REGISTRY_EARLIER", "earlier-value-2468", owner);
+  const generation = redactionGeneration();
+  holdSecret("REGISTRY_LATER", "later-value-1357", owner);
+  // Holding a value again, even under another name, keeps the generation.
+  holdSecret("REGISTRY_EARLIER_AGAIN", "earlier-value-2468", owner);
+  expect(redactionGeneration()).toBe(generation + 1);
+
+  const text = "earlier-value-2468 later-value-1357";
+  expect(redactSecrets(text, generation)).toBe(
+    "{{secret:REGISTRY_EARLIER_AGAIN}} later-value-1357",
+  );
+  expect(redactSecrets(text, generation + 1)).toBe(redactSecrets(text));
+  expect(redactSecrets(text, 0)).toBe(text);
 });
 
 test("every copy of pi-utils in the process shares one registry", async () => {

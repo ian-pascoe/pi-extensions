@@ -191,33 +191,37 @@ function encodedForms(value: string): string[] {
 }
 
 interface RedactionPattern {
-  /** How many values were redacted when the pattern was built; values are only ever added. */
-  readonly size: number;
   readonly pattern: RegExp;
   /** The held value each matchable text stands for, whether written as is or encoded. */
   readonly sources: ReadonlyMap<string, string>;
 }
 
-let cachedPattern: RedactionPattern | undefined;
+/**
+ * Patterns by Redaction Generation. Values are only ever added, in order, so a generation always
+ * names the same values; few generations are ever asked for.
+ */
+const cachedPatterns = new Map<number, RedactionPattern>();
 
-function redactionPattern(values: Map<string, string>): RedactionPattern | undefined {
-  if (values.size === 0) return undefined;
-  if (cachedPattern?.size !== values.size) {
+function redactionPattern(
+  values: Map<string, string>,
+  generation: number,
+): RedactionPattern | undefined {
+  if (generation === 0) return undefined;
+  let cached = cachedPatterns.get(generation);
+  if (cached === undefined) {
+    const included = [...values.keys()].slice(0, generation);
     const sources = new Map<string, string>();
-    for (const value of values.keys())
+    for (const value of included)
       for (const form of encodedForms(value)) if (!sources.has(form)) sources.set(form, value);
     // A value as written wins over another value's encoded form that happens to equal it.
-    for (const value of values.keys()) sources.set(value, value);
+    for (const value of included) sources.set(value, value);
     const alternatives = [...sources.keys()]
       .toSorted((a, b) => b.length - a.length)
       .map(escapeRegExp);
-    cachedPattern = {
-      size: values.size,
-      pattern: new RegExp(alternatives.join("|"), "g"),
-      sources,
-    };
+    cached = { pattern: new RegExp(alternatives.join("|"), "g"), sources };
+    cachedPatterns.set(generation, cached);
   }
-  return cachedPattern;
+  return cached;
 }
 
 function redactValue<T>(value: T, values: Map<string, string>, pattern: RedactionPattern): T {
@@ -261,10 +265,20 @@ function redactValue<T>(value: T, values: Map<string, string>, pattern: Redactio
  * `value` with every occurrence of any value held in this process, written as is or in one of its
  * common encodings (JSON string escaping, percent-encoding, hex, base64, base64url), replaced by
  * its Secret Reference, in strings nested in plain objects and arrays. Returns `value` itself when nothing
- * was redacted, and never modifies it.
+ * was redacted, and never modifies it. With `generation`, only the values held by that
+ * {@link redactionGeneration} are redacted.
  */
-export function redactSecrets<T>(value: T): T {
+export function redactSecrets<T>(value: T, generation?: number): T {
   const values = redacted();
-  const pattern = redactionPattern(values);
+  const pattern = redactionPattern(values, Math.min(generation ?? values.size, values.size));
   return pattern === undefined ? value : redactValue(value, values, pattern);
+}
+
+/**
+ * The Redaction Generation: how many values have been held in this process. It only grows, so
+ * text redacted at one generation can be redacted the same way later, even after more values are
+ * held, as a message already sent to a model provider must be to keep its cached prompt prefix.
+ */
+export function redactionGeneration(): number {
+  return redacted().size;
 }

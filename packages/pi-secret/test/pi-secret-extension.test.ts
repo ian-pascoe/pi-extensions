@@ -1,6 +1,7 @@
 import { readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { FakeProvider } from "./fixtures/fake-provider.js";
 import { createSecretHarness, keys, reply, toolCalls } from "./fixtures/secret-harness.js";
 
 describe("Secret Request and Secret References", () => {
@@ -388,5 +389,31 @@ describe("provider requests", () => {
     expect(second).toBeDefined();
     expect(third?.slice(0, second?.length)).toEqual(second);
     expect(JSON.stringify(second)).toContain("Oops, I pasted it here too: {{secret:CHAT_TYPED}}");
+  });
+
+  it("leaves messages already sent unchanged when a later Secret's value appears in them, so the cached prefix survives", async () => {
+    const value = "deploy-user@example.com";
+    const locator = "fake://Dev/Deploy/username";
+    const harness = await createSecretHarness({
+      providers: [new FakeProvider({ [locator]: value })],
+      dialogs: [[keys.enter]],
+    });
+    await harness.session.prompt(`The deploy account is ${value}.`);
+    harness.responses.push(
+      toolCalls(["secret_ask_grant", { grants: [{ name: "DEPLOY_USER", locator }] }, "call-grant"]),
+      toolCalls(["echo", { text: "user={{secret:DEPLOY_USER}}" }, "call-echo"]),
+      reply("Done."),
+    );
+    await harness.session.prompt("Grant it.");
+    await harness.session.prompt(`Was it ${value}?`);
+
+    // Each request's messages begin with the previous request's messages, unchanged.
+    for (const [index, earlier] of harness.requestMessages.slice(0, -1).entries())
+      expect(harness.requestMessages[index + 1]?.slice(0, earlier.length)).toEqual(earlier);
+    // The message sent before the grant keeps the value; everything after it is redacted.
+    const last = JSON.stringify(harness.requestMessages.at(-1));
+    expect(last).toContain(`The deploy account is ${value}.`);
+    expect(last).toContain("echo: user={{secret:DEPLOY_USER}}");
+    expect(last).toContain("Was it {{secret:DEPLOY_USER}}?");
   });
 });

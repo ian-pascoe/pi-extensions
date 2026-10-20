@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { accessSync, constants } from "node:fs";
 import { lstat, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,6 +8,7 @@ import {
   defineTool,
   getAgentDir,
   SettingsManager,
+  type ContextEvent,
   type ExtensionAPI,
   type ExtensionContext,
   type ExtensionFactory,
@@ -18,6 +20,7 @@ import {
   holdRefreshableSecret,
   holdSecret,
   isSecretHeld,
+  redactionGeneration,
   redactSecrets,
   refreshSecret,
   resolveSecret,
@@ -443,6 +446,29 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
     const vault = () => new SecretVault(keyFilePath(getAgentDirectory()), now);
     // Decided once at load, so the tool set and system prompt never change within a session.
     const providers = (options.providers ?? defaultProviders)(() => providerSettings);
+    /**
+     * The Redaction Generation each message was first sent at, by a hash of its content: Pi
+     * clones the messages for every request, so they have no lasting identity.
+     */
+    const sentAt = new Map<string, number>();
+
+    /**
+     * The Redaction Generation to redact `message` at: the one it was first sent at, so a value
+     * held later never rewrites it and breaks the provider's cached prompt prefix. That value
+     * already reached the provider in this message (ADR-0002).
+     */
+    function sentGeneration(message: ContextEvent["messages"][number], current: number): number {
+      let key: string;
+      try {
+        key = createHash("sha256").update(JSON.stringify(message)).digest("base64");
+      } catch {
+        return current;
+      }
+      const sent = sentAt.get(key);
+      if (sent !== undefined) return sent;
+      sentAt.set(key, current);
+      return current;
+    }
 
     /** Stop holding one Secret here; a typed Secret's key is left for the caller to handle. */
     function release(name: string): LiveSecret | undefined {
@@ -674,8 +700,14 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
     });
 
     pi.on("context", (event) => {
-      const messages = redactSecrets(event.messages);
-      return messages === event.messages ? undefined : { messages };
+      const current = redactionGeneration();
+      let changed = false;
+      const messages = event.messages.map((message) => {
+        const next = redactSecrets(message, sentGeneration(message, current));
+        if (next !== message) changed = true;
+        return next;
+      });
+      return changed ? { messages } : undefined;
     });
 
     const needsTerminal = (tool: string, what: string) =>
