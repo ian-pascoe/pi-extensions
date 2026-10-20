@@ -32,7 +32,8 @@ import {
 import { noticeText } from "@ian-pascoe/pi-utils/ui";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
-import { ApprovalDialog, type ApprovalDialogResult } from "./approval-dialog.js";
+import { ApprovalDialog, type ApprovalDialogResult, type ApprovalRow } from "./approval-dialog.js";
+import { EnvFileProvider, hasTopLevelEnvFile } from "./env-file-provider.js";
 import { OnePasswordProvider } from "./one-password-provider.js";
 import {
   lifetimeText,
@@ -56,6 +57,7 @@ import {
 } from "./secret-references.js";
 import {
   DEFAULT_LIFETIME_MINUTES,
+  globalEnvFileSwitch,
   readSecretSettings,
   type SecretSettings,
 } from "./secret-settings.js";
@@ -76,9 +78,15 @@ export const SECRET_PROMPT_GUIDELINES = [
   "When a task needs a Secret such as an API key or password, call secret_ask instead of asking the user to paste it into the conversation.",
   "Use a held Secret as $PI_SECRET_NAME in shell commands, which keeps it off the command line, and as {{secret:NAME}} in other tool arguments. Tool output shows {{secret:NAME}} where a value was redacted.",
 ];
-/** Added, once at load, only when a Secret Provider is available. */
-export const SECRET_PROVIDER_GUIDELINE =
-  "When a Secret may already be in a Secret Provider such as 1Password, find it with secret_list and request it with secret_ask_grant instead of asking the user to type it.";
+/** Added, once at load, only when a Secret Provider is available; names the ones loaded. */
+export function secretProviderGuideline(providers: readonly SecretProvider[]): string {
+  return `When a Secret may already be in a Secret Provider such as ${providerNames(providers)}, find it with secret_list and request it with secret_ask_grant instead of asking the user to type it.`;
+}
+
+/** `1Password`, or `1Password or Env files`. */
+function providerNames(providers: readonly SecretProvider[]): string {
+  return providers.map((provider) => provider.label).join(" or ");
+}
 
 const SECRET_TOOLS: readonly string[] = [
   "secret_ask",
@@ -88,16 +96,30 @@ const SECRET_TOOLS: readonly string[] = [
   "secret_forget",
 ];
 
+/** What a Secret Provider is created with, once at load. */
+export interface ProviderContext {
+  /** Secret Provider settings, read at each session start. */
+  settings(): SecretSettings["providers"];
+  /** The session's project directory: its cwd, once a session starts. */
+  projectDirectory(): string;
+}
+
+/** Where the default Secret Providers look at load; tests isolate it. */
+export interface ProviderEnvironment {
+  /** The directory Pi was started in. */
+  cwd: string;
+  agentDirectory: string;
+  /** Whether an executable is on `PATH`. */
+  onPath(command: string): boolean;
+}
+
 export interface PiSecretOptions {
   /** Pi's agent directory, which holds the key file; tests isolate it. */
   getAgentDirectory?: () => string;
   /** Milliseconds since the epoch; tests pass the Secret Lifetime instantly. */
   now?: () => number;
-  /**
-   * The Secret Providers, given the provider settings read at session start. By default, the
-   * 1Password Secret Provider when `op` is on `PATH` at load.
-   */
-  providers?: (settings: () => SecretSettings["providers"]) => SecretProvider[];
+  /** The Secret Providers, created once at load; {@link defaultSecretProviders} by default. */
+  providers?: (context: ProviderContext) => SecretProvider[];
 }
 
 /** How a held Secret got its value: typed by the user, or granted from a Secret Provider. */
@@ -141,11 +163,6 @@ const SecretNameSchema = Type.String({
   description: "Secret Name in environment-variable style, such as OPENCODE_API_KEY",
 });
 
-const LocatorSchema = Type.String({
-  minLength: 1,
-  description: "Secret Locator, such as the 1Password Reference op://vault/item/field",
-});
-
 const AskParameters = Type.Object({
   names: Type.Array(SecretNameSchema, {
     minItems: 1,
@@ -158,17 +175,24 @@ const AskParameters = Type.Object({
   ),
 });
 
-const AskGrantParameters = Type.Object({
-  grants: Type.Array(Type.Object({ name: SecretNameSchema, locator: LocatorSchema }), {
-    minItems: 1,
-    maxItems: 20,
-    description:
-      "Secret Grants to request, each a Secret Name and the Secret Locator its value is read from; names must be unique",
-  }),
-  reason: Type.Optional(
-    Type.String({ description: "Why the Secrets are needed, shown to the user" }),
-  ),
-});
+/** Built once at load from the providers loaded, so it never changes within a session. */
+function askGrantParameters(providers: readonly SecretProvider[]) {
+  const locator = Type.String({
+    minLength: 1,
+    description: `Secret Locator, such as ${providers.map((provider) => provider.locatorExample).join(" or ")}`,
+  });
+  return Type.Object({
+    grants: Type.Array(Type.Object({ name: SecretNameSchema, locator }), {
+      minItems: 1,
+      maxItems: 20,
+      description:
+        "Secret Grants to request, each a Secret Name and the Secret Locator its value is read from; names must be unique",
+    }),
+    reason: Type.Optional(
+      Type.String({ description: "Why the Secrets are needed, shown to the user" }),
+    ),
+  });
+}
 
 const ListParameters = Type.Object({
   query: Type.Optional(
@@ -200,17 +224,19 @@ const ListParameters = Type.Object({
   ),
 });
 
-const SaveParameters = Type.Object({
-  name: SecretNameSchema,
-  locator: Type.String({
-    minLength: 1,
-    description:
-      "Secret Locator of the new item's field, such as op://vault/new item title/credential; the item must not exist yet",
-  }),
-  category: Type.Optional(
-    Type.String({ description: "Category of the new item (default API Credential)" }),
-  ),
-});
+/** Built once at load from the providers loaded, so it never changes within a session. */
+function saveParameters(providers: readonly SecretProvider[]) {
+  return Type.Object({
+    name: SecretNameSchema,
+    locator: Type.String({
+      minLength: 1,
+      description: `Secret Locator to save to, such as ${providers.map((provider) => provider.saveExample).join(", or ")}`,
+    }),
+    category: Type.Optional(
+      Type.String({ description: "Category of a new 1Password item (default API Credential)" }),
+    ),
+  });
+}
 
 const ForgetParameters = Type.Object({
   names: Type.Array(SecretNameSchema, {
@@ -299,8 +325,29 @@ function onPath(command: string): boolean {
   return false;
 }
 
-function defaultProviders(settings: () => SecretSettings["providers"]): SecretProvider[] {
-  return onPath("op") ? [new OnePasswordProvider(() => settings()["1password"] ?? {})] : [];
+/**
+ * The 1Password Secret Provider when `op` is on `PATH` at load, and the Env File Secret Provider
+ * when global settings turn it on, or, unless they turn it off, when Pi starts in a directory with
+ * an Env File at its top level.
+ */
+export function defaultSecretProviders(
+  context: ProviderContext,
+  environment: ProviderEnvironment,
+): SecretProvider[] {
+  const providers: SecretProvider[] = [];
+  if (environment.onPath("op"))
+    providers.push(new OnePasswordProvider(() => context.settings()["1password"] ?? {}));
+  const envFiles =
+    globalEnvFileSwitch(environment.cwd, environment.agentDirectory) ??
+    hasTopLevelEnvFile(environment.cwd);
+  if (envFiles)
+    providers.push(
+      new EnvFileProvider({
+        projectDirectory: () => context.projectDirectory(),
+        settings: () => context.settings().dotenv ?? { files: [] },
+      }),
+    );
+  return providers;
 }
 
 /** The fields through which Pi's tools point at a full output file. */
@@ -420,10 +467,18 @@ const outcomesResult = (outcomes: SecretOutcome[], lead?: string) =>
       : { outcomes, available: [], notes: [], lead },
   );
 
-function describeLocation(provider: SecretProvider, description: LocatorDescription): string {
+/** An approval dialog row: the Secret Name, where it points, and any warning. */
+function approvalRow(
+  name: string,
+  provider: SecretProvider,
+  description: LocatorDescription,
+): ApprovalRow {
   const account = description.account === undefined ? "" : ` (${description.account})`;
   const type = description.fieldType === undefined ? "" : ` · ${description.fieldType}`;
-  return `${provider.label}${account} · ${description.vault} / ${description.item} / ${description.field}${type}`;
+  const detail = `${provider.label}${account} · ${description.vault} / ${description.item} / ${description.field}${type}`;
+  return description.warning === undefined
+    ? { name, detail }
+    : { name, detail, warning: description.warning };
 }
 
 function shortValueWarning(value: string): string | undefined {
@@ -442,10 +497,21 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
     const live = new Map<string, LiveSecret>();
     let lifetimeMinutes = DEFAULT_LIFETIME_MINUTES;
     let providerSettings: SecretSettings["providers"] = {};
+    let projectDirectory = process.cwd();
     let generation = 0;
     const vault = () => new SecretVault(keyFilePath(getAgentDirectory()), now);
+    const providerContext: ProviderContext = {
+      settings: () => providerSettings,
+      projectDirectory: () => projectDirectory,
+    };
     // Decided once at load, so the tool set and system prompt never change within a session.
-    const providers = (options.providers ?? defaultProviders)(() => providerSettings);
+    const providers =
+      options.providers?.(providerContext) ??
+      defaultSecretProviders(providerContext, {
+        cwd: process.cwd(),
+        agentDirectory: getAgentDirectory(),
+        onPath,
+      });
     /**
      * The Redaction Generation each message was first sent at, by a hash of its content: Pi
      * clones the messages for every request, so they have no lasting identity.
@@ -581,15 +647,19 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
           noticeText("Pi Secret", `${message}. Run /skill:pi-secret to diagnose.`),
           "warning",
         );
-      const { settings, warning } = readSecretSettings({
-        settingsManager: SettingsManager.create(context.cwd, getAgentDirectory(), {
-          projectTrusted: context.isProjectTrusted(),
-        }),
-        sessionManager: context.sessionManager,
-      });
+      const { settings, warnings } = readSecretSettings(
+        {
+          settingsManager: SettingsManager.create(context.cwd, getAgentDirectory(), {
+            projectTrusted: context.isProjectTrusted(),
+          }),
+          sessionManager: context.sessionManager,
+        },
+        context.cwd,
+      );
       lifetimeMinutes = settings.lifetimeMinutes;
       providerSettings = settings.providers;
-      if (warning !== undefined) warn(warning);
+      projectDirectory = context.cwd;
+      for (const warning of warnings) warn(warning);
       // The newest entry for each name wins, whether it entered, granted, or forgot a Secret.
       const latest = new Map<string, Recorded>();
       for (const entry of context.sessionManager.getBranch()) {
@@ -801,7 +871,7 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
       context: Parameters<typeof ask.execute>[4],
       signal: AbortSignal | undefined,
       dialog: { title: string; reason: string | undefined; explanation: string },
-      rows: { name: string; detail: string }[],
+      rows: ApprovalRow[],
     ): Promise<ReadonlySet<number> | undefined> {
       const answer = await context.ui.custom<ApprovalDialogResult>(
         (tui, theme, keybindings, done) => {
@@ -825,10 +895,9 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
     const askGrant = defineTool({
       name: "secret_ask_grant",
       label: "Secret Ask Grant",
-      description:
-        "Ask the user to grant Secrets from a Secret Provider such as 1Password, each a Secret Name and the Secret Locator (such as op://vault/item/field) its value is read from at each use. Find locators with secret_list. Returns how to reference each one; never its value.",
-      promptGuidelines: [SECRET_PROVIDER_GUIDELINE],
-      parameters: AskGrantParameters,
+      description: `Ask the user to grant Secrets from a Secret Provider such as ${providerNames(providers)}, each a Secret Name and the Secret Locator its value is read from at each use. Find locators with secret_list. Returns how to reference each one; never its value.`,
+      promptGuidelines: [secretProviderGuideline(providers)],
+      parameters: askGrantParameters(providers),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -889,10 +958,9 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
             reason: shownReason(params.reason),
             explanation: `Each allowed Secret is read from its Secret Provider at each use for ${lifetimeText(lifetimeMinutes)}, and never shown to the model.`,
           },
-          pending.map(({ index, provider, description }) => ({
-            name: params.grants[index]?.name ?? "",
-            detail: describeLocation(provider, description),
-          })),
+          pending.map(({ index, provider, description }) =>
+            approvalRow(params.grants[index]?.name ?? "", provider, description),
+          ),
         );
         if (approved === undefined) {
           for (const { index } of pending) {
@@ -941,7 +1009,9 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
       name: "secret_list",
       label: "Secret List",
       description:
-        "List the Secrets this session can use and when each expires, and search Secret Providers such as 1Password for items and fields to request with secret_ask_grant; never values.",
+        providers.length === 0
+          ? "List the Secrets this session can use and when each expires; never values."
+          : `List the Secrets this session can use and when each expires, and search Secret Providers such as ${providerNames(providers)} for items and fields to request with secret_ask_grant; never values.`,
       parameters: ListParameters,
       annotations: {
         readOnlyHint: true,
@@ -1016,9 +1086,8 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
     const save = defineTool({
       name: "secret_save",
       label: "Secret Save",
-      description:
-        "Save a Secret the user typed into this session into a new item in a Secret Provider such as 1Password, after the user approves. The Secret is then read from there at each use, with its original expiry.",
-      parameters: SaveParameters,
+      description: `Save a Secret the user typed into this session into a Secret Provider such as ${providerNames(providers)}, after the user approves, as a new item or key; nothing existing is changed. The Secret is then read from there at each use, with its original expiry.`,
+      parameters: saveParameters(providers),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -1055,9 +1124,9 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
           {
             title: "Save Secret",
             reason: undefined,
-            explanation: `Pi Secret will create a new ${provider.label} item holding this value. The Secret is then read from there at each use, and still expires at ${iso(expiresAt)}.`,
+            explanation: `Pi Secret will save this value to ${provider.label}, at the new location below. The Secret is then read from there at each use, and still expires at ${iso(expiresAt)}.`,
           },
-          [{ name: params.name, detail: describeLocation(provider, description) }],
+          [approvalRow(params.name, provider, description)],
         );
         if (approved === undefined || !approved.has(0))
           return outcomesResult([

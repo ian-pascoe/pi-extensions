@@ -19,6 +19,8 @@ export type ApprovalDialogResult =
 export interface ApprovalRow {
   readonly name: string;
   readonly detail: string;
+  /** A risk to see before approving, such as an Env File git does not ignore. */
+  readonly warning?: string;
 }
 
 export interface ApprovalDialogOptions {
@@ -110,6 +112,12 @@ export class ApprovalDialog implements Focusable {
       // The location gets its own lines, so a long one is wrapped rather than cut off.
       for (const line of wrapTextWithAnsi(theme.fg("muted", row.detail), Math.max(1, inner - 4)))
         lines.push(pad(`    ${line}`));
+      if (row.warning !== undefined)
+        for (const line of wrapTextWithAnsi(
+          theme.fg("warning", row.warning),
+          Math.max(1, inner - 4),
+        ))
+          lines.push(pad(`    ${line}`));
     });
     lines.push("");
     lines.push(

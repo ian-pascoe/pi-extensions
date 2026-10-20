@@ -167,6 +167,9 @@ export class OnePasswordProvider implements SecretProvider {
   readonly id = "1password";
   readonly label = "1Password";
   readonly scheme = "op";
+  readonly locatorExample = "the 1Password Reference op://vault/item/field";
+  readonly saveExample =
+    "op://vault/new item title/credential, for an item that does not exist yet";
 
   constructor(
     private readonly settings: () => OnePasswordSettings,

@@ -12,6 +12,8 @@ export class FakeProvider implements SecretProvider {
   readonly id = "fake";
   readonly label = "Fake Vault";
   readonly scheme = "fake";
+  readonly locatorExample = "fake://vault/item/field";
+  readonly saveExample = "fake://vault/new item/field";
   /** Values by locator; a function is called at each read, like a one-time password. */
   readonly values = new Map<string, string | (() => string)>();
   /** Every locator read, in order. */
