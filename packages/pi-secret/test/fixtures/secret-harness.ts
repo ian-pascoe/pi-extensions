@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { onTestFinished } from "vitest";
@@ -28,7 +28,7 @@ import {
 import { getKeybindings, type Component } from "@earendil-works/pi-tui";
 import { taggedTheme } from "@ian-pascoe/pi-utils/ui-testing";
 import { Type } from "typebox";
-import { createPiSecretExtension } from "../../src/pi-secret-extension.js";
+import { createPiSecretExtension, type ProviderContext } from "../../src/pi-secret-extension.js";
 import type { SecretProvider } from "../../src/secret-provider.js";
 
 /** Raw terminal input, one element per keypress or paste, typed into one Secret Request dialog. */
@@ -55,6 +55,8 @@ export interface SecretHarnessOptions {
   headless?: boolean;
   /** Global Pi settings written to the agent directory. */
   settings?: Record<string, JsonValue>;
+  /** Project Pi settings written to the workspace's `.pi/settings.json`. */
+  projectSettings?: Record<string, JsonValue>;
   /** Reuse a workspace (cwd and agent directory) from an earlier harness. */
   dir?: string;
   /** Open an existing session file instead of creating one. */
@@ -64,8 +66,11 @@ export interface SecretHarnessOptions {
   builtinTools?: boolean;
   /** Extensions loaded before Pi Secret. */
   before?: ExtensionFactory[];
-  /** Secret Providers; none by default, so tests never reach a real 1Password CLI. */
-  providers?: SecretProvider[];
+  /**
+   * Secret Providers, or a factory given the extension's provider context; none by default, so
+   * tests never reach a real 1Password CLI.
+   */
+  providers?: SecretProvider[] | ((context: ProviderContext) => SecretProvider[]);
 }
 
 /** What a test tool received, after every `tool_call` handler ran. */
@@ -143,6 +148,10 @@ export async function createSecretHarness(options: SecretHarnessOptions = {}) {
       ...options.settings,
     }),
   );
+  if (options.projectSettings !== undefined) {
+    await mkdir(join(dir, ".pi"), { recursive: true });
+    await writeFile(join(dir, ".pi", "settings.json"), JSON.stringify(options.projectSettings));
+  }
   // Starts at the real time: other sessions in the process judge expiry by the wall clock.
   const clock = options.clock ?? { now: Date.now() };
   const received: ReceivedCall[] = [];
@@ -164,7 +173,10 @@ export async function createSecretHarness(options: SecretHarnessOptions = {}) {
       createPiSecretExtension({
         getAgentDirectory: () => dir,
         now: () => clock.now,
-        providers: () => options.providers ?? [],
+        providers: (context) => {
+          const providers = options.providers ?? [];
+          return Array.isArray(providers) ? providers : providers(context);
+        },
       }),
     ],
     systemPromptOverride: () => "Standing instructions: finish the user's task.",

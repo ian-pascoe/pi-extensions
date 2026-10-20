@@ -32,6 +32,10 @@ _Avoid_: Path, address, provider reference
 The Secret Locator form for 1Password: `op://vault/item/field`.
 _Avoid_: Secret Reference (that term means the agent's stand-in for a Secret), op URI
 
+**Env File**:
+A file of `NAME=value` lines, named `.env` or `.env.*` in the project or listed in the user's settings, that Secret Grants can be read from and typed Secrets saved into.
+_Avoid_: Dotenv, environment file, secrets file
+
 **Secret Request**:
 An agent's request for one or more Secret Names, optionally with a reason shown to the user, which the user answers by entering, skipping, or cancelling each value. Every request prompts again and replaces any Secret already held under the same name.
 _Avoid_: Prompt, secret ask

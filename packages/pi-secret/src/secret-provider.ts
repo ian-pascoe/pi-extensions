@@ -6,7 +6,7 @@
 
 /** Where a Secret Locator points, as the user sees it when approving a grant or a save. */
 export interface LocatorDescription {
-  /** The Secret Locator, as the agent wrote it. */
+  /** The Secret Locator, in the form a grant records it, such as with `~` expanded. */
   readonly locator: string;
   readonly vault: string;
   readonly item: string;
@@ -15,6 +15,8 @@ export interface LocatorDescription {
   readonly fieldType?: string;
   /** The account the provider reads from, when it names one. */
   readonly account?: string;
+  /** A risk the user should see before approving, such as an Env File git does not ignore. */
+  readonly warning?: string;
 }
 
 /** A Secret Provider search; every filter is optional and case-insensitive. */
@@ -53,7 +55,7 @@ export interface ProviderListing {
   readonly truncated: boolean;
 }
 
-/** A typed Secret to save into a new item. */
+/** A typed Secret to save into a new item or key. */
 export interface SaveRequest {
   readonly locator: string;
   readonly value: string;
@@ -67,9 +69,13 @@ export interface SecretProvider {
   readonly label: string;
   /** The Secret Locator scheme this provider owns, without `://`, such as `op`. */
   readonly scheme: string;
+  /** A locator to read from, for tool descriptions, such as `the 1Password Reference op://…`. */
+  readonly locatorExample: string;
+  /** A locator to save to, for tool descriptions, with what it must not exist as yet. */
+  readonly saveExample: string;
   /** Check that a locator points at an existing, permitted field, and say where it points. */
   describe(locator: string, signal?: AbortSignal): Promise<LocatorDescription>;
-  /** Check that a save can create the item the locator names, and say where it would go. */
+  /** Check that a save can create what the locator names, and say where it would go. */
   describeSave(
     request: Omit<SaveRequest, "value">,
     signal?: AbortSignal,
@@ -77,7 +83,7 @@ export interface SecretProvider {
   /** The current value at a locator. */
   read(locator: string, signal?: AbortSignal): Promise<string>;
   search(search: ProviderSearch, signal?: AbortSignal): Promise<ProviderListing>;
-  /** Create a new item holding the value, and return a locator for it that survives renames. */
+  /** Save the value somewhere new, and return the locator to read it from. */
   save(request: SaveRequest, signal?: AbortSignal): Promise<string>;
 }
 
