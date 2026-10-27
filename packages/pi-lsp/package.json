@@ -38,7 +38,7 @@
   "dependencies": {
     "@ian-pascoe/pi-utils": "^0.10.0",
     "cross-spawn": "^7.0.6",
-    "vscode-languageserver-protocol": "^3.18.4"
+    "vscode-languageserver-protocol": "^3.18.5"
   },
   "devDependencies": {
     "@types/cross-spawn": "^6.0.6"
