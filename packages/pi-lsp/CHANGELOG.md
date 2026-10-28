@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-lsp
 
+## 0.15.2
+
+### Patch Changes
+
+- a68196d: Update dependencies
+
 ## 0.15.1
 
 ### Patch Changes
