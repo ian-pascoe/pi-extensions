@@ -1247,12 +1247,12 @@ export function replayRegistryEntries(
             "invalid-event-fields",
             `agent-created contains post-creation state for ${event.agent.agent_id}`,
           );
-        } else if (tombstones.has(event.agent.agent_id) || agents.has(event.agent.agent_id)) {
+        } else if (agents.has(event.agent.agent_id)) {
           reportDiagnostic(
             diagnostics,
             entryIndex,
             "invalid-event-reference",
-            `agent-created duplicates or resurrects ${event.agent.agent_id}`,
+            `agent-created duplicates live agent ${event.agent.agent_id}`,
           );
         } else if (event.agent.parent_id !== "root" && !agents.has(event.agent.parent_id)) {
           reportDiagnostic(
@@ -1262,6 +1262,8 @@ export function replayRegistryEntries(
             `agent-created parent is missing for ${event.agent.agent_id}`,
           );
         } else {
+          // Re-creating a deleted Agent ID starts an unrelated Child Agent (ADR 0007).
+          tombstones.delete(event.agent.agent_id);
           agents.set(event.agent.agent_id, structuredClone(event.agent));
         }
         break;

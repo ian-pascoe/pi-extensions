@@ -20,6 +20,7 @@ const coordinator = {
   status: vi.fn<CoordinatorToolOperations["status"]>(),
   cancel: vi.fn<CoordinatorToolOperations["cancel"]>(),
   delete: vi.fn<CoordinatorToolOperations["delete"]>(),
+  assertCurrentCaller: vi.fn<CoordinatorToolOperations["assertCurrentCaller"]>(),
 } satisfies CoordinatorToolOperations;
 
 const COORDINATOR_TOOLS = [

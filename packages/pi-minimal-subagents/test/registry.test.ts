@@ -943,6 +943,66 @@ describe("minimal subagents registry", () => {
     expect(replayed.tombstones).toEqual(["team.child", "team"]);
   });
 
+  it("replays re-creation of a deleted Agent ID as a new live Child Agent", () => {
+    const original = persistedAgent("team");
+    const originalChild = { ...persistedAgent("team.child"), parent_id: "team" };
+    const recreated = { ...persistedAgent("team"), session_id: "session-team-2", task: "Again" };
+    const diagnostics: RegistryReplayDiagnostic[] = [];
+    const replayed = replayRegistryEntries(
+      [
+        createRegistryEvent("root", "agent-created", { agent: original }),
+        createRegistryEvent("root", "agent-created", { agent: originalChild }),
+        createRegistryEvent("root", "turn-started", {
+          agent_id: "team",
+          turn_id: "team:turn-old",
+          started_at: "2026-01-01T00:00:01.000Z",
+        }),
+        createRegistryEvent("root", "agent-deleted", { agent_ids: ["team.child", "team"] }),
+        createRegistryEvent("root", "agent-created", { agent: recreated }),
+        createRegistryEvent("root", "turn-started", {
+          agent_id: "team",
+          turn_id: "team:turn-new",
+          started_at: "2026-01-01T00:00:02.000Z",
+        }),
+        createRegistryEvent("root", "turn-settled", {
+          result: completedResult("team", "team:turn-old"),
+        }),
+      ].map(customEntry),
+      "root",
+      (items) => diagnostics.push(...items),
+    );
+
+    expect(diagnostics.map(({ code }) => code)).toEqual(["invalid-event-reference"]);
+    expect(replayed.agents).toMatchObject([
+      { agent_id: "team", session_id: "session-team-2", active_turn_id: "team:turn-new" },
+    ]);
+    expect(replayed.tombstones).toEqual(["team.child"]);
+    expect(
+      parseRegistryEvent(createRegistryEvent("root", "checkpoint", { snapshot: replayed }), "root"),
+    ).toBeDefined();
+  });
+
+  it("rejects agent-created for a live Agent ID or a missing parent", () => {
+    const diagnostics: RegistryReplayDiagnostic[] = [];
+    const replayed = replayRegistryEntries(
+      [
+        createRegistryEvent("root", "agent-created", { agent: persistedAgent("team") }),
+        createRegistryEvent("root", "agent-created", { agent: persistedAgent("team") }),
+        createRegistryEvent("root", "agent-created", {
+          agent: { ...persistedAgent("lost.child"), parent_id: "lost" },
+        }),
+      ].map(customEntry),
+      "root",
+      (items) => diagnostics.push(...items),
+    );
+
+    expect(diagnostics.map(({ code, message }) => [code, message])).toEqual([
+      ["invalid-event-reference", "agent-created duplicates live agent team"],
+      ["invalid-agent-hierarchy", "agent-created parent is missing for lost.child"],
+    ]);
+    expect(replayed.agents.map(({ agent_id }) => agent_id)).toEqual(["team"]);
+  });
+
   it("claims only observable live turns and releases only existing claims", () => {
     const agent = persistedAgent();
     const entries = [
