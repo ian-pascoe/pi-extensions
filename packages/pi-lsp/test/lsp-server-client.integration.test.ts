@@ -21,6 +21,7 @@ import { LspWorkspaceEditStore } from "../src/lsp-workspace-edit.js";
 import { LSP_WARM_UP_LIMITS, type LspWarmUpLimits } from "../src/lsp-workspace-warm-up.js";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
+const tsrsBinary = resolve(repositoryRoot, "node_modules/.bin/tsrs");
 const temporaryDirectories: string[] = [];
 const clients: LspServerClient[] = [];
 
@@ -42,7 +43,7 @@ const typescriptTimeouts = testTimeouts({ requestMs: 5_000, diagnosticsMs: 8_000
 function typescriptDefinition(rootMarkers: readonly string[]): LspServerDefinition {
   return {
     id: "typescript",
-    command: resolve(repositoryRoot, "node_modules/.bin/tsrs"),
+    command: tsrsBinary,
     args: ["--lsp", "--stdio"],
     environment: {},
     languages: [{ extensions: [".ts"], fileNames: [], languageId: "typescript" }],
@@ -148,7 +149,7 @@ describe("real tsrs language server client", () => {
     const client = await LspServerClient.start({
       serverId: "typescript",
       rootPath: projectDirectory,
-      command: resolve(repositoryRoot, "node_modules/.bin/tsrs"),
+      command: tsrsBinary,
       args: ["--lsp", "--stdio"],
       environment: { ...process.env },
       initializationOptions: {},
@@ -343,7 +344,7 @@ describe("real tsrs language server client", () => {
   // tsrs 0.20.1 returns no import bindings from `textDocument/documentSymbol`, so the omission
   // logic (the hint, `omitted_imports`, and listing them at depth "all") is covered by the
   // fake-server test in `lsp-tool.test.ts`, not here.
-  test("lists declarations in the default and depth-all outlines", async () => {
+  test("cuts nested symbols from the default outline and lists them at depth all", async () => {
     const projectDirectory = await mkdtemp(resolve(tmpdir(), "pi-lsp-typescript-"));
     temporaryDirectories.push(projectDirectory);
     await writeFile(
@@ -354,10 +355,13 @@ describe("real tsrs language server client", () => {
     await writeFile(
       filePath,
       [
+        'import { readFileSync } from "node:fs";',
+        "",
         "export const limit = 3;",
         "",
         "export function describe() {",
-        "  return limit;",
+        "  const inner = readFileSync;",
+        "  return [limit, inner];",
         "}",
         "",
       ].join("\n"),
@@ -392,10 +396,13 @@ describe("real tsrs language server client", () => {
 
       const byDefault = await outline({});
       expect(byDefault.names).toEqual(expect.arrayContaining(["limit", "describe"]));
-      expect(byDefault.lines.some((line) => line.includes("nested"))).toBe(false);
+      // The local `inner` sits inside a function body, so the default depth drops it and says so.
+      expect(byDefault.names).not.toContain("inner");
+      expect(byDefault.lines.some((line) => line.includes("nested"))).toBe(true);
 
       const full = await outline({ depth: "all" });
-      expect(full.names).toEqual(expect.arrayContaining(["limit", "describe"]));
+      expect(full.names).toEqual(expect.arrayContaining(["limit", "describe", "inner"]));
+      expect(full.lines.some((line) => line.includes("nested"))).toBe(false);
     } finally {
       await manager.shutdown();
       await sessionFiles.close();
@@ -430,7 +437,7 @@ describe("real tsrs language server client", () => {
             "typescript",
             {
               id: "typescript",
-              command: resolve(repositoryRoot, "node_modules/.bin/tsrs"),
+              command: tsrsBinary,
               args: ["--lsp", "--stdio"],
               environment: {},
               languages: [{ extensions: [".ts"], fileNames: [], languageId: "typescript" }],
