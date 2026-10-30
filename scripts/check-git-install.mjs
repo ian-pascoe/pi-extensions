@@ -1,7 +1,7 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { access, cp, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
@@ -13,6 +13,12 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { assertNodeRuntime } from "./assert-node-runtime.mjs";
+import {
+  defaultExtractDirectory,
+  defaultFixtureDirectory,
+  scratchDirectoryPrefix,
+} from "./fetch-vscode-js-debug.mjs";
 import {
   getNodeProcessErrorStderr,
   hasNodeProcessErrorCode,
@@ -24,18 +30,24 @@ import {
   rootPiManifestSchema,
 } from "./root-project-contract.mjs";
 
+assertNodeRuntime();
+
 const execFile = promisify(execFileCallback);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const excludedDirectoryNames = new Set([".git", ".repos", "coverage", "dist", "node_modules"]);
-const npmChildProcessEnvironment = { ...process.env };
-delete npmChildProcessEnvironment.npm_config_manage_package_manager_versions;
+// Fetched by scripts/fetch-vscode-js-debug.mjs for developers; a Git install must not carry the
+// extract, or the scratch directories a download in progress leaves behind.
 
 function assertGitInstallCondition(condition, message) {
   if (!condition) throw new Error(`Git install check failed: ${message}`);
 }
 
 function includeWorkingTreePath(source) {
+  if (source === defaultExtractDirectory) return false;
   const name = basename(source);
+  if (dirname(source) === defaultFixtureDirectory && name.startsWith(scratchDirectoryPrefix)) {
+    return false;
+  }
   if (excludedDirectoryNames.has(name)) return false;
   if (name.endsWith(".tgz")) return false;
   return true;
@@ -51,7 +63,7 @@ async function runNpmProductionInstall(installDirectory) {
         encoding: "utf8",
         maxBuffer: 20 * 1024 * 1024,
         env: {
-          ...npmChildProcessEnvironment,
+          ...process.env,
           NODE_ENV: "production",
           npm_config_omit: "dev",
         },
@@ -82,6 +94,19 @@ async function assertPackageExcludedFromProductionInstall(installDirectory, pack
       throw cause;
     }
   }
+}
+
+/** The vscode-js-debug fixture is a development download, so a production install has none. */
+async function assertFixtureExtractAbsent(installDirectory) {
+  try {
+    await access(resolve(installDirectory, relative(repositoryRoot, defaultExtractDirectory)));
+  } catch (cause) {
+    if (hasNodeProcessErrorCode(parseNodeProcessError(cause), "ENOENT")) return;
+    throw cause;
+  }
+  throw new Error(
+    "Git install check failed: the vscode-js-debug fixture extract is present in the production install",
+  );
 }
 
 async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory) {
@@ -248,6 +273,7 @@ try {
   });
   await runNpmProductionInstall(installDirectory);
   await assertPackageExcludedFromProductionInstall(installDirectory, "vscode-js-debug");
+  await assertFixtureExtractAbsent(installDirectory);
   await assertGitInstalledExtensionsLoad(installDirectory, agentDirectory);
   await assertFilteredProjectPackageLoadsSkills(installDirectory, agentDirectory);
 } finally {

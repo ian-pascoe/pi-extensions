@@ -20,14 +20,14 @@
     "lint:staged": "lint-staged",
     "pack:check": "node scripts/check-package-packs.mjs",
     "prepare": "node scripts/prepare.mjs",
-    "publish-packages": "changeset publish",
+    "publish-packages": "node scripts/publish-manifest.mjs apply && changeset publish",
     "test": "turbo run test test:root",
     "test:root": "vitest run",
     "typecheck": "turbo run typecheck:root typecheck",
     "typecheck:root": "tsc --noEmit",
     "verify": "turbo run format:check lint typecheck:root typecheck test test:root --output-logs=errors-only",
     "verify:push": "turbo run format:check lint typecheck:root typecheck --output-logs=errors-only",
-    "version-packages": "changeset version && pnpm install --lockfile-only"
+    "version-packages": "changeset version && bun install --lockfile-only"
   },
   "devDependencies": {
     "@changesets/cli": "^3.0.3",
@@ -57,8 +57,8 @@
   },
   "devEngines": {
     "packageManager": {
-      "name": "pnpm",
-      "version": "^12",
+      "name": "bun",
+      "version": "^1.4",
       "onFail": "ignore"
     }
   },
@@ -102,5 +102,11 @@
       "./packages/pi-secret/skills",
       "./packages/pi-guardian/skills"
     ]
-  }
+  },
+  "trustedDependencies": [
+    "@google/genai",
+    "esbuild",
+    "protobufjs",
+    "tesseract.js"
+  ]
 }

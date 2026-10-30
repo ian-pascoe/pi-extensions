@@ -114,7 +114,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "prepack": "pnpm build",
+    "prepack": "bun run build && node ../../scripts/publish-manifest.mjs check .",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },

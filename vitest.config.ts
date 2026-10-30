@@ -2,6 +2,10 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineConfig } from "vitest/config";
+import { assertNodeRuntime } from "./scripts/assert-node-runtime.mjs";
+
+// Bun installs dependencies and starts `bun run test`, but the tests run under Node.
+assertNodeRuntime();
 
 // The platform's temporary directory can sit behind a symbolic link (macOS's /var is
 // /private/var). Code under test resolves real paths, through process.cwd(), realpath, or a child
@@ -25,7 +29,7 @@ delete process.env.PI_CACHE_RETENTION;
 export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
-    // `pnpm verify` runs every package's tests alongside typecheck and lint through Turborepo, and
+    // `bun run verify` runs every package's tests alongside typecheck and lint through Turborepo, and
     // on a 4-vCPU CI runner that contention stretches SDK-driven tests that take well under a
     // second alone past Vitest's 5 s default. The timeout only guards against hangs, so give it
     // room rather than raising it test by test.

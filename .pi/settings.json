@@ -185,9 +185,9 @@
   "formatter": {
     "formatters": {
       "oxfmt": {
-        "command": "pnpm",
+        "command": "bunx",
         "args": [
-          "exec",
+          "--no-install",
           "oxfmt",
           "--no-error-on-unmatched-pattern",
           "$FILE"
@@ -222,7 +222,7 @@
       "node": {
         "command": "node",
         "args": [
-          "tools/pi-dap-vscode-js-debug/node_modules/vscode-js-debug/src/dapDebugServer.js",
+          "tools/pi-dap-vscode-js-debug/js-debug/src/dapDebugServer.js",
           "$PORT",
           "127.0.0.1"
         ],
@@ -250,10 +250,9 @@
     },
     "servers": {
       "typescript": {
-        "command": "pnpm",
+        "command": "bunx",
         "args": [
-          "--workspace-root",
-          "exec",
+          "--no-install",
           "tsc",
           "--lsp",
           "--stdio"
@@ -278,14 +277,14 @@
           "tsconfig.json"
         ],
         "workspaceRootMarkers": [
-          "pnpm-workspace.yaml"
+          "bun.lock"
         ],
         "requireRootMarker": true
       },
       "oxlint": {
-        "command": "pnpm",
+        "command": "bunx",
         "args": [
-          "exec",
+          "--no-install",
           "oxlint",
           "--lsp"
         ],

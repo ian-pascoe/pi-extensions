@@ -80,7 +80,7 @@ beforeAll(async () => {
     }),
   );
   // Load the extensions once, before any test. The first load in a process transpiles their
-  // module graphs through jiti, whose disk cache starts empty on CI, where `pnpm verify`'s
+  // module graphs through jiti, whose disk cache starts empty on CI, where `bun run verify`'s
   // contention has stretched it past 20 s; every later session reuses the loaded modules.
   const { resourceLoader } = await createServices();
   expect(resourceLoader.getExtensions().errors).toEqual([]);

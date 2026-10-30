@@ -124,7 +124,7 @@ let PiAgentSessionFactory: new (options: ChildSessionFactoryOptions) => ChildSes
 
 /**
  * Importing the sibling package's session module transforms its whole source tree: about a second
- * on an idle machine and several under a cold `pnpm verify`. Loading it once here keeps that
+ * on an idle machine and several under a cold `bun run verify`. Loading it once here keeps that
  * one-time cost out of the test's timeout. The hook timeout only guards against a hang.
  */
 beforeAll(async () => {

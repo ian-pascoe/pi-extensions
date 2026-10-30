@@ -123,8 +123,8 @@ pi install git:github.com/ian-pascoe/pi-extensions@<tag-or-commit>
 - Pi LSP requires separately installed language-server binaries. This repository
   uses the installed TypeScript 7 `tsc --lsp --stdio` server.
 - Pi DAP requires a separately managed Debug Adapter executable. The repository's
-  `vscode-js-debug` development dependency supports its local Node smoke profile; its files are
-  not packed or installed with `@ian-pascoe/pi-dap`.
+  `vscode-js-debug` fixture supports its local Node smoke profile; a script downloads
+  and hash-verifies it, and its files are not packed or installed with `@ian-pascoe/pi-dap`.
 - Pi Web Tools needs outbound network access. `EXA_API_KEY` and
   `PARALLEL_API_KEY` are optional provider credentials.
 - Pi Context Management's native-checkpoint adapter checks the private runtime members it needs and fails closed when they are missing.
@@ -140,50 +140,50 @@ provenance.
 
 ## Contributing
 
-`mise.toml` pins the required Node and pnpm versions; run `mise install` to get them.
+`mise.toml` pins the required Node and Bun versions; run `mise install` to get them. Bun installs dependencies and runs the package scripts, but Node runs the tools behind them (Vitest, the repository scripts, Changesets, and Pi), so keep Node 22.19 on `PATH`, and run scripts with `bun run <script>`, never `bun test` or `bun --bun`. Releases publish with npm, not Bun.
 
 Published packages support Node `>=22.19.0` and Pi `>=0.99.0`, the first release with the tool exposure, output schema, and built-in extension APIs they use. The repository develops and tests against Pi `1.0.0`. Pi Command Deck reaches private editor fields and falls back to Pi's plain editor where they differ.
 
 ```bash
-pnpm install
-pnpm verify
+bun install
+bun run verify
 ```
 
-`pnpm verify` runs through Turborepo, which caches each check by its inputs. A rerun on unchanged files replays from `.turbo/cache`. The pre-push hook runs `pnpm verify:push`, the same checks without the test suites; CI runs the full `pnpm verify`.
+`bun run verify` runs through Turborepo, which caches each check by its inputs. A rerun on unchanged files replays from `.turbo/cache`. The pre-push hook runs `bun run verify:push`, the same checks without the test suites; CI runs the full `bun run verify`.
 A package task's inputs cover only its own files and its declared workspace dependencies. When a test imports another package by relative path or reads a repository file, add that path to the task's `inputs` in `turbo.json`; otherwise a change there replays a stale pass.
 
-Focused package checks:
+Focused package checks (`bun run --filter` prints each package's full output when not on a terminal, exits non-zero when a task fails, and passes extra arguments, such as a test file name, through to the script):
 
 ```bash
-pnpm --filter @ian-pascoe/pi-minimal-subagents test
-pnpm --filter @ian-pascoe/pi-bible-verses test
-pnpm --filter @ian-pascoe/pi-tps-tracker test
-pnpm --filter @ian-pascoe/pi-command-deck test
-pnpm --filter @ian-pascoe/pi-git-checkpoints test
-pnpm --filter @ian-pascoe/pi-formatter test
-pnpm --filter @ian-pascoe/pi-lsp test
-pnpm --filter @ian-pascoe/pi-dap test
-pnpm --filter @ian-pascoe/pi-web-tools typecheck
-pnpm --filter @ian-pascoe/pi-web-tools test
-pnpm --filter @ian-pascoe/pi-todo typecheck
-pnpm --filter @ian-pascoe/pi-todo test
-pnpm --filter @ian-pascoe/pi-context-management typecheck
-pnpm --filter @ian-pascoe/pi-context-management test
-pnpm --filter @ian-pascoe/pi-skills-selector typecheck
-pnpm --filter @ian-pascoe/pi-skills-selector test
-pnpm --filter @ian-pascoe/pi-utils test
-pnpm --filter @ian-pascoe/pi-advisor typecheck
-pnpm --filter @ian-pascoe/pi-advisor test
-pnpm --filter @ian-pascoe/pi-termctrl typecheck
-pnpm --filter @ian-pascoe/pi-termctrl test
-pnpm --filter @ian-pascoe/pi-secret typecheck
-pnpm --filter @ian-pascoe/pi-secret test
-pnpm --filter @ian-pascoe/pi-guardian typecheck
-pnpm --filter @ian-pascoe/pi-guardian test
-pnpm test:root
+bun run --filter @ian-pascoe/pi-minimal-subagents test
+bun run --filter @ian-pascoe/pi-bible-verses test
+bun run --filter @ian-pascoe/pi-tps-tracker test
+bun run --filter @ian-pascoe/pi-command-deck test
+bun run --filter @ian-pascoe/pi-git-checkpoints test
+bun run --filter @ian-pascoe/pi-formatter test
+bun run --filter @ian-pascoe/pi-lsp test
+bun run --filter @ian-pascoe/pi-dap test
+bun run --filter @ian-pascoe/pi-web-tools typecheck
+bun run --filter @ian-pascoe/pi-web-tools test
+bun run --filter @ian-pascoe/pi-todo typecheck
+bun run --filter @ian-pascoe/pi-todo test
+bun run --filter @ian-pascoe/pi-context-management typecheck
+bun run --filter @ian-pascoe/pi-context-management test
+bun run --filter @ian-pascoe/pi-skills-selector typecheck
+bun run --filter @ian-pascoe/pi-skills-selector test
+bun run --filter @ian-pascoe/pi-utils test
+bun run --filter @ian-pascoe/pi-advisor typecheck
+bun run --filter @ian-pascoe/pi-advisor test
+bun run --filter @ian-pascoe/pi-termctrl typecheck
+bun run --filter @ian-pascoe/pi-termctrl test
+bun run --filter @ian-pascoe/pi-secret typecheck
+bun run --filter @ian-pascoe/pi-secret test
+bun run --filter @ian-pascoe/pi-guardian typecheck
+bun run --filter @ian-pascoe/pi-guardian test
+bun run test:root
 ```
 
-`pnpm test:root` runs the repository-level tests in `test/`, which exercise several packages together (for example Pi Formatter before Pi LSP, in the collection's extension order). `pnpm verify` runs it.
+`bun run test:root` runs the repository-level tests in `test/`, which exercise several packages together (for example Pi Formatter before Pi LSP, in the collection's extension order). `bun run verify` runs it.
 
 Read [`GLOSSARY-MAP.md`](GLOSSARY-MAP.md), ADRs, and
 [`docs/releases.md`](docs/releases.md) before changing behavior or releasing.
