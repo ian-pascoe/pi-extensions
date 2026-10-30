@@ -84,10 +84,11 @@ consuming its Changeset entry rather than scheduling another minor bump.
 
 1. For this explicitly approved bootstrap only, manually publish
    `@ian-pascoe/pi-utils@0.2.0` from `packages/pi-utils` after the release gates pass.
-   Run `node scripts/publish-manifest.mjs apply packages/pi-utils` first, because
-   `prepack` rejects an unapplied manifest, then `npm publish --access public
-   --provenance=false`, and finally `node scripts/publish-manifest.mjs restore
-   packages/pi-utils` to put the workspace manifest back.
+   From the repository root, run `node scripts/publish-manifest.mjs apply packages/pi-utils`
+   first, because `prepack` rejects an unapplied manifest, then `npm publish --access public
+   --provenance=false` from `packages/pi-utils`, and finally
+   `node scripts/publish-manifest.mjs restore packages/pi-utils` from the root to put the
+   workspace manifest back.
 2. Verify that registry version and its discovery export, then publish Advisor
    from `packages/pi-advisor` with the same command. These publications use an
    approved one-time provenance exception; subsequent releases use OIDC.
