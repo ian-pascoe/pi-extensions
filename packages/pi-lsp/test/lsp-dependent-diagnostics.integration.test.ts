@@ -8,7 +8,7 @@ import {
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 
-/** Start the extension against the real `tsc --lsp` server in a temporary TypeScript project. */
+/** Start the extension against the real `tsrs --lsp` server in a temporary TypeScript project. */
 function startRealTypeScriptSession(
   files: Readonly<Record<string, string>>,
 ): Promise<ExtensionSession> {
@@ -24,7 +24,7 @@ function startRealTypeScriptSession(
       timeouts: { initializeMs: 45_000, requestMs: 8_000, diagnosticsMs: 15_000 },
       servers: {
         typescript: {
-          command: resolve(repositoryRoot, "node_modules/.bin/tsc"),
+          command: resolve(repositoryRoot, "node_modules/.bin/tsrs"),
           args: ["--lsp", "--stdio"],
           rootMarkers: ["tsconfig.json"],
           languages: [{ extensions: [".ts"], languageId: "typescript" }],
@@ -57,7 +57,7 @@ const extensionSource = [
   "",
 ].join("\n");
 
-describe("dependent-file Post-edit Diagnostics with the real tsc --lsp server", () => {
+describe("dependent-file Post-edit Diagnostics with the real tsrs --lsp server", () => {
   test("reports the new errors an edit causes in a file that was never opened", async () => {
     const session = await startRealTypeScriptSession({
       "src/todo-list.ts": todoListSource,

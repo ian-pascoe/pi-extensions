@@ -42,7 +42,7 @@ const typescriptTimeouts = testTimeouts({ requestMs: 5_000, diagnosticsMs: 8_000
 function typescriptDefinition(rootMarkers: readonly string[]): LspServerDefinition {
   return {
     id: "typescript",
-    command: resolve(repositoryRoot, "node_modules/.bin/tsc"),
+    command: resolve(repositoryRoot, "node_modules/.bin/tsrs"),
     args: ["--lsp", "--stdio"],
     environment: {},
     languages: [{ extensions: [".ts"], fileNames: [], languageId: "typescript" }],
@@ -133,7 +133,7 @@ afterEach(async () => {
   );
 });
 
-describe("real TypeScript 7 language server client", () => {
+describe("real tsrs language server client", () => {
   test("initializes, synchronizes UTF-8, reports a semantic error, resolves a definition, and exits", async () => {
     const projectDirectory = await mkdtemp(resolve(tmpdir(), "pi-lsp-typescript-"));
     temporaryDirectories.push(projectDirectory);
@@ -148,7 +148,7 @@ describe("real TypeScript 7 language server client", () => {
     const client = await LspServerClient.start({
       serverId: "typescript",
       rootPath: projectDirectory,
-      command: resolve(repositoryRoot, "node_modules/.bin/tsc"),
+      command: resolve(repositoryRoot, "node_modules/.bin/tsrs"),
       args: ["--lsp", "--stdio"],
       environment: { ...process.env },
       initializationOptions: {},
@@ -159,7 +159,7 @@ describe("real TypeScript 7 language server client", () => {
     });
     clients.push(client);
 
-    expect(client.serverInfo?.name).toBe("typescript-go");
+    expect(client.serverInfo?.name).toBe("typescript");
     expect(client.isRunning).toBe(true);
 
     const diagnostics = await client.documentDiagnostics(filePath, "typescript");
@@ -340,25 +340,24 @@ describe("real TypeScript 7 language server client", () => {
     }
   }, 60_000);
 
-  test("leaves import bindings out of the default outline and lists them at depth all", async () => {
+  // tsrs 0.20.1 returns no import bindings from `textDocument/documentSymbol`, so the omission
+  // logic (the hint, `omitted_imports`, and listing them at depth "all") is covered by the
+  // fake-server test in `lsp-tool.test.ts`, not here.
+  test("lists declarations in the default and depth-all outlines", async () => {
     const projectDirectory = await mkdtemp(resolve(tmpdir(), "pi-lsp-typescript-"));
     temporaryDirectories.push(projectDirectory);
     await writeFile(
       resolve(projectDirectory, "tsconfig.json"),
       JSON.stringify({ compilerOptions: { noEmit: true, strict: true } }),
     );
-    const filePath = resolve(projectDirectory, "imports.ts");
+    const filePath = resolve(projectDirectory, "outline.ts");
     await writeFile(
       filePath,
       [
-        'import { readFileSync, writeFileSync } from "node:fs";',
-        'import * as path from "node:path";',
-        'import os from "node:os";',
-        "",
         "export const limit = 3;",
         "",
         "export function describe() {",
-        "  return [readFileSync, writeFileSync, path, os];",
+        "  return limit;",
         "}",
         "",
       ].join("\n"),
@@ -388,38 +387,15 @@ describe("real TypeScript 7 language server client", () => {
         return {
           lines: text.split("\n"),
           names: text.split("\n").map((line) => line.trim().split(" (")[0]),
-          structured: JSON.stringify(result.structuredContent),
         };
       };
 
       const byDefault = await outline({});
       expect(byDefault.names).toEqual(expect.arrayContaining(["limit", "describe"]));
-      for (const binding of ["readFileSync", "writeFileSync", "path", "os"]) {
-        expect(byDefault.names).not.toContain(binding);
-        expect(byDefault.structured).not.toContain(`"name":"${binding}"`);
-      }
-      // The hint counts the four dropped import bindings.
-      expect(byDefault.lines).toContain(
-        '4 import bindings omitted; pass depth: "all" to see them.',
-      );
       expect(byDefault.lines.some((line) => line.includes("nested"))).toBe(false);
-      expect(byDefault.structured).toContain('"omitted":4');
-      expect(byDefault.structured).toContain('"omitted_imports":4');
 
-      // A deeper count still omits imports; only "all" lists them.
-      expect((await outline({ depth: 2 })).names).not.toContain("readFileSync");
       const full = await outline({ depth: "all" });
-      expect(full.names).toEqual(
-        expect.arrayContaining([
-          "readFileSync",
-          "writeFileSync",
-          "path",
-          "os",
-          "limit",
-          "describe",
-        ]),
-      );
-      expect(full.lines.some((line) => line.includes("omitted"))).toBe(false);
+      expect(full.names).toEqual(expect.arrayContaining(["limit", "describe"]));
     } finally {
       await manager.shutdown();
       await sessionFiles.close();
@@ -454,7 +430,7 @@ describe("real TypeScript 7 language server client", () => {
             "typescript",
             {
               id: "typescript",
-              command: resolve(repositoryRoot, "node_modules/.bin/tsc"),
+              command: resolve(repositoryRoot, "node_modules/.bin/tsrs"),
               args: ["--lsp", "--stdio"],
               environment: {},
               languages: [{ extensions: [".ts"], fileNames: [], languageId: "typescript" }],
