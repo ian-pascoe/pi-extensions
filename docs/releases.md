@@ -28,21 +28,30 @@ This is the release procedure. Migration implementation publishes nothing.
   bootstrap publish needs no Changeset, but the implementation PR still adds a
   `minor` Changeset for the new package; its version PR releases `0.1.0`
   through the trusted-publishing workflow.
-- Use `pnpm changeset` for releasable changes and inspect them with
-  `pnpm changeset:status`. The workflow creates version PRs with
-  `pnpm version-packages`.
+- Use `bun run changeset` for releasable changes and inspect them with
+  `bun run changeset:status`. The workflow creates version PRs with
+  `bun run version-packages`.
+- Bun installs and runs scripts, but releases publish with npm: Changesets calls
+  `npm publish` with provenance, and `bun publish` is never used. npm and Bun ignore
+  `publishConfig` field overrides, so `@ian-pascoe/pi-utils` (whose workspace manifest
+  points `exports` at `src`) publishes only through `bun run publish-packages`, which
+  first runs `node scripts/publish-manifest.mjs apply` to lift its `dist` entrypoints to
+  the top level. Its `prepack` runs `check` and fails an unapplied manifest, so a bare
+  `npm publish` cannot ship a package whose `exports` point at `src`. After a release,
+  confirm the registry metadata with `npm view @ian-pascoe/pi-utils exports`: every
+  entry must name `dist`.
 
 ## Pre-publish checks
 
 ```bash
-pnpm install --frozen-lockfile
-pnpm verify
-pnpm pack:check
-pnpm git-install:check
-pnpm changeset:status
+bun install --frozen-lockfile
+bun run verify
+bun run pack:check
+bun run git-install:check
+bun run changeset:status
 ```
 
-The release workflow runs `pnpm verify`, the package-tarball check, and the
+The release workflow runs `bun run verify`, the package-tarball check, and the
 Git-install check in parallel. All three must pass before a version PR or
 publish.
 

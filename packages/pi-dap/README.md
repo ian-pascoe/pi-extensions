@@ -14,9 +14,9 @@ pi install git:github.com/ian-pascoe/pi-extensions
 For a local checkout, run `pi -e ./packages/pi-dap/src/index.ts`.
 
 Debug Adapter executables are user-managed. Pi DAP has no adapter discovery,
-installer, or catalog. The repository-only `vscode-js-debug` development
-dependency supports this repository's Node smoke test; its files are not packed
-or installed with the package.
+installer, or catalog. The repository-only `vscode-js-debug` repository fixture
+supports this repository's Node smoke test; a script downloads and hash-verifies
+it, and its files are not packed or installed with the package.
 
 ## Settings
 
