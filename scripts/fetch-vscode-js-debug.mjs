@@ -14,6 +14,7 @@ import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { hasNodeProcessErrorCode, parseNodeProcessError } from "./node-process-error.mjs";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 
@@ -22,6 +23,14 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** The fixture directory that holds `fixture.json` and, once fetched, the `js-debug/` extract. */
 export const defaultFixtureDirectory = resolve(repositoryRoot, "tools/pi-dap-vscode-js-debug");
+/** The directory, inside the fixture directory, that holds the extracted release. */
+export const extractDirectoryName = "js-debug";
+/** The extract at its repository location. */
+export const defaultExtractDirectory = resolve(defaultFixtureDirectory, extractDirectoryName);
+/** Scratch directories this script creates in the fixture directory while it downloads. */
+export const scratchDirectoryPrefix = ".fetch-";
+/** A stalled download must not hang an install or a test run. */
+export const defaultDownloadTimeoutMs = 120_000;
 /** Where the extract records the integrity it was verified against. */
 export const integrityMarkerName = ".fixture-integrity";
 
@@ -54,7 +63,7 @@ async function readTextIfPresent(path) {
   try {
     return await readFile(path, "utf8");
   } catch (cause) {
-    if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") return undefined;
+    if (hasNodeProcessErrorCode(parseNodeProcessError(cause), "ENOENT")) return undefined;
     throw cause;
   }
 }
@@ -63,10 +72,11 @@ async function readTextIfPresent(path) {
  * Downloads the tarball and checks it against the pinned integrity.
  *
  * @param {Fixture} fixture
+ * @param {number} timeoutMs Covers the whole download, body included.
  * @returns {Promise<Buffer>}
  */
-async function downloadVerifiedTarball(fixture) {
-  const response = await fetch(fixture.url);
+async function downloadVerifiedTarball(fixture, timeoutMs) {
+  const response = await fetch(fixture.url, { signal: AbortSignal.timeout(timeoutMs) });
   if (!response.ok) {
     throw new Error(`GET ${fixture.url} failed: ${response.status} ${response.statusText}`);
   }
@@ -96,14 +106,16 @@ function sleep(milliseconds) {
  *
  * @param {string} fixtureDirectory
  * @param {number} retryDelayMs
+ * @param {number} downloadTimeoutMs
  * @returns {Promise<{ status: "present" | "downloaded", version: string, directory: string }>}
  */
 export async function ensureVscodeJsDebug(
   fixtureDirectory = defaultFixtureDirectory,
   retryDelayMs = 1000,
+  downloadTimeoutMs = defaultDownloadTimeoutMs,
 ) {
   const fixture = await readFixture(fixtureDirectory);
-  const directory = resolve(fixtureDirectory, "js-debug");
+  const directory = resolve(fixtureDirectory, extractDirectoryName);
   const recorded = await readTextIfPresent(resolve(directory, integrityMarkerName));
   if (recorded === fixture.integrity) {
     return { status: "present", version: fixture.version, directory };
@@ -112,22 +124,22 @@ export async function ensureVscodeJsDebug(
   /** @type {Buffer} */
   let tarball;
   try {
-    tarball = await downloadVerifiedTarball(fixture);
+    tarball = await downloadVerifiedTarball(fixture, downloadTimeoutMs);
   } catch (firstFailure) {
     console.warn(
       `vscode-js-debug fetch failed, retrying in ${retryDelayMs} ms: ${firstFailure instanceof Error ? firstFailure.message : String(firstFailure)}`,
     );
     await sleep(retryDelayMs);
-    tarball = await downloadVerifiedTarball(fixture);
+    tarball = await downloadVerifiedTarball(fixture, downloadTimeoutMs);
   }
 
   // Extract beside the destination so the final rename stays on one filesystem.
-  const workDirectory = await mkdtemp(resolve(fixtureDirectory, ".fetch-"));
+  const workDirectory = await mkdtemp(resolve(fixtureDirectory, scratchDirectoryPrefix));
   try {
     const tarballPath = resolve(workDirectory, "js-debug.tar.gz");
     await writeFile(tarballPath, tarball);
     await execFile("tar", ["-xzf", tarballPath, "-C", workDirectory]);
-    const extracted = resolve(workDirectory, "js-debug");
+    const extracted = resolve(workDirectory, extractDirectoryName);
     // The release ships no manifest. Without one Node reads the repository root's `"type": "module"`
     // and loads the CommonJS adapter as ESM, which fails on its first `require`.
     await writeFile(

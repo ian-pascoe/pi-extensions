@@ -17,10 +17,11 @@
  *   `prepack` runs it, so `npm pack` and `npm publish` refuse an unapplied manifest.
  * - `restore` puts the original manifest back byte for byte. Only local checks use it.
  */
-import { copyFile, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, copyFile, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
+import { hasNodeProcessErrorCode, parseNodeProcessError } from "./node-process-error.mjs";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 
@@ -86,10 +87,10 @@ function serializeManifest(manifest, originalText) {
  */
 async function exists(path) {
   try {
-    await readFile(path);
+    await access(path);
     return true;
   } catch (cause) {
-    if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") return false;
+    if (hasNodeProcessErrorCode(parseNodeProcessError(cause), "ENOENT")) return false;
     throw cause;
   }
 }

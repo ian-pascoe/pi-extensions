@@ -32,8 +32,8 @@ describe("fetch-vscode-js-debug", () => {
   let server: Server;
   let baseUrl: string;
   let requests: number;
-  /** Status codes for the next requests, in order; an empty list serves the tarball. */
-  let failures: number[];
+  /** Status codes for the next requests, in order ("hang" never answers); empty serves the tarball. */
+  let failures: Array<number | "hang">;
   let served: Buffer;
 
   async function writeFixture(tarball: Buffer, integrity = integrityOf(tarball)): Promise<void> {
@@ -53,6 +53,7 @@ describe("fetch-vscode-js-debug", () => {
     server = createServer((_request, response) => {
       requests += 1;
       const failure = failures.shift();
+      if (failure === "hang") return;
       if (failure !== undefined) {
         response.writeHead(failure).end();
         return;
@@ -69,6 +70,7 @@ describe("fetch-vscode-js-debug", () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    server.closeAllConnections();
     await new Promise((done) => server.close(done));
     await rm(root, { recursive: true, force: true });
   });
@@ -177,6 +179,23 @@ describe("fetch-vscode-js-debug", () => {
 
     expect(requests).toBe(2);
     expect(await readdir(fixtureDirectory)).toEqual(["fixture.json"]);
+  });
+
+  it("times out a stalled download, retries once, and gives up", async () => {
+    failures = ["hang", "hang"];
+
+    await expect(ensureVscodeJsDebug(fixtureDirectory, 0, 50)).rejects.toThrow();
+
+    expect(requests).toBe(2);
+    expect(await readdir(fixtureDirectory)).toEqual(["fixture.json"]);
+  });
+
+  it("recovers when only the first download stalls", async () => {
+    failures = ["hang"];
+
+    expect((await ensureVscodeJsDebug(fixtureDirectory, 0, 500)).status).toBe("downloaded");
+
+    expect(requests).toBe(2);
   });
 
   it("rejects a fixture whose integrity is not a sha512 digest", async () => {

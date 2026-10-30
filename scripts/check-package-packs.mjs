@@ -106,14 +106,15 @@ function parsePackJson(stdout, packageName) {
 async function packWorkspace(manifest, packageDirectory, packDirectory) {
   const manifestPath = resolve(packageDirectory, "package.json");
   const manifestBefore = await readFile(manifestPath);
-  await applyPublishManifest(packageDirectory);
+  // Restore only what this run applied: a stale backup from an earlier run is not ours to restore.
+  const { handled: applied } = await applyPublishManifest(packageDirectory);
   let stdout;
   try {
     ({ stdout } = await runCommand("npm", ["pack", "--json", "--pack-destination", packDirectory], {
       cwd: packageDirectory,
     }));
   } finally {
-    await restorePublishManifest(packageDirectory);
+    if (applied) await restorePublishManifest(packageDirectory);
   }
   assertPackCondition(
     manifestBefore.equals(await readFile(manifestPath)),
