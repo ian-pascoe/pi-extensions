@@ -121,7 +121,7 @@ pi install git:github.com/ian-pascoe/pi-extensions@<tag-or-commit>
   it estimates four characters per token.
 - Pi Formatter requires separately installed formatter binaries.
 - Pi LSP requires separately installed language-server binaries. This repository
-  uses the installed TypeScript 7 `tsc --lsp --stdio` server.
+  uses the installed `tsrs --lsp --stdio` server (a Rust port of TypeScript 7).
 - Pi DAP requires a separately managed Debug Adapter executable. The repository's
   `vscode-js-debug` fixture supports its local Node smoke profile; a script downloads
   and hash-verifies it, and its files are not packed or installed with `@ian-pascoe/pi-dap`.
