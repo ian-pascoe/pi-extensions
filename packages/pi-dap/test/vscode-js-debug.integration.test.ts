@@ -102,7 +102,7 @@ async function waitForProcessesToExit(processIds: ReadonlySet<number>): Promise<
 
 const ADAPTER_PATH = resolve(
   import.meta.dirname,
-  "../../../tools/pi-dap-vscode-js-debug/node_modules/vscode-js-debug/src/dapDebugServer.js",
+  "../../../tools/pi-dap-vscode-js-debug/js-debug/src/dapDebugServer.js",
 );
 
 /** Settings for the Supported vscode-js-debug adapter with one `node` Launch Profile. */

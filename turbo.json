@@ -66,7 +66,12 @@
     },
     "@ian-pascoe/pi-dap#test": {
       "dependsOn": ["transit"],
-      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/.pi/settings.json"]
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/.pi/settings.json",
+        "$TURBO_ROOT$/tools/pi-dap-vscode-js-debug/fixture.json",
+        "$TURBO_ROOT$/scripts/fetch-vscode-js-debug.mjs"
+      ]
     },
     "@ian-pascoe/pi-lsp#test": {
       "dependsOn": ["transit"],
@@ -103,7 +108,7 @@
         "test/**",
         "vitest.config.ts",
         "package.json",
-        "pnpm-lock.yaml",
+        "bun.lock",
         "packages/pi-context-management/**",
         "packages/pi-formatter/**",
         "packages/pi-guardian/**",

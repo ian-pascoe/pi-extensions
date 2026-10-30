@@ -20,14 +20,17 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
-      - name: Install pnpm and Node.js
-        uses: pnpm/setup@v3
+      - name: Install Node.js and Bun
+        uses: jdx/mise-action@v5
+      - name: Restore Bun package cache
+        uses: actions/cache@v6
         with:
-          runtime: node@22.19.0
-          cache: true
-          install: false
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: bun install --frozen-lockfile
       - name: Restore Turbo cache
         uses: actions/cache@v6
         with:
@@ -38,7 +41,7 @@ jobs:
       - name: Run fast verification
         env:
           TURBO_CACHE_MAX_AGE: 7d
-        run: pnpm verify
+        run: bun run verify
 
   artifact-checks:
     runs-on: ubuntu-latest
@@ -46,18 +49,23 @@ jobs:
       fail-fast: false
       matrix:
         command:
-          - pnpm pack:check
-          - pnpm git-install:check
+          - bun run pack:check
+          - bun run git-install:check
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
-      - name: Install pnpm and Node.js
-        uses: pnpm/setup@v3
+      - name: Install Node.js and Bun
+        uses: jdx/mise-action@v5
+      - name: Install npm with trusted publishing support
+        run: npm install --global npm@">=11.5.1"
+      - name: Restore Bun package cache
+        uses: actions/cache@v6
         with:
-          runtime: node@22.19.0
-          cache: true
-          install: false
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: bun install --frozen-lockfile
       - name: Run artifact check
         run: ${{ matrix.command }}

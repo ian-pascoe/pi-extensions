@@ -17,3 +17,8 @@ coverage/
 .turbo/
 # Worktrees
 .worktrees/
+# Original manifest kept by scripts/publish-manifest.mjs
+packages/*/package.json.pre-publish
+# vscode-js-debug fixture fetched by scripts/fetch-vscode-js-debug.mjs
+tools/pi-dap-vscode-js-debug/js-debug/
+tools/pi-dap-vscode-js-debug/.fetch-*/

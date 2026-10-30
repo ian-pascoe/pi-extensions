@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -10,20 +10,22 @@ import {
   loadSkills,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { assertNodeRuntime } from "./assert-node-runtime.mjs";
 import {
   getNodeProcessErrorStderr,
   hasNodeProcessErrorCode,
   parseNodeProcessError,
 } from "./node-process-error.mjs";
+import { applyPublishManifest, restorePublishManifest } from "./publish-manifest.mjs";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { readJsonDocument, workspacePackageManifestSchema } from "./root-project-contract.mjs";
 
+assertNodeRuntime();
+
 const execFile = promisify(execFileCallback);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const piUtilsPackageName = "@ian-pascoe/pi-utils";
-const npmChildProcessEnvironment = { ...process.env };
-delete npmChildProcessEnvironment.npm_config_manage_package_manager_versions;
 
 /** Consumers install the packed pi-utils, so they exercise its unreleased exports. */
 function dependsOnPiUtils(manifest) {
@@ -82,13 +84,42 @@ const packResultSchema = Type.Object({
   files: Type.Array(Type.Object({ path: Type.String() })),
 });
 
+/** `npm pack --json` prints an array with one result per packed package. */
 function parsePackJson(stdout, packageName) {
-  const result = JSON.parse(stdout);
+  const results = JSON.parse(stdout);
   assertPackCondition(
-    Value.Check(packResultSchema, result) && result.name === packageName,
-    `${packageName} returned invalid pnpm pack JSON`,
+    Array.isArray(results) &&
+      results.length === 1 &&
+      Value.Check(packResultSchema, results[0]) &&
+      results[0].name === packageName,
+    `${packageName} returned invalid npm pack JSON`,
   );
-  return result;
+  return results[0];
+}
+
+/**
+ * Packs one workspace the way the release publishes it. npm ignores `publishConfig` field
+ * overrides, so the release rewrites the manifest with `publish-manifest.mjs apply` and publishes
+ * that. This applies it in place for the pack, whose real `prepack` builds and checks it, then
+ * restores it and asserts the manifest on disk is byte-identical to before.
+ */
+async function packWorkspace(manifest, packageDirectory, packDirectory) {
+  const manifestPath = resolve(packageDirectory, "package.json");
+  const manifestBefore = await readFile(manifestPath);
+  await applyPublishManifest(packageDirectory);
+  let stdout;
+  try {
+    ({ stdout } = await runCommand("npm", ["pack", "--json", "--pack-destination", packDirectory], {
+      cwd: packageDirectory,
+    }));
+  } finally {
+    await restorePublishManifest(packageDirectory);
+  }
+  assertPackCondition(
+    manifestBefore.equals(await readFile(manifestPath)),
+    `${manifest.name} manifest changed during the pack`,
+  );
+  return parsePackJson(stdout, manifest.name);
 }
 
 function validatePackedFileList(packageName, files) {
@@ -166,7 +197,7 @@ function validatePackedManifest(sourceManifest, packedManifest, piUtilsVersion) 
       `${packageName} changes manifest field ${field}`,
     );
   }
-  // pnpm applies publishConfig overrides to the top-level manifest and keeps only registry options.
+  // `publish-manifest.mjs apply` lifts publishConfig overrides to the top level and leaves only registry options.
   const publishConfig = sourceManifest.publishConfig ?? {};
   const appliedOverrides = Object.keys(publishConfig).filter(
     (key) => JSON.stringify(packedManifest[key]) === JSON.stringify(publishConfig[key]),
@@ -203,8 +234,8 @@ function validatePackedManifest(sourceManifest, packedManifest, piUtilsVersion) 
       `${packageName} has an invalid compiled library entrypoint`,
     );
     assertPackCondition(
-      // pnpm runs prepack while packing and omits that lifecycle script from the tarball.
-      packedManifest.scripts?.build && sourceManifest.scripts?.prepack,
+      // npm keeps the prepack script in the packed manifest, so only the build script is asserted.
+      packedManifest.scripts?.build,
       `${packageName} omits its compiled library scripts`,
     );
     assertPackCondition(!packedManifest.pi, `${packageName} must not register a Pi extension`);
@@ -258,7 +289,7 @@ async function assertTarballLoads(packageName, tarballPath, dependencyTarballs =
         "--no-audit",
         "--no-fund",
       ],
-      { cwd: installDirectory, env: npmChildProcessEnvironment },
+      { cwd: installDirectory },
     );
     const installedPackageDirectory = resolve(
       installDirectory,
@@ -336,16 +367,7 @@ try {
   assertPackCondition(piUtilsVersion !== undefined, `workspace omits ${piUtilsPackageName}`);
   let piUtilsTarballPath;
   for (const { manifest, packageDirectory } of workspaces) {
-    const packed = parsePackJson(
-      // pnpm applies publishConfig overrides and workspace protocols as release publishes them.
-      (
-        await runCommand("pnpm", ["pack", "--json", "--pack-destination", packDirectory], {
-          cwd: packageDirectory,
-          env: npmChildProcessEnvironment,
-        })
-      ).stdout,
-      manifest.name,
-    );
+    const packed = await packWorkspace(manifest, packageDirectory, packDirectory);
     validatePackedFileList(manifest.name, packed.files);
     const tarballPath = resolve(packDirectory, basename(packed.filename));
     if (manifest.name === piUtilsPackageName) piUtilsTarballPath = tarballPath;

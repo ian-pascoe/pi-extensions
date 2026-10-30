@@ -1,2 +1,2 @@
 unset $(git rev-parse --local-env-vars)
-pnpm verify:push
+bun run verify:push

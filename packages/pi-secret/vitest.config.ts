@@ -1,2 +1,2 @@
-// Reuse the shared config so `vitest` run directly from this package behaves like `pnpm test`.
+// Reuse the shared config so `vitest` run directly from this package behaves like `bun run test`.
 export { default } from "../../vitest.config.js";

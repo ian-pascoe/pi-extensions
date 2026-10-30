@@ -64,7 +64,7 @@ const sessions: AgentSession[] = [];
 
 /**
  * Pi compiles extension TypeScript with jiti and caches it on disk; on a fresh CI runner the first
- * load of pi-secret and pi-guardian runs past the test timeout under a cold `pnpm verify`. Loading
+ * load of pi-secret and pi-guardian runs past the test timeout under a cold `bun run verify`. Loading
  * both once here keeps that one-time cost out of the first test. The hook timeout only guards
  * against a hang.
  */
