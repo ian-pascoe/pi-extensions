@@ -57,6 +57,7 @@ function toolOptions(
     status: vi.fn<CoordinatorToolOperations["status"]>(() => ({ parent_id: callerId, agents: [] })),
     cancel: vi.fn<CoordinatorToolOperations["cancel"]>(),
     delete: vi.fn<CoordinatorToolOperations["delete"]>(),
+    assertCurrentCaller: vi.fn<CoordinatorToolOperations["assertCurrentCaller"]>(),
   } satisfies CoordinatorToolOperations;
   const options: CoordinatorToolDefinitionOptions = {
     coordinator,
@@ -111,6 +112,41 @@ async function createToolExecutionContext() {
 }
 
 describe("minimal subagents coordinator tools", () => {
+  it.each([
+    ["subagent", { task: "Go" }],
+    ["agent_message", { message: "hi" }],
+    ["subagent_wait", { agent_id: "child.grandchild" }],
+    ["subagent_status", {}],
+    ["subagent_cancel", { agent_id: "child.grandchild" }],
+    ["subagent_delete", { agent_id: "child.grandchild" }],
+  ])("checks the caller's session before %s acts", async (toolName, parameters) => {
+    const options = toolOptions("child", true);
+    const context = await createToolExecutionContext();
+    vi.mocked(options.coordinator.assertCurrentCaller).mockImplementation(() => {
+      throw new Error("Minimal subagents caller child: caller session is no longer current");
+    });
+
+    await expect(
+      requireTool(options, toolName).execute("call", parameters, undefined, undefined, context),
+    ).rejects.toThrow("caller session is no longer current");
+
+    expect(options.coordinator.assertCurrentCaller).toHaveBeenCalledWith(
+      "child",
+      context.sessionManager.getSessionId(),
+    );
+    const { coordinator } = options;
+    for (const operation of [
+      coordinator.spawn,
+      coordinator.sendAgentMessage,
+      coordinator.wait,
+      coordinator.status,
+      coordinator.cancel,
+      coordinator.delete,
+    ]) {
+      expect(operation).not.toHaveBeenCalled();
+    }
+  });
+
   it("gives children that cannot spawn only agent_message", () => {
     expect(
       createCoordinatorToolDefinitions(toolOptions("child", false)).map(({ name }) => name),

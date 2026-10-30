@@ -532,6 +532,7 @@ export class MinimalSubagentsLifecycleController {
     status: (...args) => this.requireCoordinator().status(...args),
     cancel: (...args) => this.requireCoordinator().cancel(...args),
     delete: (...args) => this.requireCoordinator().delete(...args),
+    assertCurrentCaller: (...args) => this.requireCoordinator().assertCurrentCaller(...args),
   };
   private uiController: MinimalSubagentsUiController | undefined;
   private statusPanelController: MinimalSubagentsStatusPanelController | undefined;

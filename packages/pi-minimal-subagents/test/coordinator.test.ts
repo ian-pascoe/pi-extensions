@@ -647,9 +647,22 @@ describe("minimal subagents coordinator", () => {
     await coordinator.shutdown();
   });
 
-  it("explains unknown wait turns and reused deleted agent IDs", async () => {
-    const { coordinator } = coordinatorFixture();
-    await coordinator.spawn("root", { task: "Investigate", agent_id: "worker" }, caller);
+  it("explains unknown wait turns and respawns a deleted Agent ID as a fresh Child Agent", async () => {
+    const { coordinator, sessions, registryEvents } = coordinatorFixture();
+    let identities = 0;
+    sessions.createIdentity.mockImplementation((agent) => {
+      identities++;
+      return {
+        sessionFile: `/sessions/${agent.agent_id}-${identities}.jsonl`,
+        sessionId: `session-${agent.agent_id}-${identities}`,
+        sessionLeafId: `leaf-${agent.agent_id}-${identities}`,
+      };
+    });
+    const first = await coordinator.spawn(
+      "root",
+      { task: "Investigate", agent_id: "worker" },
+      caller,
+    );
     await coordinator.wait("root", "worker", 1_000);
     await expect(coordinator.wait("root", "worker", 10, undefined, "bogus")).rejects.toThrow(
       "Minimal subagents wait: turn bogus is unknown or no longer retained for worker; omit turn_id",
@@ -661,9 +674,33 @@ describe("minimal subagents coordinator", () => {
       cancelled_turn_ids: [],
     });
     await coordinator.delete("root", "worker");
-    await expect(
-      coordinator.spawn("root", { task: "Again", agent_id: "worker" }, caller),
-    ).rejects.toThrow("choose a different agent_id");
+
+    const second = await coordinator.spawn("root", { task: "Again", agent_id: "worker" }, caller);
+
+    expect(second.agent_id).toBe("worker");
+    expect(second.turn_id).not.toBe(first.turn_id);
+    expect(coordinator.snapshot()).toMatchObject({
+      agents: [
+        {
+          agent_id: "worker",
+          task: "Again",
+          session_file: "/sessions/worker-2.jsonl",
+          session_id: "session-worker-2",
+        },
+      ],
+      tombstones: [],
+    });
+    await expect(coordinator.wait("root", "worker", 10, undefined, first.turn_id)).rejects.toThrow(
+      "is unknown or no longer retained for worker",
+    );
+    const replayed = replayRegistryEntries(
+      registryEvents.map((data) => ({ type: "custom", customType: REGISTRY_ENTRY_TYPE, data })),
+      "root-session",
+    );
+    expect(replayed.tombstones).toEqual([]);
+    expect(replayed.agents.map((agent) => [agent.agent_id, agent.session_id])).toEqual([
+      ["worker", "session-worker-2"],
+    ]);
     await coordinator.shutdown();
   });
 
@@ -672,11 +709,11 @@ describe("minimal subagents coordinator", () => {
     await coordinator.spawn("root", { task: "Investigate", agent_id: "echo" }, caller);
     const duplicate = () => coordinator.spawn("root", { task: "Again", agent_id: "echo" }, caller);
     await expect(duplicate()).rejects.toThrow(
-      "Minimal subagents duplicate agent ID: echo already exists (running). Use agent_message to continue it, subagent_delete to remove it (a deleted ID cannot be reused), or choose another agent_id.",
+      "Minimal subagents duplicate agent ID: echo already exists (running). Use agent_message to continue it, subagent_delete to remove it (its ID then becomes free for a new child), or choose another agent_id.",
     );
     await coordinator.wait("root", "echo", 1_000);
     await expect(duplicate()).rejects.toThrow(
-      "Minimal subagents duplicate agent ID: echo already exists (idle). Use agent_message to continue it, subagent_delete to remove it (a deleted ID cannot be reused), or choose another agent_id.",
+      "Minimal subagents duplicate agent ID: echo already exists (idle). Use agent_message to continue it, subagent_delete to remove it (its ID then becomes free for a new child), or choose another agent_id.",
     );
     await coordinator.shutdown();
   });
@@ -2603,7 +2640,7 @@ describe("minimal subagents coordinator", () => {
     ]);
   });
 
-  it("recursively deletes descendants post-order and durably tombstones every deleted ID", async () => {
+  it("recursively deletes descendants post-order and frees every deleted Agent ID for respawn", async () => {
     const { coordinator, sessions } = coordinatorFixture();
     await coordinator.restore({
       agents: [persistedAgent("team", "root"), persistedAgent("team.worker", "team")],
@@ -2620,11 +2657,44 @@ describe("minimal subagents coordinator", () => {
       agents: [],
       tombstones: ["team.worker", "team"],
     });
-    await expect(
-      coordinator.spawn("root", { task: "Reuse", agent_id: "team" }, caller),
-    ).rejects.toThrow(
-      "Minimal subagents agent ID team belonged to a deleted agent and cannot be reused",
+    await coordinator.spawn(
+      "root",
+      { task: "Reuse", agent_id: "team", delegation: "fanout" },
+      caller,
     );
+    expect(coordinator.snapshot().tombstones).toEqual(["team.worker"]);
+    await coordinator.spawn("team", { task: "Reuse", agent_id: "worker" }, caller);
+    expect(coordinator.snapshot()).toMatchObject({
+      agents: [{ agent_id: "team" }, { agent_id: "team.worker", parent_id: "team" }],
+      tombstones: [],
+    });
+    await coordinator.shutdown();
+  });
+
+  it("never generates an agent-N ID that belonged to a deleted Child Agent", async () => {
+    const { coordinator } = coordinatorFixture();
+    await coordinator.spawn("root", { task: "First" }, caller);
+    await coordinator.delete("root", "agent-1");
+
+    const generated = await coordinator.spawn("root", { task: "Second" }, caller);
+
+    expect(generated.agent_id).toBe("agent-2");
+    await coordinator.shutdown();
+  });
+
+  it("keeps the legacy root. prefix after a legacy Child Agent is deleted", async () => {
+    const { coordinator } = coordinatorFixture();
+    await coordinator.restore({
+      agents: [],
+      tombstones: ["root.agent-1"],
+      deliveries: [],
+    });
+
+    const spawned = await coordinator.spawn("root", { task: "Go", agent_id: "agent-1" }, caller);
+
+    expect(spawned.agent_id).toBe("root.agent-1");
+    expect(coordinator.snapshot().tombstones).toEqual([]);
+    await coordinator.shutdown();
   });
 
   it("restores inactive child metadata without opening runtimes", async () => {
@@ -2958,5 +3028,241 @@ describe("minimal subagents coordinator", () => {
         availability: "unavailable",
       }),
     ]);
+  });
+});
+
+describe("reused Agent IDs", () => {
+  it("opens the respawned Child Agent's own runtime while the deleted one is still opening", async () => {
+    const oldRuntime = childRuntime();
+    const newRuntime = childRuntime({ status: "completed", output: "fresh" });
+    const { coordinator, sessions } = coordinatorFixture(oldRuntime);
+    const opening = Promise.withResolvers<ChildAgentRuntime>();
+    sessions.openRuntime.mockReturnValueOnce(opening.promise).mockResolvedValue(newRuntime);
+    await coordinator.spawn("root", { task: "Old", agent_id: "worker" }, caller);
+    await vi.waitFor(() => expect(sessions.openRuntime).toHaveBeenCalledOnce());
+    await coordinator.delete("root", "worker");
+
+    await coordinator.spawn("root", { task: "New", agent_id: "worker" }, caller);
+
+    await expect(coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
+      event: "turn",
+      status: "completed",
+      output: "fresh",
+    });
+    opening.resolve(oldRuntime);
+    await vi.waitFor(() => expect(oldRuntime.dispose).toHaveBeenCalled());
+    expect(oldRuntime.runPrompt).not.toHaveBeenCalled();
+    await coordinator.shutdown();
+  });
+
+  it("never delays or delivers a deleted Child Agent's queued message to its respawn", async () => {
+    const oldRuntime = childRuntime();
+    const newRuntime = childRuntime();
+    const newTurn = Promise.withResolvers<RuntimeTurnOutcome>();
+    newRuntime.runPrompt.mockReturnValue(newTurn.promise);
+    const { coordinator, sessions } = coordinatorFixture(oldRuntime);
+    await coordinator.restore({
+      agents: [persistedAgent("worker", "root")],
+      tombstones: [],
+      deliveries: [],
+    });
+    const opening = Promise.withResolvers<ChildAgentRuntime>();
+    sessions.openRuntime.mockReturnValueOnce(opening.promise).mockResolvedValue(newRuntime);
+    const staleMessage = coordinator.sendAgentMessage(
+      "root",
+      { agent_id: "worker", message: "for the old worker" },
+      "root:turn-1",
+    );
+    await vi.waitFor(() => expect(sessions.openRuntime).toHaveBeenCalledOnce());
+    await coordinator.delete("root", "worker");
+    await coordinator.spawn("root", { task: "New", agent_id: "worker" }, caller);
+
+    await expect(
+      coordinator.sendAgentMessage(
+        "root",
+        { agent_id: "worker", message: "for the new worker" },
+        "root:turn-2",
+      ),
+    ).resolves.toMatchObject({ disposition: "queued" });
+    opening.resolve(oldRuntime);
+
+    await expect(staleMessage).resolves.toMatchObject({ disposition: "failed" });
+    expect(newRuntime.queueCoordinatorMessage).toHaveBeenCalledOnce();
+    expect(oldRuntime.runMessage).not.toHaveBeenCalled();
+    expect(oldRuntime.dispose).toHaveBeenCalled();
+    newTurn.resolve({ status: "completed", output: "done" });
+    await coordinator.shutdown();
+  });
+
+  it("rejects a spawn with an Agent ID whose deletion is still running", async () => {
+    const { coordinator, sessions } = coordinatorFixture();
+    await coordinator.restore({
+      agents: [persistedAgent("worker", "root")],
+      tombstones: [],
+      deliveries: [],
+    });
+    const trashing = Promise.withResolvers<void>();
+    sessions.trashSession.mockReturnValueOnce(trashing.promise);
+    const deletion = coordinator.delete("root", "worker");
+    await vi.waitFor(() => expect(sessions.trashSession).toHaveBeenCalledOnce());
+
+    await expect(
+      coordinator.spawn("root", { task: "Too soon", agent_id: "worker" }, caller),
+    ).rejects.toThrow("Minimal subagents duplicate agent ID: worker already exists");
+    trashing.resolve();
+    await expect(deletion).resolves.toMatchObject({ deleted_agent_ids: ["worker"] });
+  });
+
+  it("rejects a spawn by a parent whose subtree is being deleted", async () => {
+    const { coordinator, sessions } = coordinatorFixture();
+    await coordinator.restore({
+      agents: [persistedAgent("team", "root"), persistedAgent("team.worker", "team")],
+      tombstones: [],
+      deliveries: [],
+    });
+    const trashingTeam = Promise.withResolvers<void>();
+    sessions.trashSession
+      .mockResolvedValueOnce(undefined)
+      .mockReturnValueOnce(trashingTeam.promise);
+    const deletion = coordinator.delete("root", "team");
+    await vi.waitFor(() => expect(sessions.trashSession).toHaveBeenCalledTimes(2));
+
+    await expect(
+      coordinator.spawn("team", { task: "Respawn", agent_id: "worker" }, caller),
+    ).rejects.toThrow("Minimal subagents spawn: team is being deleted");
+    trashingTeam.resolve();
+    await expect(deletion).resolves.toMatchObject({
+      deleted_agent_ids: ["team.worker", "team"],
+      failures: [],
+    });
+    expect(coordinator.snapshot().agents).toEqual([]);
+  });
+
+  it("never hands a respawn the runtime that finished opening while its Agent ID was being deleted", async () => {
+    const oldRuntime = childRuntime();
+    const newRuntime = childRuntime({ status: "completed", output: "fresh" });
+    const { coordinator, sessions } = coordinatorFixture(oldRuntime);
+    const opening = Promise.withResolvers<ChildAgentRuntime>();
+    sessions.openRuntime.mockReturnValueOnce(opening.promise).mockResolvedValue(newRuntime);
+    await coordinator.spawn("root", { task: "Old", agent_id: "worker" }, caller);
+    await vi.waitFor(() => expect(sessions.openRuntime).toHaveBeenCalledOnce());
+    const trashing = Promise.withResolvers<void>();
+    sessions.trashSession.mockReturnValueOnce(trashing.promise);
+    const deletion = coordinator.delete("root", "worker");
+    await vi.waitFor(() => expect(sessions.trashSession).toHaveBeenCalledOnce());
+    opening.resolve(oldRuntime);
+    await Promise.resolve();
+    trashing.resolve();
+    await deletion;
+
+    await coordinator.spawn("root", { task: "New", agent_id: "worker" }, caller);
+
+    await expect(coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
+      status: "completed",
+      output: "fresh",
+    });
+    expect(oldRuntime.runPrompt).not.toHaveBeenCalled();
+    expect(oldRuntime.dispose).toHaveBeenCalled();
+    await coordinator.shutdown();
+  });
+
+  it("rejects a spawn whose caller was deleted and respawned while the child was being created", async () => {
+    const { coordinator, sessions } = coordinatorFixture();
+    await coordinator.restore({
+      agents: [persistedAgent("team", "root")],
+      tombstones: [],
+      deliveries: [],
+    });
+    const resolving = Promise.withResolvers<string[]>();
+    sessions.resolveLaunchMissingDependencies.mockReturnValueOnce(resolving.promise);
+    const staleSpawn = coordinator.spawn("team", { task: "Child", agent_id: "worker" }, caller);
+    await vi.waitFor(() => expect(sessions.resolveLaunchMissingDependencies).toHaveBeenCalled());
+    await coordinator.delete("root", "team");
+    await coordinator.spawn(
+      "root",
+      { task: "New team", agent_id: "team", delegation: "fanout" },
+      caller,
+    );
+    resolving.resolve([]);
+
+    await expect(staleSpawn).rejects.toThrow("Minimal subagents spawn: caller team was deleted");
+    expect(coordinator.snapshot().agents.map(({ agent_id }) => agent_id)).toEqual(["team"]);
+    await coordinator.shutdown();
+  });
+
+  it("forgets in-progress deletions when a branch restore replaces the agents", async () => {
+    const { coordinator, sessions } = coordinatorFixture();
+    await coordinator.restore({
+      agents: [persistedAgent("team", "root")],
+      tombstones: [],
+      deliveries: [],
+    });
+    const trashing = Promise.withResolvers<void>();
+    sessions.trashSession.mockReturnValueOnce(trashing.promise);
+    const deletion = coordinator.delete("root", "team");
+    await vi.waitFor(() => expect(sessions.trashSession).toHaveBeenCalledOnce());
+    await coordinator.restore({
+      agents: [persistedAgent("team", "root")],
+      tombstones: [],
+      deliveries: [],
+    });
+
+    await expect(
+      coordinator.spawn("team", { task: "Child", agent_id: "worker" }, caller),
+    ).resolves.toMatchObject({ agent_id: "team.worker" });
+    trashing.resolve();
+    await deletion;
+    await coordinator.shutdown();
+  });
+
+  it("rejects a coordinator tool caller whose session no longer owns its Agent ID", async () => {
+    const { coordinator, sessions } = coordinatorFixture();
+    let identities = 0;
+    sessions.createIdentity.mockImplementation((agent) => {
+      identities++;
+      return {
+        sessionFile: `/sessions/${agent.agent_id}-${identities}.jsonl`,
+        sessionId: `session-${agent.agent_id}-${identities}`,
+        sessionLeafId: `leaf-${agent.agent_id}-${identities}`,
+      };
+    });
+    await coordinator.spawn("root", { task: "Old", agent_id: "worker" }, caller);
+    expect(() => coordinator.assertCurrentCaller("worker", "session-worker-1")).not.toThrow();
+    await coordinator.delete("root", "worker");
+    await coordinator.spawn("root", { task: "New", agent_id: "worker" }, caller);
+
+    expect(() => coordinator.assertCurrentCaller("worker", "session-worker-1")).toThrow(
+      "Minimal subagents caller worker: caller session is no longer current",
+    );
+    expect(() => coordinator.assertCurrentCaller("worker", "session-worker-2")).not.toThrow();
+    expect(() => coordinator.assertCurrentCaller("root", "any-root-session")).not.toThrow();
+    await coordinator.shutdown();
+  });
+
+  it("does not delete the agents a branch restore brings back during a deletion", async () => {
+    const { coordinator, sessions, registryEvents } = coordinatorFixture();
+    await coordinator.restore({
+      agents: [persistedAgent("worker", "root")],
+      tombstones: [],
+      deliveries: [],
+    });
+    const trashing = Promise.withResolvers<void>();
+    sessions.trashSession.mockReturnValueOnce(trashing.promise);
+    const deletion = coordinator.delete("root", "worker");
+    await vi.waitFor(() => expect(sessions.trashSession).toHaveBeenCalledOnce());
+
+    await coordinator.restore({
+      agents: [persistedAgent("worker", "root")],
+      tombstones: [],
+      deliveries: [],
+    });
+    trashing.resolve();
+
+    await expect(deletion).resolves.toMatchObject({ deleted_agent_ids: [] });
+    expect(coordinator.snapshot()).toMatchObject({
+      agents: [{ agent_id: "worker" }],
+      tombstones: [],
+    });
+    expect(registryEvents.some((event) => event.event === "agent-deleted")).toBe(false);
   });
 });

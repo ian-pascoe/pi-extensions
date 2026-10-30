@@ -1523,6 +1523,7 @@ export default function (pi) {
                 status: (...args) => coordinator.status(...args),
                 cancel: (...args) => coordinator.cancel(...args),
                 delete: async () => failedDelete,
+                assertCurrentCaller: (...args) => coordinator.assertCurrentCaller(...args),
               },
               callerId,
               allowFanoutTools: true,
@@ -2105,6 +2106,50 @@ export default function projectAdapter(pi) {
     });
     await factory.trashSession(agent);
     expect(existsSync(identity.sessionFile)).toBe(false);
+  });
+
+  it("gives a respawned Agent ID its own session file that trashing the deleted one leaves alone", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-reuse-"));
+    temporaryDirectories.push(directory);
+    const create = () => {
+      const agent = persistedAgent();
+      const identity = createPersistentChildIdentity({
+        agent,
+        importedMessages: [],
+        cwd: directory,
+        sessionDir: directory,
+        rootSessionId: "root",
+      });
+      agent.session_file = identity.sessionFile;
+      agent.session_id = identity.sessionId;
+      agent.session_leaf_id = identity.sessionLeafId;
+      return agent;
+    };
+    const factory = new PiAgentSessionFactory({
+      cwd: directory,
+      agentDir: directory,
+      sessionDir: directory,
+      rootSessionId: "root",
+      extensionEntrypoint: join(directory, "index.ts"),
+      models: [],
+      eligibleModelIds: [],
+      modelScopeRestricted: false,
+      availableToolNames: [],
+      projectTrusted: true,
+      sessionFileTrash: unavailableSessionFileTrash,
+      getCoordinatorTools: () => [],
+    });
+    const deleted = create();
+    const respawned = create();
+
+    expect(respawned.session_file).not.toBe(deleted.session_file);
+    expect(respawned.session_id).not.toBe(deleted.session_id);
+    await factory.trashSession(deleted);
+    expect(existsSync(deleted.session_file!)).toBe(false);
+    expect(lineageOf(respawned.session_file!)).toMatchObject({
+      sessionId: respawned.session_id,
+      agentId: "child",
+    });
   });
 
   it("discovers unavailable launch models and built-in tools without opening a runtime", async () => {

@@ -203,6 +203,11 @@ export class MinimalSubagentsCoordinator {
   private readonly runtimeInitializations = new Map<string, Promise<ChildAgentRuntime>>();
   private readonly tombstones = new Set<string>();
   private readonly pendingAgentIds = new Set<string>();
+  /**
+   * Agent IDs of every subtree whose deletion is still running, each with the deletions covering
+   * it; none of them may spawn. A branch restore forgets them all.
+   */
+  private readonly deletingAgentIds = new Map<string, Set<symbol>>();
   private deliveryLedger: DeliveryLedger = createDeliveryLedger();
   private readonly waiters = new Map<string, Set<TurnWaiter>>();
   private readonly pendingParentMessages = new Map<string, PendingParentMessage[]>();
@@ -258,6 +263,8 @@ export class MinimalSubagentsCoordinator {
     this.assertAccepting();
     this.assertCallerExists(callerId);
     this.assertCallerMaySpawn(callerId);
+    this.assertSpawnCallerNotDeleting(callerId);
+    const callerAgent = this.agents.get(callerId);
     if (parameters.task.trim().length === 0) {
       throw new Error("Minimal subagents spawn validation: task must not be empty");
     }
@@ -265,12 +272,11 @@ export class MinimalSubagentsCoordinator {
     const friendlyId = parameters.agent_id ?? this.generateFriendlyId(callerId);
     this.validateFriendlyId(friendlyId);
     const agentId = this.buildChildAgentId(callerId, friendlyId);
-    if (this.tombstones.has(agentId)) {
-      throw new Error(
-        `Minimal subagents agent ID ${agentId} belonged to a deleted agent and cannot be reused; choose a different agent_id`,
-      );
-    }
-    if (this.agents.has(agentId) || this.pendingAgentIds.has(agentId)) {
+    if (
+      this.agents.has(agentId) ||
+      this.pendingAgentIds.has(agentId) ||
+      this.deletingAgentIds.has(agentId)
+    ) {
       throw new Error(this.duplicateAgentIdMessage(agentId));
     }
 
@@ -366,6 +372,13 @@ export class MinimalSubagentsCoordinator {
     agent.session_file = identity.sessionFile;
     agent.session_id = identity.sessionId;
     agent.session_leaf_id = identity.sessionLeafId;
+    // The caller may have been deleted, and its Agent ID reused, while the session was created.
+    if (callerId !== "root" && this.agents.get(callerId) !== callerAgent) {
+      throw new Error(`Minimal subagents spawn: caller ${callerId} was deleted`);
+    }
+    this.assertSpawnCallerNotDeleting(callerId);
+    // A deleted Agent ID is free again; the new Child Agent shares nothing with the deleted one.
+    this.tombstones.delete(agentId);
     this.agents.set(agentId, agent);
     this.dependencies.registry.append(
       createRegistryEvent(this.dependencies.registry.rootSessionId, "agent-created", { agent }),
@@ -761,53 +774,113 @@ export class MinimalSubagentsCoordinator {
       failures: [],
     };
     const failedAncestors = new Set<string>();
-
-    for (const agent of ordered) {
-      if (
-        [...failedAncestors].some(
-          (failedId) => agent.agent_id === failedId || failedId.startsWith(`${agent.agent_id}.`),
-        )
-      ) {
-        continue;
+    const deletion = Symbol(agentId);
+    const deletingIds = ordered.map((agent) => agent.agent_id);
+    for (const id of deletingIds) {
+      const deletions = this.deletingAgentIds.get(id) ?? new Set<symbol>();
+      deletions.add(deletion);
+      this.deletingAgentIds.set(id, deletions);
+    }
+    try {
+      for (const agent of ordered) {
+        if (
+          [...failedAncestors].some(
+            (failedId) => agent.agent_id === failedId || failedId.startsWith(`${agent.agent_id}.`),
+          )
+        ) {
+          continue;
+        }
+        // A branch restore during an earlier await replaces every record; leave the new ones alone.
+        if (!this.isCurrentAgent(agent)) continue;
+        await this.deleteOne(agent, result, failedAncestors);
       }
-      const runtime = this.runtimes.get(agent.agent_id);
-      try {
-        if (agent.active_turn_id) await this.cancelActiveTurn(agent);
-        await runtime?.dispose();
-        this.runtimes.delete(agent.agent_id);
-        if (agent.session_file) {
-          await this.dependencies.sessions.trashSession(agent);
-          result.trashed_session_files.push(agent.session_file);
-        }
-        this.agents.delete(agent.agent_id);
-        this.pruneDeliveryStateForDeletedAgent(agent.agent_id);
-        this.pruneRecentMessageProjectionsForDeletedAgent(agent.agent_id);
-        this.tombstones.add(agent.agent_id);
-        result.deleted_agent_ids.push(agent.agent_id);
-        this.dependencies.registry.append(
-          createRegistryEvent(this.dependencies.registry.rootSessionId, "agent-deleted", {
-            agent_ids: [agent.agent_id],
-          }),
-        );
-      } catch (error) {
-        failedAncestors.add(agent.agent_id);
-        if (runtime && agent.session_file) {
-          try {
-            this.runtimes.set(agent.agent_id, await this.dependencies.sessions.openRuntime(agent));
-          } catch (restoreError) {
-            agent.availability = "unavailable";
-            agent.unavailable_reason = `Deletion recovery failed: ${
-              restoreError instanceof Error ? restoreError.message : String(restoreError)
-            }`;
-          }
-        }
-        result.failures.push({
-          agent_id: agent.agent_id,
-          error: error instanceof Error ? error.message : String(error),
-        });
+    } finally {
+      for (const id of deletingIds) {
+        const deletions = this.deletingAgentIds.get(id);
+        deletions?.delete(deletion);
+        if (deletions?.size === 0) this.deletingAgentIds.delete(id);
       }
     }
     return result;
+  }
+
+  private async deleteOne(
+    agent: PersistedAgent,
+    result: DeleteResult,
+    failedAncestors: Set<string>,
+  ): Promise<void> {
+    const runtime = this.runtimes.get(agent.agent_id);
+    try {
+      if (agent.active_turn_id) await this.cancelActiveTurn(agent);
+      await runtime?.dispose();
+      if (!this.isCurrentAgent(agent)) return;
+      this.runtimes.delete(agent.agent_id);
+      if (agent.session_file) {
+        await this.dependencies.sessions.trashSession(agent);
+        result.trashed_session_files.push(agent.session_file);
+      }
+      if (!this.isCurrentAgent(agent)) return;
+      this.agents.delete(agent.agent_id);
+      // A runtime that finished opening during the awaits above belongs to the deleted agent.
+      const openedLate = this.runtimes.get(agent.agent_id);
+      this.runtimes.delete(agent.agent_id);
+      // A respawn with this Agent ID must neither join the old runtime opening nor queue behind
+      // the old agent's deliveries; each settles on its own and drops only its own map entry.
+      this.runtimeInitializations.delete(agent.agent_id);
+      this.recipientQueues.delete(agent.agent_id);
+      this.pruneDeliveryStateForDeletedAgent(agent.agent_id);
+      this.pruneRecentMessageProjectionsForDeletedAgent(agent.agent_id);
+      this.tombstones.add(agent.agent_id);
+      result.deleted_agent_ids.push(agent.agent_id);
+      this.dependencies.registry.append(
+        createRegistryEvent(this.dependencies.registry.rootSessionId, "agent-deleted", {
+          agent_ids: [agent.agent_id],
+        }),
+      );
+      try {
+        await openedLate?.dispose();
+      } catch {
+        // The agent is already deleted; a runtime that fails to close changes nothing it owns.
+      }
+    } catch (error) {
+      failedAncestors.add(agent.agent_id);
+      if (runtime && agent.session_file && this.isCurrentAgent(agent)) {
+        try {
+          this.runtimes.set(agent.agent_id, await this.dependencies.sessions.openRuntime(agent));
+        } catch (restoreError) {
+          agent.availability = "unavailable";
+          agent.unavailable_reason = `Deletion recovery failed: ${
+            restoreError instanceof Error ? restoreError.message : String(restoreError)
+          }`;
+        }
+      }
+      result.failures.push({
+        agent_id: agent.agent_id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Reject a coordinator tool call from a session that no longer owns `callerId`, such as a
+   * deleted Child Agent's runtime whose Agent ID a new Child Agent now reuses.
+   */
+  assertCurrentCaller(callerId: string, sessionId: string): void {
+    if (callerId === "root") return;
+    if (this.agents.get(callerId)?.session_id !== sessionId) {
+      throw new Error(`Minimal subagents caller ${callerId}: caller session is no longer current`);
+    }
+  }
+
+  /** Report whether this record is still the live agent for its Agent ID on the current branch. */
+  private isCurrentAgent(agent: PersistedAgent): boolean {
+    return this.agents.get(agent.agent_id) === agent;
+  }
+
+  private assertSpawnCallerNotDeleting(callerId: string): void {
+    if (this.deletingAgentIds.has(callerId)) {
+      throw new Error(`Minimal subagents spawn: ${callerId} is being deleted`);
+    }
   }
 
   /** Restore non-deleted descendants, interrupt unfinished work, and reconcile pending successful output. */
@@ -829,6 +902,7 @@ export class MinimalSubagentsCoordinator {
     this.runtimes.clear();
     this.runtimeInitializations.clear();
     this.pendingAgentIds.clear();
+    this.deletingAgentIds.clear();
     this.tombstones.clear();
     this.waiters.clear();
     this.waitHandedDeliveryIds.clear();
@@ -1245,7 +1319,7 @@ export class MinimalSubagentsCoordinator {
     const initialization = this.dependencies.sessions
       .openRuntime(agent)
       .then(async (runtime) => {
-        if (this.agents.get(agent.agent_id) !== agent) {
+        if (!this.isCurrentAgent(agent)) {
           await runtime.dispose();
           throw new Error(`Minimal subagents runtime replaced while opening ${agent.agent_id}`);
         }
@@ -1260,7 +1334,7 @@ export class MinimalSubagentsCoordinator {
         return runtime;
       })
       .catch((error) => {
-        if (!openingForTurn && this.agents.get(agent.agent_id) === agent) {
+        if (!openingForTurn && this.isCurrentAgent(agent)) {
           agent.availability = "unavailable";
           agent.latest_activity_at = this.now().toISOString();
           agent.unavailable_reason = error instanceof Error ? error.message : String(error);
@@ -1390,6 +1464,8 @@ export class MinimalSubagentsCoordinator {
     try {
       const handOff = async () => {
         if (delivery.destination_agent_id !== "root") {
+          // A stale hand-off must not open the runtime of a respawn that reuses the Agent ID.
+          if (!this.isTerminalDeliveryCurrent(delivery)) return;
           await this.ensureRuntime(
             this.requireUsableAgent(delivery.destination_agent_id, "message"),
           );
@@ -1676,7 +1752,7 @@ export class MinimalSubagentsCoordinator {
     const target = this.requireUsableAgent(targetId, "message");
     const runtime = this.runtimes.get(targetId) ?? (await this.ensureRuntime(target));
     this.assertAccepting();
-    if (!isCurrentDelivery()) {
+    if (!isCurrentDelivery() || !this.isCurrentAgent(target)) {
       throw new Error("Minimal subagents delivery abandoned after session branch change");
     }
     const visibleMessage = addCoordinatorMessageEnvelope(message);
@@ -1688,12 +1764,12 @@ export class MinimalSubagentsCoordinator {
     const runMessage = runtime
       .runMessage(visibleMessage)
       .then((outcome) => {
-        if (this.agents.get(target.agent_id) === target && target.active_turn_id === turnId) {
+        if (this.isCurrentAgent(target) && target.active_turn_id === turnId) {
           this.settleTurn(target, turnId, terminalTurnResult(target.agent_id, turnId, outcome));
         }
       })
       .catch((cause) => {
-        if (this.agents.get(target.agent_id) === target && target.active_turn_id === turnId) {
+        if (this.isCurrentAgent(target) && target.active_turn_id === turnId) {
           this.settleTurn(target, turnId, {
             agent_id: target.agent_id,
             turn_id: turnId,
@@ -1896,14 +1972,17 @@ export class MinimalSubagentsCoordinator {
   private duplicateAgentIdMessage(agentId: string): string {
     const prefix = `Minimal subagents duplicate agent ID: ${agentId}`;
     const existing = this.agents.get(agentId);
+    if (!existing && this.deletingAgentIds.has(agentId)) {
+      return `${prefix} is still being deleted; retry shortly or choose another agent_id`;
+    }
     if (!existing) {
       return `${prefix} is still being created; retry shortly or choose another agent_id`;
     }
     if (existing.availability === "unavailable") {
-      return `${prefix} already exists (unavailable). Use subagent_delete to remove it (a deleted ID cannot be reused), or choose another agent_id.`;
+      return `${prefix} already exists (unavailable). Use subagent_delete to remove it (its ID then becomes free for a new child), or choose another agent_id.`;
     }
     const state = existing.active_turn_id ? "running" : "idle";
-    return `${prefix} already exists (${state}). Use agent_message to continue it, subagent_delete to remove it (a deleted ID cannot be reused), or choose another agent_id.`;
+    return `${prefix} already exists (${state}). Use agent_message to continue it, subagent_delete to remove it (its ID then becomes free for a new child), or choose another agent_id.`;
   }
 
   private buildAgentSummary(agent: PersistedAgent, includeDescendants = true): AgentSummary {
@@ -2430,7 +2509,7 @@ export class MinimalSubagentsCoordinator {
       const turnId = agent.active_turn_id;
       const runtime = this.runtimes.get(agent.agent_id);
       if (runtime) await runtime.abort();
-      if (this.agents.get(agent.agent_id) !== agent) continue;
+      if (!this.isCurrentAgent(agent)) continue;
       this.settleTurn(agent, turnId, {
         agent_id: agent.agent_id,
         turn_id: turnId,
@@ -2445,7 +2524,7 @@ export class MinimalSubagentsCoordinator {
     const turnId = agent.active_turn_id;
     const runtime = this.runtimes.get(agent.agent_id);
     if (runtime) await runtime.abort();
-    if (this.agents.get(agent.agent_id) !== agent) return undefined;
+    if (!this.isCurrentAgent(agent)) return undefined;
     this.settleTurn(agent, turnId, {
       agent_id: agent.agent_id,
       turn_id: turnId,

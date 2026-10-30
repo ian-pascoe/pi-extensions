@@ -51,9 +51,11 @@ From this package checkout, load the source directly with
    pass `turn_id` to re-read a turn whose result is still retained, claimed or
    not.
 4. `subagent_status` inspects children; `subagent_cancel` stops work but keeps
-   the session; `subagent_delete` removes it. Deleted IDs cannot be reused, and
-   spawning with an existing `agent_id` fails with that child's state and the
-   next step (`agent_message`, `subagent_delete`, or another `agent_id`).
+   the session; `subagent_delete` removes it. A deleted child's ID can be
+   reused, and the new child starts fresh; generated `agent-N` IDs are never
+   reused. Spawning with a live child's `agent_id` fails with that child's
+   state and the next step (`agent_message`, `subagent_delete`, or another
+   `agent_id`).
 
 ## Configuration
 

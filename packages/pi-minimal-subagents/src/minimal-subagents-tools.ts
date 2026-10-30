@@ -68,6 +68,7 @@ export type CoordinatorToolOperations = Pick<
   | "status"
   | "cancel"
   | "delete"
+  | "assertCurrentCaller"
 >;
 
 /** Dependencies and caller policy used to create caller-bound coordinator tools. */
@@ -101,9 +102,15 @@ function buildModelRolePromptGuidelines(
 
 async function runCoordinatorToolActivity<T>(
   options: CoordinatorToolDefinitionOptions,
+  context: ExtensionContext,
   operation: () => Promise<T> | T,
 ): Promise<T> {
   try {
+    // A deleted Child Agent's leftover tool call must not act as a respawn reusing its Agent ID.
+    options.coordinator.assertCurrentCaller(
+      options.callerId,
+      context.sessionManager.getSessionId(),
+    );
     return await operation();
   } finally {
     options.onActivity?.();
@@ -301,7 +308,7 @@ export function createCoordinatorToolDefinitions(
       openWorldHint: true,
     },
     async execute(_toolCallId, parameters, _signal, _onUpdate, context) {
-      return runCoordinatorToolActivity(options, async () => {
+      return runCoordinatorToolActivity(options, context, async () => {
         const result = await options.coordinator.spawn(
           options.callerId,
           parameters,
@@ -334,8 +341,8 @@ export function createCoordinatorToolDefinitions(
       idempotentHint: false,
       openWorldHint: false,
     },
-    async execute(toolCallId, parameters) {
-      return runCoordinatorToolActivity(options, async () => {
+    async execute(toolCallId, parameters, _signal, _onUpdate, context) {
+      return runCoordinatorToolActivity(options, context, async () => {
         const result = await options.coordinator.sendAgentMessage(
           options.callerId,
           {
@@ -393,7 +400,7 @@ export function createCoordinatorToolDefinitions(
       // Pi hands a Queued Steer over only after this tool call returns, so end the wait for it.
       const steerWatch = watchQueuedSteer(context.sessionManager.getSessionId());
       try {
-        return await runCoordinatorToolActivity(options, async () => {
+        return await runCoordinatorToolActivity(options, context, async () => {
           const result = await options.coordinator.wait(
             options.callerId,
             parameters.agent_id,
@@ -434,8 +441,8 @@ export function createCoordinatorToolDefinitions(
       idempotentHint: true,
       openWorldHint: false,
     },
-    async execute(_toolCallId, parameters) {
-      return runCoordinatorToolActivity(options, () => {
+    async execute(_toolCallId, parameters, _signal, _onUpdate, context) {
+      return runCoordinatorToolActivity(options, context, () => {
         const result = options.coordinator.status(options.callerId, parameters.agent_id);
         return structuredToolResult(
           result,
@@ -459,8 +466,8 @@ export function createCoordinatorToolDefinitions(
       idempotentHint: true,
       openWorldHint: false,
     },
-    async execute(_toolCallId, parameters) {
-      return runCoordinatorToolActivity(options, async () => {
+    async execute(_toolCallId, parameters, _signal, _onUpdate, context) {
+      return runCoordinatorToolActivity(options, context, async () => {
         const result = await options.coordinator.cancel(
           options.callerId,
           parameters.agent_id,
@@ -476,8 +483,8 @@ export function createCoordinatorToolDefinitions(
     name: "subagent_delete",
     label: "Subagent Delete",
     description:
-      "Delete one direct child's persistent session and retain durable ID tombstones. Recursive deletion includes its subtree and defaults to true.",
-    promptSnippet: "Delete subagent sessions and tombstone their IDs",
+      "Delete one direct child's persistent session. Recursive deletion includes its subtree and defaults to true. A deleted ID can be reused; a new subagent with it starts fresh, with none of the deleted child's session or results.",
+    promptSnippet: "Delete subagent sessions, freeing their IDs",
     parameters: options.schemas.subagent_delete,
     annotations: {
       readOnlyHint: false,
@@ -485,8 +492,8 @@ export function createCoordinatorToolDefinitions(
       idempotentHint: true,
       openWorldHint: false,
     },
-    async execute(_toolCallId, parameters) {
-      return runCoordinatorToolActivity(options, async () => {
+    async execute(_toolCallId, parameters, _signal, _onUpdate, context) {
+      return runCoordinatorToolActivity(options, context, async () => {
         const result = await options.coordinator.delete(
           options.callerId,
           parameters.agent_id,

@@ -49,6 +49,7 @@ import {
   REGISTRY_ENTRY_TYPE,
   createRegistryEvent,
   replayRegistryEntries,
+  type RegistryEventV2,
 } from "../src/minimal-subagents-registry.js";
 import type { PiAgentSessionFactoryOptions } from "../src/minimal-subagents-sessions.js";
 import { RecordingAgentSessionFactory } from "./fixtures/recording-sessions.js";
@@ -61,6 +62,7 @@ import type {
   AgentSessionFactory,
   PersistedAgent,
   RegistrySnapshot,
+  StatusResult,
 } from "../src/minimal-subagents-types.js";
 
 const temporaryDirectories: string[] = [];
@@ -1265,6 +1267,59 @@ describe("minimal subagents extension lifecycle", () => {
     ).resolves.toMatchObject({
       details: { agents: [{ agent_id: "branch-b" }] },
     });
+
+    await emitSessionShutdown(harness, "quit");
+  });
+
+  it("restores the deleted or the respawned Child Agent of a reused Agent ID by tree branch", async () => {
+    const cwd = await createTemporaryDirectory("minimal-subagents-reuse-cwd-");
+    const sessionDirectory = await createTemporaryDirectory("minimal-subagents-reuse-sessions-");
+    const sessionManager = await createPersistedSession(cwd, sessionDirectory);
+    const rootSessionId = sessionManager.getSessionId();
+    const original = { ...persistedAgent("worker"), task: "Original" };
+    const append = (event: RegistryEventV2) =>
+      sessionManager.appendCustomEntry(REGISTRY_ENTRY_TYPE, event);
+    append(createRegistryEvent(rootSessionId, "agent-created", { agent: original }));
+    const beforeDeletion = sessionManager.getLeafId();
+    if (!beforeDeletion) throw new Error("Expected a tree branch point");
+    append(createRegistryEvent(rootSessionId, "agent-deleted", { agent_ids: ["worker"] }));
+    append(
+      createRegistryEvent(rootSessionId, "agent-created", {
+        agent: {
+          ...persistedAgent("worker"),
+          task: "Respawned",
+          session_file: "/sessions/worker-respawned.jsonl",
+          session_id: "session-worker-respawned",
+        },
+      }),
+    );
+    const afterReuse = sessionManager.getLeafId();
+    if (!afterReuse) throw new Error("Expected the reuse leaf");
+    const harness = await createExtensionHarness(sessionManager);
+    const statusTool = harness.runner.getToolDefinition("subagent_status")!;
+    const workerTask = async () => {
+      const result = await statusTool.execute(
+        "status",
+        { agent_id: "worker", verbose: true },
+        undefined,
+        undefined,
+        toToolContext(harness.runner.createContext()),
+      );
+      // SAFETY: subagent_status details are always a StatusResult.
+      const details = result.details as StatusResult;
+      return "agent" in details ? details.agent.task : undefined;
+    };
+
+    await harness.runner.emit(sessionStartEvent());
+    await expect(workerTask()).resolves.toBe("Respawned");
+
+    sessionManager.branch(beforeDeletion);
+    await harness.runner.emit(sessionTreeEvent);
+    await expect(workerTask()).resolves.toBe("Original");
+
+    sessionManager.branch(afterReuse);
+    await harness.runner.emit(sessionTreeEvent);
+    await expect(workerTask()).resolves.toBe("Respawned");
 
     await emitSessionShutdown(harness, "quit");
   });
