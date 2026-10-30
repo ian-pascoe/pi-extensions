@@ -107,12 +107,10 @@ async function runCoordinatorToolActivity<T>(
 ): Promise<T> {
   try {
     // A deleted Child Agent's leftover tool call must not act as a respawn reusing its Agent ID.
-    if (options.callerId !== "root") {
-      options.coordinator.assertCurrentCaller(
-        options.callerId,
-        context.sessionManager.getSessionId(),
-      );
-    }
+    options.coordinator.assertCurrentCaller(
+      options.callerId,
+      context.sessionManager.getSessionId(),
+    );
     return await operation();
   } finally {
     options.onActivity?.();
