@@ -40,6 +40,27 @@ The pack check keeps its other assertions: dist entrypoints, a dist-only file li
 
 Pi DAP's Supported Adapter test runs against the vscode-js-debug release tarball, which pnpm installed as a dependency of `tools/pi-dap-vscode-js-debug`. That tarball has no `package.json`, which pnpm papered over with a placeholder and Bun cannot: `bun install` fails with `ENOENT`, and a fresh resolution then writes no lockfile. The package is replaced by `tools/pi-dap-vscode-js-debug/fixture.json`, holding the version, URL, and SHA-512 integrity (taken from the pnpm lockfile), and `scripts/fetch-vscode-js-debug.mjs`. The script downloads the tarball with one retry after a backoff, verifies the hash, and extracts it to the gitignored `tools/pi-dap-vscode-js-debug/js-debug/`, recording the integrity so a rerun does nothing. It also writes a minimal `package.json` there: pnpm's placeholder had that effect, and without a manifest Node reads the repository root's `"type": "module"` and loads the CommonJS adapter as ESM, which fails on its first `require`. Pi DAP's Vitest global setup runs it, and `prepare.mjs` runs it on development installs (not in CI, not in production installs), warning instead of failing the install when the download fails. The adapter path in `.pi/settings.json` and in the integration test points at the extract, and the Git-install check leaves the extract out of its copy and asserts it is absent after a production install.
 
+## Typechecker
+
+> **Amended** to record the typechecker (tsrs); see [#499](https://github.com/ian-pascoe/pi-extensions/issues/499) for the pending lint backend.
+
+`tsrs` replaces the `typescript` package as the only source of TypeScript diagnostics, for the `typecheck` and `typecheck:root` tasks and for the language server in `.pi/settings.json` (`bunx --no-install tsrs --lsp --stdio`). It is a Rust port of TypeScript 7 whose `tsrs` binary takes the same `-p` and `--noEmit` flags; the scripts use no other flags, and in particular not `--fast`, which its help text says "may differ from pinned TypeScript behavior". The `pi-utils` `build` script is `tsrs -p tsconfig.build.json`. The evidence is below. The speed and memory figures and the first parity check come from [the research](../research/bun-and-tsrs.md); the swap re-checked parity and the `dist` output and timed the typecheck tasks.
+
+- **Parity.** `tsc --noEmit` from `typescript` 7.0.2 and `tsrs --noEmit` report no diagnostics, with exit status 0, for the root and all 17 packages (research; the swap re-checked all 18 projects). In the research, an injected file with five errors produced byte-identical output.
+- **Speed and memory.** Summed over the 18 projects, run one after another, `tsc` took 12.05 s at 1111 MB peak RSS and `tsrs` took 3.78 s at 419 MB (research). The swap measured `turbo run typecheck:root typecheck --force` at about 29–34 s with `tsc` and 3.7–7.6 s with `tsrs`.
+- **`dist`.** `pi-utils` built with `tsrs -p tsconfig.build.json` has the same 32 files as the `tsc` build, and `diff -r` finds them identical (re-checked in the swap).
+- **Language server.** `tsrs --lsp` reports `serverInfo.name` as `typescript` (`tsc --lsp` reported `typescript-go`). The pi-lsp integration tests spawn `node_modules/.bin/tsrs` and assert the name only, not the version.
+- **Known gap.** tsrs 0.20.1's `textDocument/documentSymbol` omits import bindings, so this repository's own LSP outlines do not show imports at `depth: "all"`. pi-lsp's handling of import bindings is proven against the fake server in `lsp-tool.test.ts`, not a real one.
+
+The version is pinned exactly, with no caret: its string carries the TypeScript version it ports (`0.20.1-ts7.1.0-beta` ports 7.1.0-beta), so a range could silently change the checker's TypeScript version. Upgrading is a deliberate edit to that line.
+
+`.oxlintrc.json` sets `typeCheck: false` and keeps `typeAware: true`, so oxlint runs the type-aware rules only and `tsrs` is the sole TypeScript gate. The rules still run on `oxlint-tsgolint` 7.0.2005, which is built on TypeScript 7.0.2 while `tsrs` ports 7.1.0-beta, because oxlint 1.90.0 has no setting that selects another backend. They move to `tsrs-lint` once a `tsrs` release ships it (it is on `tsrs` `main` but not in 0.20.1); tracking issue: [#499](https://github.com/ian-pascoe/pi-extensions/issues/499).
+
+Rejected:
+
+- **Building `tsrs-lint` from source and pointing oxlint at it with `OXLINT_TSGOLINT_PATH`.** It needs a Rust toolchain on every contributor and CI machine, builds an unreleased `main`, and relies on an environment variable that oxlint does not document.
+- **Keeping `typeCheck: true` as a second checker.** It is redundant, since `tsrs` already matches `tsc`, and it would repeat every TypeScript error in the oxlint output and in the LSP, where oxlint is a second server alongside `tsrs`.
+
 ## Considered Options
 
 - **Stay on pnpm.** Rejected: this is the migration.
@@ -53,4 +74,4 @@ Pi DAP's Supported Adapter test runs against the vscode-js-debug release tarball
 
 Contributors need Bun and Node 22.19 together, which `mise install` provides. A tool that finds no `node` fails loudly where Bun would otherwise run it. The first `bun install` downloads the fixture, and Pi DAP's tests need network access on a machine that has never fetched it. Releases must go through `bun run publish-packages`, and a post-release `npm view @ian-pascoe/pi-utils exports` confirms the registry metadata names `dist`. Pi Guardian's sensitive paths do not yet include `bunfig.toml`, whose `preload` option runs code; that is follow-up work.
 
-The typechecker is a separate follow-up: replacing `typescript` with `tsrs`, which the research measured at identical diagnostics and `dist` output. It lands in a later change that amends this ADR.
+The typechecker was a separate follow-up, replacing `typescript` with `tsrs`, and landed as an amendment (Typechecker, above). Moving the type-aware lint rules to `tsrs-lint` is follow-up work, tracked in [#499](https://github.com/ian-pascoe/pi-extensions/issues/499).

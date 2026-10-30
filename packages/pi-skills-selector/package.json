@@ -34,7 +34,7 @@
   },
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsrs --noEmit -p tsconfig.json"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=1.1.0",

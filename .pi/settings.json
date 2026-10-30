@@ -253,7 +253,7 @@
         "command": "bunx",
         "args": [
           "--no-install",
-          "tsc",
+          "tsrs",
           "--lsp",
           "--stdio"
         ],

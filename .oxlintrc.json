@@ -23,7 +23,7 @@
   ],
   "options": {
     "typeAware": true,
-    "typeCheck": true
+    "typeCheck": false
   },
   "categories": {
     "correctness": "error"
