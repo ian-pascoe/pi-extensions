@@ -123,7 +123,7 @@ pi install git:github.com/ian-pascoe/pi-extensions@<tag-or-commit>
 - Pi LSP requires separately installed language-server binaries. This repository
   uses the installed TypeScript 7 `tsc --lsp --stdio` server.
 - Pi DAP requires a separately managed Debug Adapter executable. The repository's
-  `vscode-js-debug` repository fixture supports its local Node smoke profile; a script downloads
+  `vscode-js-debug` fixture supports its local Node smoke profile; a script downloads
   and hash-verifies it, and its files are not packed or installed with `@ian-pascoe/pi-dap`.
 - Pi Web Tools needs outbound network access. `EXA_API_KEY` and
   `PARALLEL_API_KEY` are optional provider credentials.

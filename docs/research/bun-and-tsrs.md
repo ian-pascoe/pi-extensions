@@ -1,6 +1,8 @@
 # Research: Bun as package manager and `tsrs` in place of `typescript`
 
-Status: research only. No repository files were changed; no installs were run in the repo. Source checks used read-only commands, `npm view`, GitHub/npm/Bun/Turborepo/Vitest web sources, and a read-only copy of the `oxc-project/tsrs` main-branch tarball downloaded to `/tmp/tsrs-src/` (outside the repo). Observations are dated 2026-10-30 (the date of the npm and GitHub data retrieved).
+> **Superseded in part by [ADR 0011](../adr/0011-bun-installs-node-runs-npm-publishes.md).** This research proposed adding `tools/*` to the root `workspaces`, setting `[install] peer = false`, and keeping the vscode-js-debug tarball as an install-time dependency. ADR 0011 does none of these: `workspaces` stays `["packages/*"]`, `peer` keeps Bun's default because `peer = false` leaves Vitest without its `vite` peer, and the tarball becomes a hash-verified fixture fetched by `scripts/fetch-vscode-js-debug.mjs`. The measurements below are otherwise unchanged.
+
+Status: research only. During the research phase no repository files were changed and no installs were run in the repo; the migration itself is in ADR 0011. Source checks used read-only commands, `npm view`, GitHub/npm/Bun/Turborepo/Vitest web sources, and a read-only copy of the `oxc-project/tsrs` main-branch tarball downloaded to `/tmp/tsrs-src/` (outside the repo). Observations are dated 2026-10-30 (the date of the npm and GitHub data retrieved).
 
 Labels used below: **[verified]** checked in a primary source or local file; **[inferred]** follows from checked sources but was not run; **[unverified]** needs a test in a scratch clone.
 

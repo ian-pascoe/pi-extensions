@@ -31,7 +31,7 @@ Changesets 3.0.3 publishes with `npm publish` for every package manager except p
 `scripts/publish-manifest.mjs` has three modes for any workspace package whose `publishConfig` overrides `main`, `types`, or `exports`:
 
 - `apply` lifts the overrides to the top level, as pnpm did, leaves only registry options in `publishConfig`, and keeps the original manifest beside it. It never restores afterwards. `publish-packages` runs `node scripts/publish-manifest.mjs apply && changeset publish`.
-- `check` fails unless the top-level fields already match the overrides. `pi-utils`'s `prepack` is `bun run build && node ../../scripts/publish-manifest.mjs check`, so a bare `npm publish` or `npm pack` of an unapplied manifest fails instead of shipping `src` entrypoints.
+- `check` fails unless the top-level fields already match the overrides. `pi-utils`'s `prepack` is `bun run build && node ../../scripts/publish-manifest.mjs check .`, so a bare `npm publish` or `npm pack` of an unapplied manifest fails instead of shipping `src` entrypoints.
 - `restore` puts the original back byte for byte. Only local checks use it. `pack:check` applies the manifest in place, packs with `npm pack --json` so the real `prepack` runs, restores in a `finally`, and asserts the manifest on disk is byte-identical to before.
 
 The pack check keeps its other assertions: dist entrypoints, a dist-only file list, `publishConfig` reduced to registry options, and an installed tarball that imports and runs. Its scripts assertion becomes "`build` is present", because npm keeps `prepack` in the packed manifest where pnpm removed it.
