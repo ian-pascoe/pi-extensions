@@ -36,7 +36,7 @@
   },
   "dependencies": {
     "@ian-pascoe/pi-utils": "^0.10.0",
-    "minimatch": "^10.2.6"
+    "minimatch": "^11.0.3"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": ">=1.1.0",
