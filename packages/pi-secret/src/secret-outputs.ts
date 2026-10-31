@@ -9,12 +9,13 @@ import { Type, type Static, type TSchema } from "typebox";
 const Name = Type.String({ description: "The Secret Name" });
 
 const Reference = Type.String({
-  description: "The Secret Reference to write in other tool arguments; never the value",
+  description:
+    "The Secret Reference to write in tool arguments other than shell commands; never the value",
 });
 
 const Env = Type.String({
   description:
-    "The environment variable shell commands read the Secret from: the Secret Name after the PI_SECRET_ prefix, without the leading $",
+    "The Secret Reference shell commands read: an environment variable, PI_SECRET_ followed by the Secret Name, without the leading $",
 });
 
 const ExpiresAt = Type.String({
@@ -22,14 +23,14 @@ const ExpiresAt = Type.String({
 });
 
 /** How to use a Secret this session now holds; present only on an outcome that holds one. */
-const usage = {
+const heldSecretFields = {
   reference: Type.Optional(Reference),
   env: Type.Optional(Env),
   expires_at: Type.Optional(ExpiresAt),
 };
 
 /** One name `secret_ask` asked for, and how it came out. */
-export const AskOutcomeSchema = Type.Object(
+const AskOutcomeSchema = Type.Object(
   {
     name: Name,
     status: Type.Union(
@@ -39,13 +40,13 @@ export const AskOutcomeSchema = Type.Object(
           "provided: entered and held; skipped: the user left it empty; cancelled: the user cancelled the Secret Request",
       },
     ),
-    ...usage,
+    ...heldSecretFields,
   },
   { additionalProperties: false },
 );
 
 /** One Secret Grant `secret_ask_grant` asked for, and how it came out. */
-export const GrantOutcomeSchema = Type.Object(
+const GrantOutcomeSchema = Type.Object(
   {
     name: Name,
     status: Type.Union(
@@ -57,14 +58,14 @@ export const GrantOutcomeSchema = Type.Object(
       ],
       {
         description:
-          "granted: approved, read, and held; denied: the user denied it; failed: it could not be described or read (see error); cancelled: the user cancelled the Grant Request",
+          "granted: approved, read, and held; denied: the user denied it; failed: no Secret Provider reads the locator, or it could not be described or read (see error); cancelled: the user cancelled the Grant Request",
       },
     ),
     locator: Type.String({
       description:
         "The Secret Locator: the Secret Provider's own form of it once granted, else as requested",
     }),
-    ...usage,
+    ...heldSecretFields,
     error: Type.Optional(Type.String({ description: "Why a failed grant failed" })),
     warning: Type.Optional(
       Type.String({
@@ -77,7 +78,7 @@ export const GrantOutcomeSchema = Type.Object(
 );
 
 /** One Secret `secret_list` says this session can use. */
-export const HeldOutcomeSchema = Type.Object(
+const HeldOutcomeSchema = Type.Object(
   {
     name: Name,
     status: Type.Literal("held", { description: "This session can use the Secret" }),
@@ -90,14 +91,17 @@ export const HeldOutcomeSchema = Type.Object(
       }),
     ),
     locator: Type.Optional(
-      Type.String({ description: "The Secret Locator a granted Secret is read from at each use" }),
+      Type.String({
+        description:
+          "The Secret Locator a Secret this session granted is read from at each use; absent for a typed Secret or one another session holds",
+      }),
     ),
   },
   { additionalProperties: false },
 );
 
 /** The typed Secret `secret_save` was asked to save, and how it came out. */
-export const SaveOutcomeSchema = Type.Object(
+const SaveOutcomeSchema = Type.Object(
   {
     name: Name,
     status: Type.Union([Type.Literal("saved"), Type.Literal("denied"), Type.Literal("cancelled")], {
@@ -107,13 +111,13 @@ export const SaveOutcomeSchema = Type.Object(
     locator: Type.Optional(
       Type.String({ description: "The Secret Locator of the new item or key, once saved" }),
     ),
-    ...usage,
+    ...heldSecretFields,
   },
   { additionalProperties: false },
 );
 
 /** What `secret_forget` did with one name. */
-export const ForgetOutcomeSchema = Type.Object(
+const ForgetOutcomeSchema = Type.Object(
   {
     name: Name,
     status: Type.Union([Type.Literal("forgotten"), Type.Literal("not_held")], {
@@ -128,7 +132,10 @@ const SecretProviderId = Type.String({
 });
 const Vault = Type.String({ description: "The vault holding the item" });
 
-/** An item or field a Secret Provider search found; never a value. */
+/**
+ * An item or field a Secret Provider search found; never a value. `AvailableEntry` in
+ * ./secret-provider.ts is derived from it, so providers cannot return what the schema refuses.
+ */
 export const AvailableEntrySchema = Type.Union([
   Type.Object(
     {
@@ -213,3 +220,11 @@ export type SaveOutcome = Static<typeof SaveOutcomeSchema>;
 export type ForgetOutcome = Static<typeof ForgetOutcomeSchema>;
 /** One Secret's outcome in a `secret_*` result's details and value. */
 export type SecretOutcome = AskOutcome | GrantOutcome | HeldOutcome | SaveOutcome | ForgetOutcome;
+/**
+ * A `secret_*` result's details, which is also its value: the outcomes, and for `secret_list` the
+ * entries and notes it found.
+ */
+export type SecretResultDetails = { secrets: SecretOutcome[] } & Omit<
+  Static<typeof SecretListOutputSchema>,
+  "secrets"
+>;

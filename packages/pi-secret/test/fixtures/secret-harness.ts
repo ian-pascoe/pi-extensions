@@ -133,18 +133,18 @@ function testTools(received: ReceivedCall[]): ExtensionFactory {
 }
 
 /** A `secret_*` tool's result as Pi Secret leaves it, after redaction. */
-export interface RecordedValue {
+export interface RecordedResult {
   tool: string;
   structuredContent: JsonValue | undefined;
   isError: boolean;
 }
 
 /** Records each `secret_*` result's `structuredContent`, which the transcript does not keep. */
-function valueRecorder(values: Map<string, RecordedValue>): ExtensionFactory {
+function resultRecorder(results: Map<string, RecordedResult>): ExtensionFactory {
   return (pi: ExtensionAPI) => {
     pi.on("tool_result", (event) => {
       if (!event.toolName.startsWith("secret_")) return;
-      values.set(event.toolCallId, {
+      results.set(event.toolCallId, {
         tool: event.toolName,
         structuredContent: structuredClone(event.structuredContent),
         isError: event.isError,
@@ -177,7 +177,7 @@ export async function createSecretHarness(options: SecretHarnessOptions = {}) {
   // Starts at the real time: other sessions in the process judge expiry by the wall clock.
   const clock = options.clock ?? { now: Date.now() };
   const received: ReceivedCall[] = [];
-  const values = new Map<string, RecordedValue>();
+  const recordedResults = new Map<string, RecordedResult>();
   const dialogs = [...(options.dialogs ?? [])];
   const frames: DialogFrame[] = [];
   const notices: string[] = [];
@@ -202,7 +202,7 @@ export async function createSecretHarness(options: SecretHarnessOptions = {}) {
         },
       }),
       // After Pi Secret, so it records the value scripts receive: redacted.
-      valueRecorder(values),
+      resultRecorder(recordedResults),
     ],
     systemPromptOverride: () => "Standing instructions: finish the user's task.",
   });
@@ -284,24 +284,19 @@ export async function createSecretHarness(options: SecretHarnessOptions = {}) {
       });
     },
   };
-  /**
-   * The value a codemode script receives from one `secret_*` call, checked against the tool's
-   * declared `outputSchema`.
-   */
-  const value = (toolCallId: string) => {
-    const recorded = values.get(toolCallId);
-    if (recorded === undefined) throw new Error(`No secret_* result for ${toolCallId}`);
+  /** Check what a codemode script receives from one `secret_*` call against its `outputSchema`. */
+  const checkStructuredContent = (recorded: RecordedResult) => {
     const schema = session.getToolDefinition(recorded.tool)?.outputSchema;
     if (schema === undefined) throw new Error(`${recorded.tool} declares no outputSchema`);
     expect(
       [...Value.Errors(schema, recorded.structuredContent)].map((error) => error.message),
       `${recorded.tool} structuredContent violates its outputSchema`,
     ).toEqual([]);
-    return recorded.structuredContent;
   };
   // Every successful `secret_*` result in every test must match its declared schema.
   onTestFinished(() => {
-    for (const [toolCallId, recorded] of values) if (!recorded.isError) value(toolCallId);
+    for (const recorded of recordedResults.values())
+      if (!recorded.isError) checkStructuredContent(recorded);
   });
 
   const runner = session.extensionRunner;
@@ -349,7 +344,6 @@ export async function createSecretHarness(options: SecretHarnessOptions = {}) {
     sessionFileText,
     resultText,
     result,
-    value,
   };
 }
 

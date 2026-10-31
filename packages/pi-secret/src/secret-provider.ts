@@ -4,6 +4,9 @@
  * 1Password References. Providers never return a value except from {@link SecretProvider.read}.
  */
 
+import type { Static } from "typebox";
+import type { AvailableEntrySchema } from "./secret-outputs.js";
+
 /** Where a Secret Locator points, as the user sees it when approving a grant or a save. */
 export interface LocatorDescription {
   /** The Secret Locator, in the form a grant records it, such as with `~` expanded. */
@@ -29,25 +32,11 @@ export interface ProviderSearch {
   readonly limit: number;
 }
 
-/** One searchable entry: an item, or a field of one item with the locator to request it by. */
-export type AvailableEntry =
-  | {
-      readonly kind: "item";
-      readonly provider: string;
-      readonly id: string;
-      readonly title: string;
-      readonly vault: string;
-      readonly category: string;
-    }
-  | {
-      readonly kind: "field";
-      readonly provider: string;
-      readonly item: string;
-      readonly vault: string;
-      readonly label: string;
-      readonly type: string;
-      readonly locator: string;
-    };
+/**
+ * One searchable entry: an item, or a field of one item with the locator to request it by. Its
+ * schema is part of `secret_list`'s value.
+ */
+export type AvailableEntry = Readonly<Static<typeof AvailableEntrySchema>>;
 
 /** What a search found, and whether more matched than `limit`. */
 export interface ProviderListing {

@@ -1,4 +1,5 @@
-import { createCodemodeExtension } from "@earendil-works/pi-coding-agent";
+import type { JsonValue } from "@earendil-works/pi-ai";
+import { createCodemodeExtension, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { SECRET_ENV_PREFIX } from "../src/secret-references.js";
 import {
@@ -35,8 +36,16 @@ describe("values for codemode scripts", () => {
     const typed = "typed-in-script-3e4f5a6b";
     const granted = "ghp-script-token-7c8d9e0f";
     const provider = new FakeProvider({ [TOKEN]: granted });
+    // Loaded before Pi Secret, so it sees each value as the tool returned it, before redaction.
+    const unredacted: JsonValue[] = [];
+    const recordUnredacted: ExtensionFactory = (pi) => {
+      pi.on("tool_result", (event) => {
+        if (event.toolName.startsWith("secret_") && event.structuredContent !== undefined)
+          unredacted.push(structuredClone(event.structuredContent));
+      });
+    };
     const harness = await createSecretHarness({
-      before: [createCodemodeExtension()],
+      before: [createCodemodeExtension(), recordUnredacted],
       providers: [provider],
       // The Secret Request (fill the first field, skip the second), the Grant Request, the save.
       dialogs: [[keys.paste(typed), keys.tab, keys.enter], [keys.enter], [keys.enter]],
@@ -73,7 +82,10 @@ describe("values for codemode scripts", () => {
         forgotten: ["forgotten", "not_held"],
       }),
     );
+    // One value per secret_* call, none holding a Secret value even before redaction.
+    expect(unredacted).toHaveLength(5);
     for (const value of [typed, granted]) {
+      expect(JSON.stringify(unredacted)).not.toContain(value);
       expect(harness.requests.join("\n")).not.toContain(value);
       expect(await harness.sessionFileText()).not.toContain(value);
     }

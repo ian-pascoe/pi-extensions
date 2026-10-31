@@ -58,7 +58,9 @@ import {
   type ForgetOutcome,
   type GrantOutcome,
   type HeldOutcome,
+  type SaveOutcome,
   type SecretOutcome,
+  type SecretResultDetails,
 } from "./secret-outputs.js";
 import { renderSecretCall, renderSecretResult } from "./secret-render.js";
 import {
@@ -420,13 +422,6 @@ function availableLine(entry: AvailableEntry): string {
     ? `- ${entry.title} (${entry.category}) in ${entry.vault}; list its fields with secret_list item="${entry.id}"`
     : `- ${entry.label} (${entry.type}) of ${entry.item}: ${entry.locator}`;
 }
-
-/** A `secret_*` result's details, never a value; a type alias so it is assignable to JSON. */
-type SecretResultDetails = {
-  secrets: SecretOutcome[];
-  available?: AvailableEntry[];
-  notes?: string[];
-};
 
 interface SecretResultParts {
   outcomes: SecretOutcome[];
@@ -1129,7 +1124,10 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
         );
         if (approved === undefined || !approved.has(0))
           return outcomesResult([
-            { name: params.name, status: approved === undefined ? "cancelled" : "denied" },
+            {
+              name: params.name,
+              status: approved === undefined ? "cancelled" : "denied",
+            } satisfies SaveOutcome,
           ]);
         const locator = await provider.save({ ...request, value }, signal);
         recordGrant(params.name, locator, expiresAt);
@@ -1147,7 +1145,7 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
             reference: secretReference(params.name),
             env: secretEnvName(params.name),
             expires_at: iso(expiresAt),
-          },
+          } satisfies SaveOutcome,
         ]);
       },
     });
