@@ -48,6 +48,18 @@ import {
   type SaveRequest,
   type SecretProvider,
 } from "./secret-provider.js";
+import {
+  SecretAskGrantOutputSchema,
+  SecretAskOutputSchema,
+  SecretForgetOutputSchema,
+  SecretListOutputSchema,
+  SecretSaveOutputSchema,
+  type AskOutcome,
+  type ForgetOutcome,
+  type GrantOutcome,
+  type HeldOutcome,
+  type SecretOutcome,
+} from "./secret-outputs.js";
 import { renderSecretCall, renderSecretResult } from "./secret-render.js";
 import {
   isSecretName,
@@ -135,28 +147,6 @@ interface LiveSecret {
   readonly expiresAt: number;
   readonly timer: ReturnType<typeof setTimeout>;
 }
-
-/** One Secret's outcome in a tool result; a type alias so it is assignable to JSON. */
-type SecretOutcome = {
-  name: string;
-  status:
-    | "provided"
-    | "skipped"
-    | "cancelled"
-    | "granted"
-    | "denied"
-    | "failed"
-    | "saved"
-    | "held"
-    | "forgotten"
-    | "not_held";
-  reference?: string;
-  env?: string;
-  expires_at?: string;
-  locator?: string;
-  error?: string;
-  warning?: string;
-};
 
 const SecretNameSchema = Type.String({
   pattern: SECRET_NAME_PATTERN.source,
@@ -390,17 +380,18 @@ async function redactOutputFile(path: string): Promise<void> {
   if (redacted !== text) await writeFile(path, redacted);
 }
 
-function usage(outcome: SecretOutcome): string {
+function usage(outcome: { readonly env?: string; readonly reference?: string }): string {
   return `Use ${outcome.env === undefined ? "" : `$${outcome.env} in shell commands and `}${outcome.reference} in other tool arguments.`;
 }
 
 function outcomeLine(outcome: SecretOutcome): string {
-  const warning = outcome.warning === undefined ? "" : ` Warning: ${outcome.warning}`;
   switch (outcome.status) {
     case "provided":
-      return `${outcome.name}: provided. ${usage(outcome)} Expires ${outcome.expires_at}.${warning}`;
-    case "granted":
+      return `${outcome.name}: provided. ${usage(outcome)} Expires ${outcome.expires_at}.`;
+    case "granted": {
+      const warning = outcome.warning === undefined ? "" : ` Warning: ${outcome.warning}`;
       return `${outcome.name}: granted from ${outcome.locator}, read again at each use. ${usage(outcome)} Expires ${outcome.expires_at}.${warning}`;
+    }
     case "saved":
       return `${outcome.name}: saved to ${outcome.locator}, and now read from there at each use. ${usage(outcome)} Expires ${outcome.expires_at}.`;
     case "held": {
@@ -456,6 +447,8 @@ function secretResult({ outcomes, available, notes, lead }: SecretResultParts) {
   return {
     content: [{ type: "text" as const, text }],
     details,
+    // Each tool's `outputSchema` (./secret-outputs.ts) declares this value, which codemode scripts
+    // receive instead of the text.
     structuredContent: structuredClone(details),
   };
 }
@@ -793,6 +786,7 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
       promptSnippet: SECRET_PROMPT_SNIPPET,
       promptGuidelines: SECRET_PROMPT_GUIDELINES,
       parameters: AskParameters,
+      outputSchema: SecretAskOutputSchema,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -825,10 +819,10 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
         );
         if (answer === undefined || answer.kind === "cancelled")
           return outcomesResult(
-            params.names.map((name) => ({ name, status: "cancelled" })),
+            params.names.map((name): AskOutcome => ({ name, status: "cancelled" })),
             "The user cancelled the Secret Request. Do not ask again unless they want to.",
           );
-        const outcomes: SecretOutcome[] = [];
+        const outcomes: AskOutcome[] = [];
         for (const name of params.names) {
           const value = answer.values.get(name);
           if (value === undefined) {
@@ -898,6 +892,7 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
       description: `Ask the user to grant Secrets from a Secret Provider such as ${providerNames(providers)}, each a Secret Name and the Secret Locator its value is read from at each use. Find locators with secret_list. Returns how to reference each one; never its value.`,
       promptGuidelines: [secretProviderGuideline(providers)],
       parameters: askGrantParameters(providers),
+      outputSchema: SecretAskGrantOutputSchema,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -921,7 +916,7 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
         const duplicate = names.find((name, index) => names.indexOf(name) !== index);
         if (duplicate !== undefined)
           throw new Error(`Secret Name ${duplicate} appears in more than one grant`);
-        const outcomes: SecretOutcome[] = params.grants.map((grant) => ({
+        const outcomes: GrantOutcome[] = params.grants.map((grant) => ({
           name: grant.name,
           status: "failed",
           locator: grant.locator,
@@ -1015,6 +1010,7 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
         // Without a provider, today's text, so that tool set stays exactly as it was.
         `List the Secrets this session can use and when each expires, and search Secret Providers such as ${providers.length === 0 ? "1Password" : providerNames(providers)} for items and fields to request with secret_ask_grant; never values.`,
       parameters: ListParameters,
+      outputSchema: SecretListOutputSchema,
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -1029,19 +1025,19 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
         const query = params.query?.toLowerCase();
         const matches = (...texts: (string | undefined)[]) =>
           query === undefined || texts.some((text) => text?.toLowerCase().includes(query));
-        const outcomes: SecretOutcome[] =
+        const outcomes: HeldOutcome[] =
           params.status === "available"
             ? []
             : heldSecretNames()
                 .toSorted()
-                .flatMap((name): SecretOutcome[] => {
+                .flatMap((name): HeldOutcome[] => {
                   const own = live.get(name);
                   const locator = own?.origin.kind === "granted" ? own.origin.locator : undefined;
                   const providerId =
                     own?.origin.kind === "granted" ? own.origin.provider.id : undefined;
                   if (params.provider !== undefined && params.provider !== providerId) return [];
                   if (!matches(name, locator)) return [];
-                  const outcome: SecretOutcome = {
+                  const outcome: HeldOutcome = {
                     name,
                     status: "held",
                     reference: secretReference(name),
@@ -1090,6 +1086,7 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
       label: "Secret Save",
       description: `Save a Secret the user typed into this session into a Secret Provider such as ${providerNames(providers)}, after the user approves, as a new item or key; nothing existing is changed. The Secret is then read from there at each use, with its original expiry.`,
       parameters: saveParameters(providers),
+      outputSchema: SecretSaveOutputSchema,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -1155,8 +1152,8 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
       },
     });
 
-    async function forget(names: readonly string[]): Promise<SecretOutcome[]> {
-      const outcomes: SecretOutcome[] = [];
+    async function forget(names: readonly string[]): Promise<ForgetOutcome[]> {
+      const outcomes: ForgetOutcome[] = [];
       const destroyed: string[] = [];
       for (const name of names) {
         const released = release(name);
@@ -1184,6 +1181,7 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
       label: "Secret Forget",
       description: "Forget Secrets, typed or granted, now, before their lifetime ends.",
       parameters: ForgetParameters,
+      outputSchema: SecretForgetOutputSchema,
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,

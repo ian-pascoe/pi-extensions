@@ -84,6 +84,8 @@ A Secret Name holds one Secret at a time: a newer `secret_ask`, `secret_ask_gran
 | `secret_save`      | `name`, `locator`, `category?`                                | The new item's or key's Secret Locator                                                                                     |
 | `secret_forget`    | `names`                                                       | Forgets the named Secrets, typed or granted, now, before their lifetime ends                                               |
 
+Each tool declares an `outputSchema`, so a codemode script that calls one gets an object instead of the text: `secrets`, one outcome per Secret with its `name`, `status`, and, once held, its `reference`, `env`, and `expires_at`; `secret_list` adds `available` and `notes` when it has any. Like the text, it never holds a value.
+
 `secret_list` returns held Secrets and up to `limit` (default 20) available items from each Secret Provider. With `item`, it lists that item's fields instead. `status: "held"` skips the Secret Provider search, and a Secret Provider that cannot be searched is reported in the result, not as an error.
 
 Every `secret_ask` prompts again and replaces any Secret already held under the same name, so the user can correct a mistyped value. Pi Guardian allows all five tools by default, since none reveals a value, and grants and saves need the user's approval in Pi Secret's own dialog. Calls that use a Secret Reference are judged by their own tool's policy, and Guardian reviews them with the reference, never the value.
