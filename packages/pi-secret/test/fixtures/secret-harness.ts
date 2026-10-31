@@ -1,7 +1,8 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { Value } from "typebox/value";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { onTestFinished } from "vitest";
+import { expect, onTestFinished } from "vitest";
 import {
   createAssistantMessageEventStream,
   fauxAssistantMessage,
@@ -131,6 +132,27 @@ function testTools(received: ReceivedCall[]): ExtensionFactory {
   };
 }
 
+/** A `secret_*` tool's result as Pi Secret leaves it, after redaction. */
+export interface RecordedResult {
+  tool: string;
+  structuredContent: JsonValue | undefined;
+  isError: boolean;
+}
+
+/** Records each `secret_*` result's `structuredContent`, which the transcript does not keep. */
+function resultRecorder(results: Map<string, RecordedResult>): ExtensionFactory {
+  return (pi: ExtensionAPI) => {
+    pi.on("tool_result", (event) => {
+      if (!event.toolName.startsWith("secret_")) return;
+      results.set(event.toolCallId, {
+        tool: event.toolName,
+        structuredContent: structuredClone(event.structuredContent),
+        isError: event.isError,
+      });
+    });
+  };
+}
+
 /** One rendered frame of a dialog, after its opening render or a keypress. */
 export type DialogFrame = string[];
 
@@ -155,6 +177,7 @@ export async function createSecretHarness(options: SecretHarnessOptions = {}) {
   // Starts at the real time: other sessions in the process judge expiry by the wall clock.
   const clock = options.clock ?? { now: Date.now() };
   const received: ReceivedCall[] = [];
+  const recordedResults = new Map<string, RecordedResult>();
   const dialogs = [...(options.dialogs ?? [])];
   const frames: DialogFrame[] = [];
   const notices: string[] = [];
@@ -178,6 +201,8 @@ export async function createSecretHarness(options: SecretHarnessOptions = {}) {
           return Array.isArray(providers) ? providers : providers(context);
         },
       }),
+      // After Pi Secret, so it records the value scripts receive: redacted.
+      resultRecorder(recordedResults),
     ],
     systemPromptOverride: () => "Standing instructions: finish the user's task.",
   });
@@ -259,6 +284,21 @@ export async function createSecretHarness(options: SecretHarnessOptions = {}) {
       });
     },
   };
+  /** Check what a codemode script receives from one `secret_*` call against its `outputSchema`. */
+  const checkStructuredContent = (recorded: RecordedResult) => {
+    const schema = session.getToolDefinition(recorded.tool)?.outputSchema;
+    if (schema === undefined) throw new Error(`${recorded.tool} declares no outputSchema`);
+    expect(
+      [...Value.Errors(schema, recorded.structuredContent)].map((error) => error.message),
+      `${recorded.tool} structuredContent violates its outputSchema`,
+    ).toEqual([]);
+  };
+  // Every successful `secret_*` result in every test must match its declared schema.
+  onTestFinished(() => {
+    for (const recorded of recordedResults.values())
+      if (!recorded.isError) checkStructuredContent(recorded);
+  });
+
   const runner = session.extensionRunner;
   if (!runner) throw new Error("Missing extension runner");
   await session.bindExtensions(
