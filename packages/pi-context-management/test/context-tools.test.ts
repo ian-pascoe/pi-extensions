@@ -17,6 +17,7 @@ import { Type, type TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { describe, expect, onTestFinished, test } from "vitest";
 import { AGENT_LINEAGE_ENTRY_TYPE, agentLineageRecord } from "@ian-pascoe/pi-utils/agent-lineage";
+import { expectToolOutputMatches } from "@ian-pascoe/pi-utils/tool-testing";
 import { ensureReferenceOrigin } from "../src/context-store.js";
 import { registerContextTools } from "../src/context-tools.js";
 import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
@@ -91,10 +92,10 @@ function harness(manager = SessionManager.inMemory(), onFailure?: (error: Error)
     /** The value a codemode script receives, checked against the tool's declared schema. */
     async structured(name: string, input: ToolInput) {
       const tool = tools.get(name);
-      if (!tool?.outputSchema) throw new Error(`Missing outputSchema for ${name}`);
+      if (tool === undefined) throw new Error(`Missing tool ${name}`);
       const result = await tool.execute("test-call", input, undefined, undefined, ctx);
       const text = result.content.map((item) => item.text ?? "").join("\n");
-      expect(Value.Check(tool.outputSchema, result.structuredContent)).toBe(true);
+      expectToolOutputMatches(tool, result);
       // The model's text and persisted details keep camelCase; scripts get the snake_case value.
       expect(JSON.parse(text)).toEqual(result.details);
       expect(result.structuredContent).toEqual(snakeCaseKeys(JSON.parse(text)));

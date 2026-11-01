@@ -1,8 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { Value } from "typebox/value";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, onTestFinished } from "vitest";
+import { onTestFinished } from "vitest";
 import {
   createAssistantMessageEventStream,
   fauxAssistantMessage,
@@ -27,6 +26,7 @@ import {
   type ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
 import { getKeybindings, type Component } from "@earendil-works/pi-tui";
+import { recordToolOutputs } from "@ian-pascoe/pi-utils/tool-testing";
 import { taggedTheme } from "@ian-pascoe/pi-utils/ui-testing";
 import { Type } from "typebox";
 import { createPiSecretExtension, type ProviderContext } from "../../src/pi-secret-extension.js";
@@ -88,6 +88,7 @@ function testTools(received: ReceivedCall[]): ExtensionFactory {
       label: "Echo",
       description: "Echo text back.",
       parameters: Type.Object({ text: Type.String() }),
+      outputSchema: Type.Object({ text: Type.String() }),
       async execute(_id, params) {
         received.push({ tool: "echo", args: structuredClone(params) });
         return {
@@ -102,6 +103,7 @@ function testTools(received: ReceivedCall[]): ExtensionFactory {
       label: "Spill",
       description: "Write text to a full output file and point at it.",
       parameters: Type.Object({ text: Type.String(), path: Type.String() }),
+      outputSchema: Type.Object({ full_output_path: Type.String() }),
       async execute(_id, params) {
         received.push({ tool: "spill", args: structuredClone(params) });
         await writeFile(params.path, params.text);
@@ -132,27 +134,6 @@ function testTools(received: ReceivedCall[]): ExtensionFactory {
   };
 }
 
-/** A `secret_*` tool's result as Pi Secret leaves it, after redaction. */
-export interface RecordedResult {
-  tool: string;
-  structuredContent: JsonValue | undefined;
-  isError: boolean;
-}
-
-/** Records each `secret_*` result's `structuredContent`, which the transcript does not keep. */
-function resultRecorder(results: Map<string, RecordedResult>): ExtensionFactory {
-  return (pi: ExtensionAPI) => {
-    pi.on("tool_result", (event) => {
-      if (!event.toolName.startsWith("secret_")) return;
-      results.set(event.toolCallId, {
-        tool: event.toolName,
-        structuredContent: structuredClone(event.structuredContent),
-        isError: event.isError,
-      });
-    });
-  };
-}
-
 /** One rendered frame of a dialog, after its opening render or a keypress. */
 export type DialogFrame = string[];
 
@@ -177,7 +158,7 @@ export async function createSecretHarness(options: SecretHarnessOptions = {}) {
   // Starts at the real time: other sessions in the process judge expiry by the wall clock.
   const clock = options.clock ?? { now: Date.now() };
   const received: ReceivedCall[] = [];
-  const recordedResults = new Map<string, RecordedResult>();
+  const outputs = recordToolOutputs();
   const dialogs = [...(options.dialogs ?? [])];
   const frames: DialogFrame[] = [];
   const notices: string[] = [];
@@ -201,8 +182,8 @@ export async function createSecretHarness(options: SecretHarnessOptions = {}) {
           return Array.isArray(providers) ? providers : providers(context);
         },
       }),
-      // After Pi Secret, so it records the value scripts receive: redacted.
-      resultRecorder(recordedResults),
+      // Last, after Pi Secret's redaction, so it records the value scripts receive.
+      outputs.extension,
     ],
     systemPromptOverride: () => "Standing instructions: finish the user's task.",
   });
@@ -284,19 +265,9 @@ export async function createSecretHarness(options: SecretHarnessOptions = {}) {
       });
     },
   };
-  /** Check what a codemode script receives from one `secret_*` call against its `outputSchema`. */
-  const checkStructuredContent = (recorded: RecordedResult) => {
-    const schema = session.getToolDefinition(recorded.tool)?.outputSchema;
-    if (schema === undefined) throw new Error(`${recorded.tool} declares no outputSchema`);
-    expect(
-      [...Value.Errors(schema, recorded.structuredContent)].map((error) => error.message),
-      `${recorded.tool} structuredContent violates its outputSchema`,
-    ).toEqual([]);
-  };
-  // Every successful `secret_*` result in every test must match its declared schema.
+  // Every result of every tool in every test must conform to its declared outputSchema.
   onTestFinished(() => {
-    for (const recorded of recordedResults.values())
-      if (!recorded.isError) checkStructuredContent(recorded);
+    outputs.check((name) => session.getToolDefinition(name));
   });
 
   const runner = session.extensionRunner;
