@@ -50,19 +50,53 @@ function matchOf(
 }
 
 /**
+ * One reference as the call wrote it, and its form, which decides how to escape it:
+ * - `placeholder`: `{{secret:NAME}}`;
+ * - `expansion`: a shell expansion, `$PI_SECRET_NAME` or `${PI_SECRET_NAME…`, whose escape is the shell's own;
+ * - `word`: the bare `PI_SECRET_NAME`, as in prose.
+ */
+export interface WrittenReference {
+  readonly form: "placeholder" | "expansion" | "word";
+  readonly text: string;
+}
+
+/** Each referenced Secret Name, with its references as the call wrote them, in order of appearance. */
+export type WrittenReferences = ReadonlyMap<string, readonly WrittenReference[]>;
+
+/**
+ * An environment reference as written: with the shell expansion that opens it (`$` or `${`, and a
+ * `}` right after the name), so a backslash put right before it is the shell's own escape.
+ */
+function writtenEnvReference(text: string, start: number, end: number): WrittenReference {
+  const word = text.slice(start, end);
+  if (text.slice(start - 2, start) === "${")
+    return { form: "expansion", text: `\${${word}${text[end] === "}" ? "}" : ""}` };
+  if (text[start - 1] === "$") return { form: "expansion", text: `$${word}` };
+  return { form: "word", text: word };
+}
+
+/**
  * Every Secret Name a value references, in either form, including names that are not valid Secret
  * Names (such as `{{secret:lower}}`), so a call naming one can be refused rather than run as typed.
+ * Each name maps to its references as written, so a refusal can quote the text that triggered it.
  * Escaped references name nothing.
  */
-export function referencedSecretNames(value: JsonValue): Set<string> {
-  const names = new Set<string>();
+export function secretReferencesByName(value: JsonValue): WrittenReferences {
+  const references = new Map<string, WrittenReference[]>();
   visitStrings(value, (text) => {
     for (const found of text.matchAll(REFERENCE)) {
       const match = matchOf(found.slice(1), text, found.index);
-      if (match !== undefined && !match.escaped) names.add(match.name);
+      if (match === undefined || match.escaped) continue;
+      const written: WrittenReference =
+        match.form === "env"
+          ? writtenEnvReference(text, found.index, found.index + found[0].length)
+          : { form: "placeholder", text: found[0] };
+      const known = references.get(match.name);
+      if (known === undefined) references.set(match.name, [written]);
+      else if (!known.some((reference) => reference.text === written.text)) known.push(written);
     }
   });
-  return names;
+  return references;
 }
 
 function visitStrings(value: JsonValue, visit: (text: string) => void): void {

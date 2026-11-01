@@ -79,24 +79,74 @@ describe("Secret Request and Secret References", () => {
     }
   });
 
+  /** The escape hint for references written in each form, as the block reason gives it. */
+  const hint = (...examples: string[]) =>
+    `put a backslash right before it: ${examples.join("; ")}.`;
+  const removedByPiSecret = (written: string) =>
+    `\\${written}, which Pi Secret removes before the tool runs`;
+  const shellEscape = (written: string) =>
+    `\\${written}, the shell's own escape, which Pi Secret leaves as written`;
+
   it.each([
-    ["a Secret Reference", { text: "{{secret:NEVER_PROVIDED}}" }, "{{secret:NEVER_PROVIDED}}"],
     [
-      "an environment reference",
-      { text: "curl -u $PI_SECRET_NEVER_PROVIDED" },
+      "a Secret Reference",
       "{{secret:NEVER_PROVIDED}}",
+      "{{secret:NEVER_PROVIDED}}",
+      hint(removedByPiSecret("{{secret:NEVER_PROVIDED}}")),
+    ],
+    [
+      "a Secret Reference written twice",
+      "{{secret:NEVER_PROVIDED}} and {{secret:NEVER_PROVIDED}}",
+      "{{secret:NEVER_PROVIDED}}",
+      hint(removedByPiSecret("{{secret:NEVER_PROVIDED}}")),
+    ],
+    [
+      "a shell expansion",
+      "curl -u $PI_SECRET_NEVER_PROVIDED",
+      "$PI_SECRET_NEVER_PROVIDED",
+      hint(shellEscape("$PI_SECRET_NEVER_PROVIDED")),
+    ],
+    [
+      "a braced shell expansion",
+      "curl -u ${PI_SECRET_NEVER_PROVIDED}",
+      "${PI_SECRET_NEVER_PROVIDED}",
+      hint(shellEscape("${PI_SECRET_NEVER_PROVIDED}")),
+    ],
+    [
+      "a shell expansion with a modifier",
+      "curl -u ${PI_SECRET_NEVER_PROVIDED:-none}",
+      "${PI_SECRET_NEVER_PROVIDED",
+      hint(shellEscape("${PI_SECRET_NEVER_PROVIDED")),
+    ],
+    [
+      "a Secret Reference in both forms",
+      "{{secret:NEVER_PROVIDED}} or $PI_SECRET_NEVER_PROVIDED",
+      "{{secret:NEVER_PROVIDED}}, $PI_SECRET_NEVER_PROVIDED",
+      hint(
+        removedByPiSecret("{{secret:NEVER_PROVIDED}}"),
+        shellEscape("$PI_SECRET_NEVER_PROVIDED"),
+      ),
+    ],
+    [
+      "a bare word before a shell expansion",
+      "PI_SECRET_NEVER_PROVIDED is unset: echo $PI_SECRET_NEVER_PROVIDED",
+      "PI_SECRET_NEVER_PROVIDED, $PI_SECRET_NEVER_PROVIDED",
+      hint(removedByPiSecret("PI_SECRET_NEVER_PROVIDED"), shellEscape("$PI_SECRET_NEVER_PROVIDED")),
     ],
   ])(
-    "blocks a call whose %s names no held Secret, and says to ask again",
-    async (_kind, args, named) => {
+    "blocks a call whose %s names no held Secret, quoting it as written, and shows how to escape each form",
+    async (_kind, text, written, escapes) => {
       const harness = await createSecretHarness();
-      harness.responses.push(toolCalls(["echo", args, "call-echo"]), reply("Done."));
+      harness.responses.push(toolCalls(["echo", { text }, "call-echo"]), reply("Done."));
       await harness.session.prompt("Go.");
 
       expect(harness.received).toEqual([]);
-      const text = harness.resultText("call-echo");
-      expect(text).toContain(named);
-      expect(text).toContain("Call secret_ask to request it again");
+      const reason = harness.resultText("call-echo") ?? "";
+      expect(reason).toContain(`It references ${written}, which this session does not hold.`);
+      expect(reason).toContain("Call secret_ask to request it again");
+      expect(reason).toContain(escapes);
+      // The reason names only the forms the call wrote.
+      expect(reason.includes("{{")).toBe(text.includes("{{"));
     },
   );
 
@@ -104,25 +154,36 @@ describe("Secret Request and Secret References", () => {
     [
       "a malformed Secret Name",
       { text: "{{secret:lower-case}}" },
-      '"lower-case" is not a valid Secret Name',
+      "{{secret:lower-case}} is not a valid Secret Reference",
+      hint(removedByPiSecret("{{secret:lower-case}}")),
     ],
-    ["an empty Secret Reference", { text: "{{secret:}}" }, '"" is not a valid Secret Name'],
+    [
+      "an empty Secret Reference",
+      { text: "{{secret:}}" },
+      "{{secret:}} is not a valid Secret Reference",
+      hint(removedByPiSecret("{{secret:}}")),
+    ],
     [
       "a malformed environment reference",
       { text: "echo $PI_SECRET_lower" },
-      '"lower" is not a valid Secret Name',
+      "$PI_SECRET_lower is not a valid Secret Reference",
+      hint(shellEscape("$PI_SECRET_lower")),
     ],
-  ])("blocks a call with %s and says what a Secret Name looks like", async (_kind, args, named) => {
-    const harness = await createSecretHarness();
-    harness.responses.push(toolCalls(["echo", args, "call-echo"]), reply("Done."));
-    await harness.session.prompt("Go.");
+  ])(
+    "blocks a call with %s and says what a Secret Name looks like",
+    async (_kind, args, named, escapes) => {
+      const harness = await createSecretHarness();
+      harness.responses.push(toolCalls(["echo", args, "call-echo"]), reply("Done."));
+      await harness.session.prompt("Go.");
 
-    expect(harness.received).toEqual([]);
-    const text = harness.resultText("call-echo");
-    expect(text).toContain(named);
-    expect(text).toContain("uppercase letters, digits, and underscores");
-    expect(text).not.toContain("does not hold");
-  });
+      expect(harness.received).toEqual([]);
+      const text = harness.resultText("call-echo");
+      expect(text).toContain(named);
+      expect(text).toContain("uppercase letters, digits, and underscores");
+      expect(text).not.toContain("does not hold");
+      expect(text).toContain(escapes);
+    },
+  );
 
   it("gives a malformed and an unheld Secret Reference each its own advice in one block", async () => {
     const harness = await createSecretHarness();
@@ -134,7 +195,7 @@ describe("Secret Request and Secret References", () => {
 
     expect(harness.received).toEqual([]);
     expect(harness.resultText("call-echo")).toBe(
-      'The call did not run. "bad name" is not a valid Secret Name: a Secret Name uses uppercase letters, digits, and underscores, and does not start with a digit. It references {{secret:NEVER_PROVIDED}}, which this session does not hold. The Secret expired, was forgotten, or was never provided. Call secret_ask to request it again. To write a reference as literal text instead, put a backslash right before it; Pi Secret removes the backslash.',
+      "The call did not run. {{secret:bad name}} is not a valid Secret Reference: a Secret Name uses uppercase letters, digits, and underscores, and does not start with a digit. It references {{secret:NEVER_PROVIDED}}, which this session does not hold. The Secret expired, was forgotten, or was never provided. Call secret_ask to request it again. To write a reference as literal text instead, put a backslash right before it: \\{{secret:bad name}}, which Pi Secret removes before the tool runs.",
     );
   });
 

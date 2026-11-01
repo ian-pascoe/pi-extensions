@@ -65,7 +65,9 @@ import {
 import { renderSecretCall, renderSecretResult } from "./secret-render.js";
 import {
   isSecretName,
-  referencedSecretNames,
+  secretReferencesByName,
+  type WrittenReference,
+  type WrittenReferences,
   rewriteReferences,
   secretEnvName,
 } from "./secret-references.js";
@@ -257,37 +259,58 @@ const DEFAULT_LIST_LIMIT = 20;
 
 const WITHHELD_RESULT =
   "Pi Secret could not check this tool result for Secret values, so it was withheld. The tool did run.";
-const ESCAPE_HINT =
-  "To write a reference as literal text instead, put a backslash right before it; Pi Secret removes the backslash.";
+/** References as the call wrote them, listed for a block reason. */
+function writtenText(written: readonly WrittenReference[]): string {
+  return written.map((reference) => reference.text).join(", ");
+}
+
+/** What removes the backslash that escapes each form, so the hint is true of each example. */
+const ESCAPE_REMOVED_BY = {
+  placeholder: "which Pi Secret removes before the tool runs",
+  word: "which Pi Secret removes before the tool runs",
+  expansion: "the shell's own escape, which Pi Secret leaves as written",
+} as const satisfies Record<WrittenReference["form"], string>;
+
+/** How to write each form in `written` as literal text instead, with its first reference as the example. */
+function escapeHint(written: readonly WrittenReference[]): string {
+  const examples = (["placeholder", "word", "expansion"] as const).flatMap((form) => {
+    const example = written.find((reference) => reference.form === form);
+    return example === undefined ? [] : [`\\${example.text}, ${ESCAPE_REMOVED_BY[form]}`];
+  });
+  return `To write a reference as literal text instead, put a backslash right before it: ${examples.join("; ")}.`;
+}
 
 function iso(time: number): string {
   return new Date(time).toISOString();
 }
 
 /**
- * Why a call referencing `names` cannot run, or undefined when every one is a held Secret. A
- * malformed name and a name this session does not hold each get their own advice.
+ * Why a call cannot run, or undefined when every name `references` holds is a held Secret. A
+ * malformed name and a name this session does not hold each get their own advice. Each is quoted as
+ * the call wrote it, in whichever form, so the caller can find and escape the text that triggered it.
  */
-function unresolvedReason(names: readonly string[]): string | undefined {
-  const malformed = names.filter((name) => !isSecretName(name));
-  const unheld = names.filter((name) => isSecretName(name) && !isSecretHeld(name));
+function unresolvedReason(references: WrittenReferences): string | undefined {
+  const writtenWhere = (keep: (name: string) => boolean) =>
+    [...references].flatMap(([name, written]) => (keep(name) ? written : []));
+  const malformed = writtenWhere((name) => !isSecretName(name));
+  const unheld = writtenWhere((name) => isSecretName(name) && !isSecretHeld(name));
   const sentences = ["The call did not run."];
   if (malformed.length > 0) {
-    const listed = malformed.map((name) => JSON.stringify(name)).join(", ");
     const verb =
-      malformed.length === 1 ? "is not a valid Secret Name" : "are not valid Secret Names";
+      malformed.length === 1
+        ? "is not a valid Secret Reference"
+        : "are not valid Secret References";
     sentences.push(
-      `${listed} ${verb}: a Secret Name uses uppercase letters, digits, and underscores, and does not start with a digit.`,
+      `${writtenText(malformed)} ${verb}: a Secret Name uses uppercase letters, digits, and underscores, and does not start with a digit.`,
     );
   }
   if (unheld.length > 0) {
-    const listed = unheld.map((name) => secretReference(name)).join(", ");
     sentences.push(
-      `It references ${listed}, which this session does not hold. The Secret expired, was forgotten, or was never provided. Call secret_ask to request it again.`,
+      `It references ${writtenText(unheld)}, which this session does not hold. The Secret expired, was forgotten, or was never provided. Call secret_ask to request it again.`,
     );
   }
   if (sentences.length === 1) return undefined;
-  sentences.push(ESCAPE_HINT);
+  sentences.push(escapeHint([...malformed, ...unheld]));
   return sentences.join(" ");
 }
 
@@ -707,22 +730,25 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
       await expireDue();
       // SAFETY: tool arguments are parsed JSON, validated against the tool's schema.
       const input = event.input as { [key: string]: JsonValue };
-      const names = referencedSecretNames(input);
-      const reason = unresolvedReason([...names]);
+      const references = secretReferencesByName(input);
+      const reason = unresolvedReason(references);
       if (reason !== undefined) return { block: true, reason };
       // Granted Secrets are read again now, in either reference form (ADR-0001).
-      for (const name of names) {
+      for (const [name, written] of references) {
         let value: string | undefined;
         try {
           value = await refreshSecret(name);
         } catch (cause) {
           return {
             block: true,
-            reason: `The call did not run. Pi Secret could not read ${secretReference(name)} from its Secret Provider: ${errorMessage(cause)}. Ask the user to unlock or sign in to it, or call secret_ask_grant again. ${TROUBLESHOOTING_HINT}`,
+            reason: `The call did not run. Pi Secret could not read ${writtenText(written)} from its Secret Provider: ${errorMessage(cause)}. Ask the user to unlock or sign in to it, or call secret_ask_grant again. ${TROUBLESHOOTING_HINT}`,
           };
         }
         if (value === undefined)
-          return { block: true, reason: unresolvedReason([name]) ?? "The call did not run." };
+          return {
+            block: true,
+            reason: unresolvedReason(new Map([[name, written]])) ?? "The call did not run.",
+          };
       }
       // Pi passes the same arguments object on to the tool: rewrite in place.
       const rewritten = rewriteReferences(input, (name) => resolveSecret(name) ?? "");
