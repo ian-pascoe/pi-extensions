@@ -189,3 +189,118 @@ export function toolDeclarations(
     2,
   );
 }
+
+/** The part of a Pi tool definition that declares what its results' `structuredContent` holds. */
+export interface ToolWithOutputSchema {
+  readonly name: string;
+  readonly outputSchema?: TSchema;
+}
+
+/** The part of a tool result that `expectToolOutputMatches` reads. */
+export interface ToolResultOutput {
+  readonly structuredContent?: unknown;
+  readonly isError?: boolean;
+}
+
+/**
+ * Throw unless `result` conforms to what `tool` declares, as Pi's codemode needs it: a script gets
+ * a result's `structuredContent` only when the tool declares an `outputSchema`, and the text
+ * otherwise. So it throws when
+ * - the result sets `structuredContent` but the tool declares no `outputSchema`;
+ * - the tool declares an `outputSchema`, the result is not an error, and it sets no
+ *   `structuredContent` (the SDK says such tools always set it);
+ * - `structuredContent` is set and violates the `outputSchema`; each violation is listed. Error
+ *   results are checked too when they carry `structuredContent`, since scripts receive it.
+ */
+export function expectToolOutputMatches(
+  tool: ToolWithOutputSchema,
+  result: ToolResultOutput,
+): void {
+  const { name, outputSchema } = tool;
+  const { structuredContent, isError } = result;
+  if (outputSchema === undefined) {
+    if (structuredContent !== undefined)
+      throw new Error(
+        `${name}: result sets structuredContent but the tool declares no outputSchema, so codemode scripts would get the text instead`,
+      );
+    return;
+  }
+  if (structuredContent === undefined) {
+    if (isError === true) return;
+    throw new Error(
+      `${name}: tool declares an outputSchema but the result sets no structuredContent; such tools must always set it`,
+    );
+  }
+  const violations = [...Value.Errors(outputSchema, structuredContent)].map(
+    ({ instancePath, message }) => `${instancePath || "/"} ${message}`,
+  );
+  if (violations.length > 0)
+    throw new Error(
+      `${name}: structuredContent violates its outputSchema:\n${violations.map((line) => `  ${line}`).join("\n")}`,
+    );
+}
+
+/** One `tool_result` seen by `recordToolOutputs`. */
+export interface RecordedToolOutput {
+  readonly toolName: string;
+  /** `<parent id>/<n>` for a call a codemode script issued. */
+  readonly toolCallId: string;
+  /** A `structuredClone` taken when the handler ran, so later mutation cannot hide a violation. */
+  readonly structuredContent: unknown;
+  readonly isError: boolean;
+}
+
+export interface ToolOutputRecorder {
+  /** Load this LAST; see `recordToolOutputs`. */
+  readonly extension: ExtensionFactory;
+  /** Every result seen so far, in order. */
+  readonly outputs: readonly RecordedToolOutput[];
+  /**
+   * Run `expectToolOutputMatches` on every recorded result against the tool definition
+   * `getToolDefinition` returns for its name, and throw one `Error` listing all violations. Call
+   * it once the test's prompts finish, for example in `onTestFinished`.
+   */
+  check(getToolDefinition: (name: string) => ToolWithOutputSchema | undefined): void;
+}
+
+/**
+ * Record every `tool_result` of a Pi session, nested codemode calls included, to check them
+ * against their tools' `outputSchema`s afterwards. Harnesses load `extension` LAST in the
+ * session's extension factories, so its handler runs after the other extensions' `tool_result`
+ * handlers (such as redaction) and records what codemode scripts actually receive. Then call
+ * `check(name => session.getToolDefinition(name))` once the prompts finish.
+ */
+export function recordToolOutputs(): ToolOutputRecorder {
+  const outputs: RecordedToolOutput[] = [];
+  return {
+    outputs,
+    extension: (pi) => {
+      pi.on("tool_result", (event) => {
+        outputs.push({
+          toolName: event.toolName,
+          toolCallId: event.toolCallId,
+          structuredContent: structuredClone(event.structuredContent),
+          isError: event.isError,
+        });
+      });
+    },
+    check(getToolDefinition) {
+      const violations: string[] = [];
+      for (const output of outputs) {
+        try {
+          expectToolOutputMatches(
+            getToolDefinition(output.toolName) ?? { name: output.toolName },
+            output,
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          violations.push(`call ${output.toolCallId}: ${message}`);
+        }
+      }
+      if (violations.length > 0)
+        throw new Error(
+          `${violations.length} tool result(s) do not conform to their tools' outputSchema:\n${violations.join("\n")}`,
+        );
+    },
+  };
+}
