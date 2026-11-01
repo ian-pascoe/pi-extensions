@@ -1,4 +1,4 @@
-import { Value } from "typebox/value";
+import { expectToolOutputMatches } from "@ian-pascoe/pi-utils/tool-testing";
 import { describe, expect, test } from "vitest";
 import {
   LspApplyOutputSchema,
@@ -176,7 +176,7 @@ const BOUNDED_OUTPUT_CASES = [
 describe("createLspToolOutput bounding", () => {
   test.each(BOUNDED_OUTPUT_CASES)(
     "keeps a bounded $name result valid for its output schema",
-    async ({ schema, fields }) => {
+    async ({ name, schema, fields }) => {
       const { sessionFiles, spills } = memorySessionFiles();
       const result = await createLspToolOutput(
         "short text",
@@ -185,7 +185,7 @@ describe("createLspToolOutput bounding", () => {
         sessionFiles,
         2000,
       );
-      expect(Value.Check(schema, result.structuredContent)).toBe(true);
+      expectToolOutputMatches({ name: `lsp_${name}`, outputSchema: schema }, result);
       expect(result.structuredContent).toMatchObject({
         truncated: true,
         structured_truncated: true,

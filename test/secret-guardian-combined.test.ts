@@ -34,7 +34,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { getKeybindings, type Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { afterEach, beforeAll, describe, expect, test } from "vitest";
+import { recordToolOutputs } from "../packages/pi-utils/src/tool-testing.js";
+import { afterEach, beforeAll, describe, expect, onTestFinished, test } from "vitest";
 import rootManifest from "../package.json" with { type: "json" };
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -168,6 +169,8 @@ async function run(order: readonly string[], value: string) {
       },
     });
   };
+  // The session exists by the time any tool result fires.
+  const toolOutputs = recordToolOutputs((name) => session.getToolDefinition(name));
   const settingsManager = SettingsManager.create(dir, dir);
   const loader = new DefaultResourceLoader({
     cwd: dir,
@@ -178,7 +181,8 @@ async function run(order: readonly string[], value: string) {
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: true,
-    extensionFactories: [fixture],
+    // Pi loads inline factories after path extensions, so the recorder follows Pi Secret and Guardian.
+    extensionFactories: [fixture, toolOutputs.extension],
     additionalExtensionPaths: order.map((entrypoint) => resolve(repositoryRoot, entrypoint)),
     systemPromptOverride: () => "Standing instructions: finish the user's task.",
   });
@@ -200,6 +204,10 @@ async function run(order: readonly string[], value: string) {
     noTools: "builtin",
   });
   sessions.push(session);
+  // Every tool result in every test must conform to its tool's declared outputSchema.
+  onTestFinished(() => {
+    toolOutputs.check();
+  });
   const responses = [
     toolCalls(["secret_ask", { names: ["DEPLOY_TOKEN"] }, "call-ask"]),
     toolCalls(["deploy", { token: "{{secret:DEPLOY_TOKEN}}" }, "call-deploy"]),

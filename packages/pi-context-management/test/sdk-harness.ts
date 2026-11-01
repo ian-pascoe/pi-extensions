@@ -25,6 +25,7 @@ import {
   type ExtensionError,
   type AgentSessionEvent,
 } from "@earendil-works/pi-coding-agent";
+import { recordToolOutputs } from "@ian-pascoe/pi-utils/tool-testing";
 
 interface HarnessOptions {
   contextSettings?: unknown;
@@ -66,6 +67,8 @@ export async function createSdkHarness(
     maxTokens: options.maxTokens ?? 512,
   };
   const providerRequests: string[] = [];
+  // The session exists by the time any tool result fires.
+  const toolOutputs = recordToolOutputs((name) => session.getToolDefinition(name));
   const loader = new DefaultResourceLoader({
     cwd: dir,
     agentDir: dir,
@@ -86,6 +89,8 @@ export async function createSdkHarness(
             throw new Error("Unexpected direct provider request (including a native summarizer)");
           },
         }),
+      // Last, so it records results after the other extensions' `tool_result` handlers.
+      toolOutputs.extension,
     ],
     additionalExtensionPaths: options.additionalExtensionPaths ?? [],
     systemPromptOverride: (base) =>
@@ -113,6 +118,10 @@ export async function createSdkHarness(
   });
   onTestFinished(async () => {
     session.dispose();
+  });
+  // Every tool result in every test must conform to its tool's declared outputSchema.
+  onTestFinished(() => {
+    toolOutputs.check();
   });
   const events: AgentSessionEvent[] = [];
   session.subscribe((event) => events.push(event));

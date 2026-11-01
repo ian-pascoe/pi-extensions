@@ -17,7 +17,8 @@ import {
   SettingsManager,
   type AgentSession,
 } from "@earendil-works/pi-coding-agent";
-import { expect } from "vitest";
+import { recordToolOutputs } from "@ian-pascoe/pi-utils/tool-testing";
+import { expect, onTestFinished } from "vitest";
 import { createMinimalSubagentsExtension } from "../../src/minimal-subagents-extension.js";
 import { replayRegistryEntries } from "../../src/minimal-subagents-registry.js";
 import { RecordingAgentSessionFactory } from "./recording-sessions.js";
@@ -42,6 +43,8 @@ export async function startLiveRootSession(
     retry: { enabled: false },
     compaction: { enabled: false },
   });
+  // The session exists by the time any tool result fires.
+  const toolOutputs = recordToolOutputs((name) => session.getToolDefinition(name));
   const loader = new DefaultResourceLoader({
     cwd,
     agentDir: cwd,
@@ -59,6 +62,8 @@ export async function startLiveRootSession(
           createSessionFactory: () => new RecordingAgentSessionFactory(),
         }),
       },
+      // Last, so it records results after the other extensions' `tool_result` handlers.
+      { name: "tool-output-conformance", factory: toolOutputs.extension },
     ],
   });
   await loader.reload();
@@ -81,6 +86,10 @@ export async function startLiveRootSession(
     noTools: "builtin",
   });
   sessions.push(session);
+  // Every tool result in every test must conform to its tool's declared outputSchema.
+  onTestFinished(() => {
+    toolOutputs.check();
+  });
   session.agent.streamFunction = createStreamFunction(session);
   await session.bindExtensions({
     mode: "rpc",

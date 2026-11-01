@@ -5017,37 +5017,45 @@ describe("registered LSP tool", () => {
     await fixture.close();
   });
 
-  test("caps structured results at 1 MiB, bounding them and keeping the complete Result Spill", async () => {
-    const fixture = await createToolFixture();
-    const hugeName = "y".repeat(3 * 1024 * 1024);
-    const symbols = Array.from({ length: 50_000 }, (_, index) => ({
-      name: `symbol-${index}`,
-    }));
-    fixture.client.responseByMethod.set("workspace/symbol", [{ name: hugeName }, ...symbols]);
-    const result = await executeTool(fixture, {
-      operation: "workspace_symbols",
-      query: "y",
-      file_path: fixture.filePath,
-      limit: 100_000,
-    });
-    if (result.details.kind !== "operation" || result.details.spill_path === undefined) {
-      throw new Error("Expected Result Spill path");
-    }
-    const structured = Value.Parse(LspReadOutputSchema, result.structuredContent);
-    expect(Buffer.byteLength(JSON.stringify(structured), "utf8")).toBeLessThanOrEqual(1024 * 1024);
-    expect(structured).toMatchObject({
-      structured_truncated: true,
-      truncated: true,
-      spill_path: result.details.spill_path,
-    });
-    const complete = await readFile(result.details.spill_path, "utf8");
-    expect(complete).toContain(hugeName);
-    expect(complete).toContain("symbol-49999");
-    const [answer] = structured.results;
-    expect(answer?.value).toEqual(expect.any(Array));
-    expect(structured.warnings.join("\n")).toContain(result.details.spill_path);
-    await fixture.close();
-  });
+  // Builds and bounds a 3 MiB value from 50,000 symbols: under a second alone, but past the default
+  // 20 s when CI runs every package's suite at once, as it does whenever pi-utils changes.
+  test(
+    "caps structured results at 1 MiB, bounding them and keeping the complete Result Spill",
+    { timeout: 60_000 },
+    async () => {
+      const fixture = await createToolFixture();
+      const hugeName = "y".repeat(3 * 1024 * 1024);
+      const symbols = Array.from({ length: 50_000 }, (_, index) => ({
+        name: `symbol-${index}`,
+      }));
+      fixture.client.responseByMethod.set("workspace/symbol", [{ name: hugeName }, ...symbols]);
+      const result = await executeTool(fixture, {
+        operation: "workspace_symbols",
+        query: "y",
+        file_path: fixture.filePath,
+        limit: 100_000,
+      });
+      if (result.details.kind !== "operation" || result.details.spill_path === undefined) {
+        throw new Error("Expected Result Spill path");
+      }
+      const structured = Value.Parse(LspReadOutputSchema, result.structuredContent);
+      expect(Buffer.byteLength(JSON.stringify(structured), "utf8")).toBeLessThanOrEqual(
+        1024 * 1024,
+      );
+      expect(structured).toMatchObject({
+        structured_truncated: true,
+        truncated: true,
+        spill_path: result.details.spill_path,
+      });
+      const complete = await readFile(result.details.spill_path, "utf8");
+      expect(complete).toContain(hugeName);
+      expect(complete).toContain("symbol-49999");
+      const [answer] = structured.results;
+      expect(answer?.value).toEqual(expect.any(Array));
+      expect(structured.warnings.join("\n")).toContain(result.details.spill_path);
+      await fixture.close();
+    },
+  );
 
   describe("compact text results", () => {
     function protocolRange(line: number, character: number, length: number) {

@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
+import { expectToolOutputMatches } from "@ian-pascoe/pi-utils/tool-testing";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -12,7 +13,6 @@ import {
   redactWebSearchApiKey,
   selectSearchProvider,
   WEB_SEARCH_TIMEOUT_MS,
-  WebSearchOutputSchema,
   type SearchProvider,
   type WebSearchToolOptions,
 } from "../src/web-search.js";
@@ -977,7 +977,7 @@ describe("Web Search", () => {
       content: complete,
       full_output_path: path,
     });
-    expect(Value.Check(WebSearchOutputSchema, result.structuredContent)).toBe(true);
+    expectToolOutputMatches(createWebSearchTool(), result);
     expect(JSON.stringify(result)).not.toContain(secret);
     expect(await readFile(path, "utf8")).not.toContain(secret);
   });

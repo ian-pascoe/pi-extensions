@@ -31,7 +31,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
+import { recordToolOutputs } from "../packages/pi-utils/src/tool-testing.js";
+import { afterEach, beforeAll, describe, expect, onTestFinished, test, vi } from "vitest";
 import rootManifest from "../package.json" with { type: "json" };
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -200,10 +201,14 @@ async function startRoot(extensions: readonly string[]): Promise<RootSession> {
   // Minimal Subagents reads Pi's agent directory when the session starts.
   vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
   const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: true });
+  // The session exists by the time any tool result fires.
+  const toolOutputs = recordToolOutputs((name) => session.getToolDefinition(name));
   const resourceLoader = new DefaultResourceLoader({
     cwd,
     agentDir,
     settingsManager,
+    // Pi loads inline factories after the settings' extensions, so the recorder is last.
+    extensionFactories: [toolOutputs.extension],
     noSkills: true,
     noPromptTemplates: true,
     noThemes: true,
@@ -226,6 +231,10 @@ async function startRoot(extensions: readonly string[]): Promise<RootSession> {
     settingsManager,
   });
   sessions.push(session);
+  // Every tool result in every test must conform to its tool's declared outputSchema.
+  onTestFinished(() => {
+    toolOutputs.check();
+  });
   await session.bindExtensions({ mode: "print" });
   return {
     session,

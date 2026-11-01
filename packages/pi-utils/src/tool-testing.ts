@@ -189,3 +189,134 @@ export function toolDeclarations(
     2,
   );
 }
+
+/** The part of a Pi tool definition that declares what its results' `structuredContent` holds. */
+export interface ToolOutputDeclaration {
+  readonly name: string;
+  readonly outputSchema?: TSchema;
+}
+
+/** The part of a tool result that the conformance helpers read. */
+export interface ToolResultOutput {
+  readonly structuredContent?: unknown;
+  readonly isError?: boolean;
+}
+
+/**
+ * How `result` fails to conform to what `tool` declares, as Pi's codemode needs it; empty when it
+ * conforms. A script gets a result's `structuredContent` only when the tool declares an
+ * `outputSchema`, and the text otherwise. So a violation is
+ * - `structuredContent` set for a tool that declares no `outputSchema`;
+ * - no `structuredContent` on a successful result of a tool that declares an `outputSchema` (the
+ *   SDK says such tools always set it);
+ * - `structuredContent` that fails the `outputSchema`: one `<instancePath or "/"> <message>` entry
+ *   per error. Error results are checked too when they carry `structuredContent`, since scripts
+ *   receive it.
+ */
+export function toolOutputViolations(
+  tool: ToolOutputDeclaration,
+  result: ToolResultOutput,
+): string[] {
+  const { outputSchema } = tool;
+  const { structuredContent, isError } = result;
+  if (outputSchema === undefined) {
+    return structuredContent === undefined
+      ? []
+      : [
+          "result sets structuredContent but the tool declares no outputSchema, so codemode scripts would get the text instead",
+        ];
+  }
+  if (structuredContent === undefined) {
+    return isError === true
+      ? []
+      : [
+          "tool declares an outputSchema but the result sets no structuredContent; such tools must always set it",
+        ];
+  }
+  return [...Value.Errors(outputSchema, structuredContent)].map(
+    ({ instancePath, message }) => `structuredContent ${instancePath || "/"} ${message}`,
+  );
+}
+
+/** Throw an `Error` naming `tool` and listing every violation `toolOutputViolations` finds. */
+export function expectToolOutputMatches(
+  tool: ToolOutputDeclaration,
+  result: ToolResultOutput,
+): void {
+  const violations = toolOutputViolations(tool, result);
+  if (violations.length > 0)
+    throw new Error(`${tool.name}:\n${violations.map((line) => `  ${line}`).join("\n")}`);
+}
+
+/** One `tool_result` seen by `recordToolOutputs`. */
+export interface RecordedToolOutput {
+  readonly toolName: string;
+  /** `<parent id>/<n>` for a call a codemode script issued. */
+  readonly toolCallId: string;
+  /** What the tool declared when the result fired; `undefined` when no such tool was defined. */
+  readonly declaration: ToolOutputDeclaration | undefined;
+  /** A `structuredClone` taken when the handler ran, so later mutation cannot hide a violation. */
+  readonly structuredContent: unknown;
+  readonly isError: boolean;
+}
+
+export interface ToolOutputRecorder {
+  /** Load this LAST; see `recordToolOutputs`. */
+  readonly extension: ExtensionFactory;
+  /** Every result seen so far, in order. */
+  readonly outputs: readonly RecordedToolOutput[];
+  /**
+   * Throw one `Error` listing every violation of every recorded result against the declaration
+   * its tool had when the result fired. Call it once the test's prompts finish, for example in
+   * `onTestFinished`.
+   */
+  check(): void;
+}
+
+/**
+ * Record every `tool_result` of a Pi session, nested codemode calls included, with the declaration
+ * of the tool that produced it, to check against its `outputSchema` afterwards. `getToolDefinition`
+ * runs as each result fires, so a tool removed or replaced mid-test is judged as it was then;
+ * harnesses pass `(name) => session.getToolDefinition(name)`, closing over their session, which
+ * exists by the time any tool runs. Harnesses load `extension` LAST in the session's extension
+ * factories, so its handler runs after the other extensions' `tool_result` handlers (such as
+ * redaction) and records what codemode scripts actually receive. Call `check()` once the prompts
+ * finish.
+ */
+export function recordToolOutputs(
+  getToolDefinition: (name: string) => ToolOutputDeclaration | undefined,
+): ToolOutputRecorder {
+  const outputs: RecordedToolOutput[] = [];
+  return {
+    outputs,
+    extension: (pi) => {
+      pi.on("tool_result", (event) => {
+        const tool = getToolDefinition(event.toolName);
+        // Snapshot the declaration; the tool object may be replaced or changed later.
+        let declaration: { name: string; outputSchema?: TSchema } | undefined;
+        if (tool !== undefined) {
+          declaration = { name: tool.name };
+          if (tool.outputSchema !== undefined) declaration.outputSchema = tool.outputSchema;
+        }
+        outputs.push({
+          toolName: event.toolName,
+          toolCallId: event.toolCallId,
+          declaration,
+          structuredContent: structuredClone(event.structuredContent),
+          isError: event.isError,
+        });
+      });
+    },
+    check() {
+      const lines = outputs.flatMap((output) =>
+        toolOutputViolations(output.declaration ?? { name: output.toolName }, output).map(
+          (violation) => `${output.toolName} (call ${output.toolCallId}): ${violation}`,
+        ),
+      );
+      if (lines.length > 0)
+        throw new Error(
+          `${lines.length} tool output violation(s):\n${lines.map((line) => `  ${line}`).join("\n")}`,
+        );
+    },
+  };
+}

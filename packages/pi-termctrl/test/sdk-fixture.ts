@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { onTestFinished } from "vitest";
 import {
   createAssistantMessageEventStream,
   getCurrentSystemPrompt,
@@ -23,6 +24,7 @@ import {
   type ExtensionFactory,
   type ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
+import { recordToolOutputs } from "@ian-pascoe/pi-utils/tool-testing";
 import {
   createPiTermctrlExtension,
   type PiTermctrlExtensionOptions,
@@ -106,6 +108,8 @@ export async function createSdkFixture(options: SdkFixtureOptions = {}): Promise
 
   const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
   const factories: InlineExtension[] = [];
+  // The session exists by the time any tool result fires.
+  const toolOutputs = recordToolOutputs((name) => session.getToolDefinition(name));
   if (options.codemode === true) {
     factories.push({
       name: "codemode",
@@ -132,6 +136,8 @@ export async function createSdkFixture(options: SdkFixtureOptions = {}): Promise
   for (const [index, factory] of (options.extraFactories ?? []).entries()) {
     factories.push({ name: `extra-${index}`, factory });
   }
+  // Last, so it records results after the other extensions' `tool_result` handlers.
+  factories.push({ name: "tool-output-conformance", factory: toolOutputs.extension });
   const loader = new DefaultResourceLoader({
     cwd,
     agentDir,
@@ -167,6 +173,10 @@ export async function createSdkFixture(options: SdkFixtureOptions = {}): Promise
     settingsManager,
   });
   sessions.push(session);
+  // Every tool result in every test must conform to its tool's declared outputSchema.
+  onTestFinished(() => {
+    toolOutputs.check();
+  });
 
   const turns: CapturedTurn[] = [];
   const responses: ScriptedResponse[] = [];

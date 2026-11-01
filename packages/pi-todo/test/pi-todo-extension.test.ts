@@ -11,6 +11,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, Component, TUI } from "@earendil-works/pi-tui";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { expectToolOutputMatches } from "@ian-pascoe/pi-utils/tool-testing";
 import { existsSync } from "node:fs";
 import type { TSchema } from "typebox";
 import { Value } from "typebox/value";
@@ -272,11 +273,9 @@ describe("Pi Todo extension", () => {
   test("every action returns schema-valid structured content for scripts", async () => {
     const harness = new TodoExtensionHarness();
     const context = harness.context();
-    const outputSchema = harness.tool.outputSchema;
-    if (outputSchema === undefined) throw new Error("todo declares no outputSchema");
     const run = async (params: TodoActionInput) => {
       const result = await harness.execute(params, context);
-      expect(Value.Check(outputSchema, result.structuredContent)).toBe(true);
+      expectToolOutputMatches(harness.tool, result);
       expect(result.structuredContent).toEqual(result.details);
       expect(result.structuredContent).not.toBe(result.details);
       return result.structuredContent;
@@ -310,8 +309,6 @@ describe("Pi Todo extension", () => {
   test("batch add creates every Task atomically with sequential IDs and one state entry", async () => {
     const harness = new TodoExtensionHarness();
     const context = harness.context();
-    const outputSchema = harness.tool.outputSchema;
-    if (outputSchema === undefined) throw new Error("todo declares no outputSchema");
     await harness.execute({ action: "add", title: "Existing" }, context);
 
     const added = await harness.execute(
@@ -337,7 +334,7 @@ describe("Pi Todo extension", () => {
     ];
     expect(added.details).toEqual({ action: "add", tasks: batch });
     expect(added.structuredContent).toEqual({ action: "add", tasks: batch });
-    expect(Value.Check(outputSchema, added.structuredContent)).toBe(true);
+    expectToolOutputMatches(harness.tool, added);
     expect(harness.entries).toHaveLength(2);
     expect(harness.entries.at(-1)?.data).toEqual({
       nextId: 5,
@@ -452,8 +449,6 @@ describe("Pi Todo extension", () => {
   test("batch update changes several Tasks atomically with one state entry", async () => {
     const harness = new TodoExtensionHarness();
     const context = harness.context();
-    const outputSchema = harness.tool.outputSchema;
-    if (outputSchema === undefined) throw new Error("todo declares no outputSchema");
     await harness.execute(
       {
         action: "add",
@@ -480,7 +475,7 @@ describe("Pi Todo extension", () => {
     ];
     expect(updated.details).toEqual({ action: "update", tasks: changed });
     expect(updated.structuredContent).toEqual({ action: "update", tasks: changed });
-    expect(Value.Check(outputSchema, updated.structuredContent)).toBe(true);
+    expectToolOutputMatches(harness.tool, updated);
     expect(harness.entries).toHaveLength(2);
     expect(harness.entries.at(-1)?.data).toEqual({
       nextId: 4,

@@ -1,5 +1,4 @@
-import { Value } from "typebox/value";
-import { expect } from "vitest";
+import { expectToolOutputMatches } from "@ian-pascoe/pi-utils/tool-testing";
 import {
   DAP_OPERATIONS,
   DapToolOutputSchemas,
@@ -21,17 +20,13 @@ export const DESIRED_BREAKPOINT_OPERATIONS: readonly DapOperation[] = DAP_OPERAT
  */
 export function expectDapToolOutput(
   operation: DapOperation,
-  result: { readonly structuredContent?: unknown },
+  result: { readonly structuredContent?: unknown; readonly isError?: boolean },
 ): void {
-  const schema = DapToolOutputSchemas[operation];
-  expect(
-    result.structuredContent,
-    `dap_${operation} must return structuredContent`,
-  ).not.toBeUndefined();
-  expect(
-    [...Value.Errors(schema, result.structuredContent)].map(
-      ({ instancePath, message }) => `${instancePath || "/"} ${message}`,
-    ),
-    `dap_${operation} structuredContent violates its outputSchema`,
-  ).toEqual([]);
+  // `expectToolOutputMatches` lets an error result omit it; DAP's state failures still carry it.
+  if (result.structuredContent === undefined)
+    throw new Error(`dap_${operation} must return structuredContent`);
+  expectToolOutputMatches(
+    { name: `dap_${operation}`, outputSchema: DapToolOutputSchemas[operation] },
+    result,
+  );
 }

@@ -3,6 +3,7 @@ import { readFile, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { expectToolOutputMatches } from "@ian-pascoe/pi-utils/tool-testing";
 import { Parser } from "htmlparser2";
 import TurndownService from "turndown";
 import { Value } from "typebox/value";
@@ -439,7 +440,7 @@ describe("Web Fetch", () => {
       expect(whole.structuredContent).not.toHaveProperty("total_lines");
       expect(whole.structuredContent).not.toHaveProperty("next_offset");
       for (const result of [windowed, toEnd, whole]) {
-        expect(Value.Check(WebFetchOutputSchema, result.structuredContent)).toBe(true);
+        expectToolOutputMatches(createWebFetchTool(), result);
       }
     });
 
@@ -758,7 +759,7 @@ describe("Web Fetch", () => {
       structured_truncated: false,
       full_output_path: path,
     });
-    expect(Value.Check(WebFetchOutputSchema, result.structuredContent)).toBe(true);
+    expectToolOutputMatches(createWebFetchTool(), result);
   });
 
   test("bounds script content at 1 MiB on a character boundary and keeps the spill complete", async () => {
@@ -774,7 +775,7 @@ describe("Web Fetch", () => {
     if (path === undefined) throw new Error("Expected Web Fetch spill");
     spillDirectories.push(dirname(path));
 
-    expect(Value.Check(WebFetchOutputSchema, result.structuredContent)).toBe(true);
+    expectToolOutputMatches(createWebFetchTool(), result);
     const structured = Value.Parse(WebFetchOutputSchema, result.structuredContent);
     expect(structured.truncated).toBe(true);
     expect(structured.structured_truncated).toBe(true);
@@ -819,7 +820,7 @@ describe("Web Fetch", () => {
       const spill = result.details.truncation?.fullOutputPath;
       if (spill !== undefined) spillDirectories.push(dirname(spill));
 
-      expect(Value.Check(WebFetchOutputSchema, result.structuredContent)).toBe(true);
+      expectToolOutputMatches(createWebFetchTool(), result);
       const structured = Value.Parse(WebFetchOutputSchema, result.structuredContent);
       expect(structured.truncated).toBe(truncated);
       expect(structured.structured_truncated).toBe(structuredTruncated);
