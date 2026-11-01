@@ -2,7 +2,7 @@
 
 ## Working rules
 
-- **SDK compatibility** — Check APIs and package exports against the installed Pi dependency (`node_modules/@earendil-works/pi-coding-agent/dist/core`; `dist/bundle` is minified) and the package's declared compatibility range. Reference checkouts may be newer than the runtime.
+- **SDK compatibility** — Check APIs and package exports against the installed Pi dependency (`node_modules/@earendil-works/pi-coding-agent/dist/core`, and `dist/extensions` for built-in extensions such as codemode; `dist/bundle` is minified) and the package's declared compatibility range. Reference checkouts may be newer than the runtime.
 - **Native ownership** — For lifecycle, context, and tool-management changes, trace Pi's existing hooks and local helpers first. Keep policy with its existing owner; implement only the missing behavior.
 - **Native state** — Prefer Pi settings for configuration and Pi sessions for durable session state. Minimize external settings files, caches, and other persistence; derive state from Pi where feasible. Introduce external storage only for a concrete need Pi cannot meet, and document that limitation.
 - **Coexistence** — When changing tool activation, context delivery, or a package's tool-result text, trace other extensions using the same Pi APIs. Test affected standalone and combined modes: combined-mode tests live in the root `test/` and run with `bun run test:root`, which `bun run --filter` skips.
