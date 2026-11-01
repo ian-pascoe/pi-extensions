@@ -122,7 +122,12 @@
       ]
     },
     "//#typecheck:root": {
-      "inputs": ["scripts/**/*.mjs", "test/**/*.ts", "vitest.config.ts"]
+      "inputs": [
+        "scripts/**/*.mjs",
+        "test/**/*.ts",
+        "vitest.config.ts",
+        "packages/pi-utils/src/tool-testing.ts"
+      ]
     },
     "//#format:check": {
       "inputs": [
