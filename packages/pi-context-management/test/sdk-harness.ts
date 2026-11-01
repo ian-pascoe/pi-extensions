@@ -67,7 +67,8 @@ export async function createSdkHarness(
     maxTokens: options.maxTokens ?? 512,
   };
   const providerRequests: string[] = [];
-  const outputs = recordToolOutputs();
+  // The session exists by the time any tool result fires.
+  const toolOutputs = recordToolOutputs((name) => session.getToolDefinition(name));
   const loader = new DefaultResourceLoader({
     cwd: dir,
     agentDir: dir,
@@ -89,7 +90,7 @@ export async function createSdkHarness(
           },
         }),
       // Last, so it records results after the other extensions' `tool_result` handlers.
-      outputs.extension,
+      toolOutputs.extension,
     ],
     additionalExtensionPaths: options.additionalExtensionPaths ?? [],
     systemPromptOverride: (base) =>
@@ -120,7 +121,7 @@ export async function createSdkHarness(
   });
   // Every tool result in every test must conform to its tool's declared outputSchema.
   onTestFinished(() => {
-    outputs.check((name) => session.getToolDefinition(name));
+    toolOutputs.check();
   });
   const events: AgentSessionEvent[] = [];
   session.subscribe((event) => events.push(event));

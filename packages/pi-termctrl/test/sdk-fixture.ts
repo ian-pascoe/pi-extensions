@@ -108,7 +108,8 @@ export async function createSdkFixture(options: SdkFixtureOptions = {}): Promise
 
   const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
   const factories: InlineExtension[] = [];
-  const outputs = recordToolOutputs();
+  // The session exists by the time any tool result fires.
+  const toolOutputs = recordToolOutputs((name) => session.getToolDefinition(name));
   if (options.codemode === true) {
     factories.push({
       name: "codemode",
@@ -136,7 +137,7 @@ export async function createSdkFixture(options: SdkFixtureOptions = {}): Promise
     factories.push({ name: `extra-${index}`, factory });
   }
   // Last, so it records results after the other extensions' `tool_result` handlers.
-  factories.push({ name: "tool-output-conformance", factory: outputs.extension });
+  factories.push({ name: "tool-output-conformance", factory: toolOutputs.extension });
   const loader = new DefaultResourceLoader({
     cwd,
     agentDir,
@@ -174,7 +175,7 @@ export async function createSdkFixture(options: SdkFixtureOptions = {}): Promise
   sessions.push(session);
   // Every tool result in every test must conform to its tool's declared outputSchema.
   onTestFinished(() => {
-    outputs.check((name) => session.getToolDefinition(name));
+    toolOutputs.check();
   });
 
   const turns: CapturedTurn[] = [];

@@ -158,7 +158,8 @@ export async function createSecretHarness(options: SecretHarnessOptions = {}) {
   // Starts at the real time: other sessions in the process judge expiry by the wall clock.
   const clock = options.clock ?? { now: Date.now() };
   const received: ReceivedCall[] = [];
-  const outputs = recordToolOutputs();
+  // The session exists by the time any tool result fires.
+  const toolOutputs = recordToolOutputs((name) => session.getToolDefinition(name));
   const dialogs = [...(options.dialogs ?? [])];
   const frames: DialogFrame[] = [];
   const notices: string[] = [];
@@ -183,7 +184,7 @@ export async function createSecretHarness(options: SecretHarnessOptions = {}) {
         },
       }),
       // Last, after Pi Secret's redaction, so it records the value scripts receive.
-      outputs.extension,
+      toolOutputs.extension,
     ],
     systemPromptOverride: () => "Standing instructions: finish the user's task.",
   });
@@ -267,7 +268,7 @@ export async function createSecretHarness(options: SecretHarnessOptions = {}) {
   };
   // Every result of every tool in every test must conform to its declared outputSchema.
   onTestFinished(() => {
-    outputs.check((name) => session.getToolDefinition(name));
+    toolOutputs.check();
   });
 
   const runner = session.extensionRunner;

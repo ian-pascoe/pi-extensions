@@ -409,7 +409,8 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
     return stream;
   };
 
-  const outputs = recordToolOutputs();
+  // The session exists by the time any tool result fires.
+  const toolOutputs = recordToolOutputs((name) => session.getToolDefinition(name));
   const loader = new DefaultResourceLoader({
     cwd: dir,
     agentDir: dir,
@@ -557,7 +558,7 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
       ...(options.withoutGuardian ? [] : [guardian]),
       ...(options.after ?? []),
       // Last, so it records results after the other extensions' `tool_result` handlers.
-      outputs.extension,
+      toolOutputs.extension,
     ],
     systemPromptOverride: () =>
       options.systemPrompt ?? "Standing instructions: finish the user's task.",
@@ -585,7 +586,7 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
   });
   // Every tool result in every test must conform to its tool's declared outputSchema.
   onTestFinished(() => {
-    outputs.check((name) => session.getToolDefinition(name));
+    toolOutputs.check();
   });
   const responses: AssistantMessage[] = [];
   const agentRequests: Context["messages"][] = [];
