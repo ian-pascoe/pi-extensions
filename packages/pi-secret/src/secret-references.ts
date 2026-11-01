@@ -91,9 +91,9 @@ export function secretReferencesByName(value: JsonValue): WrittenReferences {
         match.form === "env"
           ? writtenEnvReference(text, found.index, found.index + found[0].length)
           : { form: "placeholder", text: found[0] };
-      const forms = references.get(match.name);
-      if (forms === undefined) references.set(match.name, [written]);
-      else if (!forms.some((form) => form.text === written.text)) forms.push(written);
+      const known = references.get(match.name);
+      if (known === undefined) references.set(match.name, [written]);
+      else if (!known.some((reference) => reference.text === written.text)) known.push(written);
     }
   });
   return references;

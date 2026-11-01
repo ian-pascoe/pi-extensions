@@ -259,6 +259,11 @@ const DEFAULT_LIST_LIMIT = 20;
 
 const WITHHELD_RESULT =
   "Pi Secret could not check this tool result for Secret values, so it was withheld. The tool did run.";
+/** References as the call wrote them, listed for a block reason. */
+function writtenText(written: readonly WrittenReference[]): string {
+  return written.map((reference) => reference.text).join(", ");
+}
+
 /** What removes the backslash that escapes each form, so the hint is true of each example. */
 const ESCAPE_REMOVED_BY = {
   placeholder: "which Pi Secret removes before the tool runs",
@@ -287,8 +292,6 @@ function iso(time: number): string {
 function unresolvedReason(references: WrittenReferences): string | undefined {
   const writtenWhere = (keep: (name: string) => boolean) =>
     [...references].flatMap(([name, written]) => (keep(name) ? written : []));
-  const listed = (written: readonly WrittenReference[]) =>
-    written.map((reference) => reference.text).join(", ");
   const malformed = writtenWhere((name) => !isSecretName(name));
   const unheld = writtenWhere((name) => isSecretName(name) && !isSecretHeld(name));
   const sentences = ["The call did not run."];
@@ -298,12 +301,12 @@ function unresolvedReason(references: WrittenReferences): string | undefined {
         ? "is not a valid Secret Reference"
         : "are not valid Secret References";
     sentences.push(
-      `${listed(malformed)} ${verb}: a Secret Name uses uppercase letters, digits, and underscores, and does not start with a digit.`,
+      `${writtenText(malformed)} ${verb}: a Secret Name uses uppercase letters, digits, and underscores, and does not start with a digit.`,
     );
   }
   if (unheld.length > 0) {
     sentences.push(
-      `It references ${listed(unheld)}, which this session does not hold. The Secret expired, was forgotten, or was never provided. Call secret_ask to request it again.`,
+      `It references ${writtenText(unheld)}, which this session does not hold. The Secret expired, was forgotten, or was never provided. Call secret_ask to request it again.`,
     );
   }
   if (sentences.length === 1) return undefined;
@@ -731,20 +734,20 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
       const reason = unresolvedReason(references);
       if (reason !== undefined) return { block: true, reason };
       // Granted Secrets are read again now, in either reference form (ADR-0001).
-      for (const [name, forms] of references) {
+      for (const [name, written] of references) {
         let value: string | undefined;
         try {
           value = await refreshSecret(name);
         } catch (cause) {
           return {
             block: true,
-            reason: `The call did not run. Pi Secret could not read ${forms.map((form) => form.text).join(", ")} from its Secret Provider: ${errorMessage(cause)}. Ask the user to unlock or sign in to it, or call secret_ask_grant again. ${TROUBLESHOOTING_HINT}`,
+            reason: `The call did not run. Pi Secret could not read ${writtenText(written)} from its Secret Provider: ${errorMessage(cause)}. Ask the user to unlock or sign in to it, or call secret_ask_grant again. ${TROUBLESHOOTING_HINT}`,
           };
         }
         if (value === undefined)
           return {
             block: true,
-            reason: unresolvedReason(new Map([[name, forms]])) ?? "The call did not run.",
+            reason: unresolvedReason(new Map([[name, written]])) ?? "The call did not run.",
           };
       }
       // Pi passes the same arguments object on to the tool: rewrite in place.

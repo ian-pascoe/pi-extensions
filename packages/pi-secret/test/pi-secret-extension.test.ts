@@ -155,28 +155,35 @@ describe("Secret Request and Secret References", () => {
       "a malformed Secret Name",
       { text: "{{secret:lower-case}}" },
       "{{secret:lower-case}} is not a valid Secret Reference",
+      hint(removedByPiSecret("{{secret:lower-case}}")),
     ],
     [
       "an empty Secret Reference",
       { text: "{{secret:}}" },
       "{{secret:}} is not a valid Secret Reference",
+      hint(removedByPiSecret("{{secret:}}")),
     ],
     [
       "a malformed environment reference",
       { text: "echo $PI_SECRET_lower" },
       "$PI_SECRET_lower is not a valid Secret Reference",
+      hint(shellEscape("$PI_SECRET_lower")),
     ],
-  ])("blocks a call with %s and says what a Secret Name looks like", async (_kind, args, named) => {
-    const harness = await createSecretHarness();
-    harness.responses.push(toolCalls(["echo", args, "call-echo"]), reply("Done."));
-    await harness.session.prompt("Go.");
+  ])(
+    "blocks a call with %s and says what a Secret Name looks like",
+    async (_kind, args, named, escapes) => {
+      const harness = await createSecretHarness();
+      harness.responses.push(toolCalls(["echo", args, "call-echo"]), reply("Done."));
+      await harness.session.prompt("Go.");
 
-    expect(harness.received).toEqual([]);
-    const text = harness.resultText("call-echo");
-    expect(text).toContain(named);
-    expect(text).toContain("uppercase letters, digits, and underscores");
-    expect(text).not.toContain("does not hold");
-  });
+      expect(harness.received).toEqual([]);
+      const text = harness.resultText("call-echo");
+      expect(text).toContain(named);
+      expect(text).toContain("uppercase letters, digits, and underscores");
+      expect(text).not.toContain("does not hold");
+      expect(text).toContain(escapes);
+    },
+  );
 
   it("gives a malformed and an unheld Secret Reference each its own advice in one block", async () => {
     const harness = await createSecretHarness();
