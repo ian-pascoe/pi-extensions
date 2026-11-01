@@ -42,7 +42,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
+import { recordToolOutputs } from "../packages/pi-utils/src/tool-testing.js";
+import { afterEach, beforeAll, describe, expect, onTestFinished, test, vi } from "vitest";
 import rootManifest from "../package.json" with { type: "json" };
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -202,6 +203,8 @@ async function runMutation(scenario: Scenario, order: readonly string[]): Promis
 
   const model = getModel("deepseek", "deepseek-flash");
   if (model === undefined) throw new Error("Missing pinned DeepSeek model");
+  // The session exists by the time any tool result fires.
+  const toolOutputs = recordToolOutputs((name) => session.getToolDefinition(name));
   const settings = SettingsManager.inMemory({ retry: { enabled: false } });
   const loader = new DefaultResourceLoader({
     cwd,
@@ -221,6 +224,8 @@ async function runMutation(scenario: Scenario, order: readonly string[]): Promis
             throw new Error("Unexpected direct provider request");
           },
         }),
+      // Last: inline factories load after the path extensions, whose handlers chain first.
+      toolOutputs.extension,
     ],
     systemPromptOverride: () => "Mutate the file.",
   });
@@ -251,6 +256,10 @@ async function runMutation(scenario: Scenario, order: readonly string[]): Promis
     settingsManager: settings,
   });
   sessions.push(session);
+  // Every tool result in every test must conform to its tool's declared outputSchema.
+  onTestFinished(() => {
+    toolOutputs.check();
+  });
 
   const toolUse = (name: string, input: JsonObject): ScriptedResponse => {
     return () => fauxAssistantMessage(fauxToolCall(name, input), { stopReason: "toolUse" });

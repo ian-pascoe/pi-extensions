@@ -23,7 +23,8 @@ import {
   SettingsManager,
   type AgentSession,
 } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, test } from "vitest";
+import { recordToolOutputs } from "@ian-pascoe/pi-utils/tool-testing";
+import { afterEach, describe, expect, onTestFinished, test } from "vitest";
 import { createPiWebToolsExtension } from "../src/index.js";
 import { selectSearchProvider } from "../src/web-search.js";
 
@@ -85,6 +86,8 @@ async function createFixture(sessionId?: string) {
           }),
         )
       : new Response(LONG_PAGE, { headers: { "content-type": "text/html" } });
+  // The session exists by the time any tool result fires.
+  const toolOutputs = recordToolOutputs((name) => session.getToolDefinition(name));
   const loader = new DefaultResourceLoader({
     cwd,
     agentDir,
@@ -98,6 +101,8 @@ async function createFixture(sessionId?: string) {
     extensionFactories: [
       { name: "codemode", factory: createCodemodeExtension(), builtin: true, replaceable: true },
       { name: "pi-web-tools-test", factory: createPiWebToolsExtension({ fetch }) },
+      // Last, so it records results after the other extensions' `tool_result` handlers.
+      { name: "tool-output-conformance", factory: toolOutputs.extension },
     ],
     systemPromptOverride: () => "Standing instructions: answer with the shortest correct turn.",
   });
@@ -122,6 +127,10 @@ async function createFixture(sessionId?: string) {
     settingsManager,
   });
   sessions.push(session);
+  // Every tool result in every test must conform to its tool's declared outputSchema.
+  onTestFinished(() => {
+    toolOutputs.check();
+  });
 
   const turns: CapturedTurn[] = [];
   const responses: AssistantMessage[] = [];

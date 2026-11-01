@@ -22,6 +22,9 @@ export function expectDapToolOutput(
   operation: DapOperation,
   result: { readonly structuredContent?: unknown; readonly isError?: boolean },
 ): void {
+  // `expectToolOutputMatches` lets an error result omit it; DAP's state failures still carry it.
+  if (result.structuredContent === undefined)
+    throw new Error(`dap_${operation} must return structuredContent`);
   expectToolOutputMatches(
     { name: `dap_${operation}`, outputSchema: DapToolOutputSchemas[operation] },
     result,

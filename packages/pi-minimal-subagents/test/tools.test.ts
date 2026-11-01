@@ -11,8 +11,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager, setKeybindings } from "@earendil-works/pi-tui";
 import { raiseQueuedSteer, settleQueuedSteers } from "@ian-pascoe/pi-utils/queued-steer";
+import { expectToolOutputMatches } from "@ian-pascoe/pi-utils/tool-testing";
 import { taggedTheme } from "@ian-pascoe/pi-utils/ui-testing";
-import { Value } from "typebox/value";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { MinimalSubagentsModelRole } from "../src/minimal-subagents-config.js";
 import { CoordinatorToolOutputSchemas } from "../src/minimal-subagents-render-contract.js";
@@ -236,7 +236,7 @@ describe("minimal subagents coordinator tools", () => {
     );
 
     expect(result.structuredContent).toEqual(spawned);
-    expect(Value.Check(CoordinatorToolOutputSchemas.subagent, result.structuredContent)).toBe(true);
+    expectToolOutputMatches(requireTool(options, "subagent"), result);
     expect(result.content).toEqual([
       {
         type: "text",
@@ -425,9 +425,7 @@ describe("minimal subagents coordinator tools", () => {
       source_agent_id: "child",
       source_turn_id: "child:turn-1",
     });
-    expect(Value.Check(CoordinatorToolOutputSchemas.subagent_wait, result.structuredContent)).toBe(
-      true,
-    );
+    expectToolOutputMatches(requireTool(options, "subagent_wait"), result);
   });
 
   describe("steered wait", () => {
@@ -481,9 +479,7 @@ describe("minimal subagents coordinator tools", () => {
         source_agent_id: "child",
         source_turn_id: "child:turn-1",
       });
-      expect(
-        Value.Check(CoordinatorToolOutputSchemas.subagent_wait, result.structuredContent),
-      ).toBe(true);
+      expectToolOutputMatches(requireTool(options, "subagent_wait"), result);
       expect(contentText(result)).toContain("queued steer");
       expect(contentText(result)).toContain("not cancelled");
     });
@@ -580,9 +576,7 @@ describe("minimal subagents coordinator tools", () => {
       source_agent_id: "child",
       source_turn_id: "child:turn-1",
     });
-    expect(Value.Check(CoordinatorToolOutputSchemas.subagent_wait, notice.structuredContent)).toBe(
-      true,
-    );
+    expectToolOutputMatches(requireTool(options, "subagent_wait"), notice);
 
     // Coordination Messages the wait drained follow the notice, since the parent has not seen them.
     const withMessages = await waitTool.execute(
@@ -594,9 +588,7 @@ describe("minimal subagents coordinator tools", () => {
     );
     expect(JSON.stringify(withMessages.content)).toContain("progress 1");
     expect(withMessages.structuredContent).toMatchObject({ messages: [drainedMessage] });
-    expect(
-      Value.Check(CoordinatorToolOutputSchemas.subagent_wait, withMessages.structuredContent),
-    ).toBe(true);
+    expectToolOutputMatches(requireTool(options, "subagent_wait"), withMessages);
 
     // A result handed to Pi but not yet in the caller's branch arrives after this tool result.
     const pending = { ...alreadyDelivered, delivery_pending: true } as const;
@@ -619,9 +611,7 @@ describe("minimal subagents coordinator tools", () => {
       source_agent_id: "child",
       source_turn_id: "child:turn-1",
     });
-    expect(
-      Value.Check(CoordinatorToolOutputSchemas.subagent_wait, pendingNotice.structuredContent),
-    ).toBe(true);
+    expectToolOutputMatches(requireTool(options, "subagent_wait"), pendingNotice);
   });
 
   it("streams the waited-on child's running-turn progress in partial wait updates", async () => {
@@ -683,9 +673,7 @@ describe("minimal subagents coordinator tools", () => {
       details: deletion,
       structuredContent: deletion,
     });
-    expect(
-      Value.Check(CoordinatorToolOutputSchemas.subagent_delete, result.structuredContent),
-    ).toBe(true);
+    expectToolOutputMatches(requireTool(options, "subagent_delete"), result);
     const text = contentText(result);
     expect(text).toContain("Minimal subagents deletion partially failed");
     expect(text).toContain("disk full");
