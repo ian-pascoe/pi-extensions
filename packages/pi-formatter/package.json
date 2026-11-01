@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-formatter",
-  "version": "0.6.6",
+  "version": "0.6.7",
   "private": false,
   "description": "Configured automatic post-edit formatting for Pi",
   "keywords": [
@@ -36,7 +36,7 @@
     "typecheck": "tsrs --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@ian-pascoe/pi-utils": "^0.10.0"
+    "@ian-pascoe/pi-utils": "^0.11.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=1.1.0",

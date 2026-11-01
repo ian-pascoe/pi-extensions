@@ -1,5 +1,17 @@
 # @ian-pascoe/pi-secret
 
+## 0.4.0
+
+### Minor Changes
+
+- 5a42b49: **Behavior change for codemode scripts:** `secret_ask`, `secret_ask_grant`, `secret_list`, `secret_save`, and `secret_forget` now declare an `outputSchema`, so a codemode script that calls one receives an object (`{ secrets, available?, notes? }`, the result's details) instead of the model-facing text. Each outcome holds the Secret Name, its status, and how to reference it, never a value. Direct calls are unchanged.
+
+### Patch Changes
+
+- 9d64447: A blocked call's reason now quotes each Secret Reference as the call wrote it, in either form, instead of always naming the `{{secret:NAME}}` form. A shell expansion is quoted with the `$` or `${` that opens it (`$PI_SECRET_NAME`, `${PI_SECRET_NAME}`). The escape hint gives one example for each form the call used and says what removes the backslash: Pi Secret, or for an expansion the shell, whose own escape Pi Secret leaves as written. A Secret Provider read failure names the reference the same way.
+- Updated dependencies [0e63000]
+  - @ian-pascoe/pi-utils@0.11.0
+
 ## 0.3.0
 
 ### Minor Changes

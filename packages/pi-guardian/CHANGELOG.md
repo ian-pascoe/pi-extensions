@@ -1,5 +1,12 @@
 # @ian-pascoe/pi-guardian
 
+## 0.4.1
+
+### Patch Changes
+
+- Updated dependencies [0e63000]
+  - @ian-pascoe/pi-utils@0.11.0
+
 ## 0.4.0
 
 ### Minor Changes

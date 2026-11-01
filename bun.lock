@@ -33,9 +33,9 @@
     },
     "packages/pi-advisor": {
       "name": "@ian-pascoe/pi-advisor",
-      "version": "0.8.5",
+      "version": "0.8.6",
       "dependencies": {
-        "@ian-pascoe/pi-utils": "^0.10.0",
+        "@ian-pascoe/pi-utils": "^0.11.0",
       },
       "peerDependencies": {
         "@earendil-works/pi-agent-core": ">=1.1.0",
@@ -54,9 +54,9 @@
     },
     "packages/pi-command-deck": {
       "name": "@ian-pascoe/pi-command-deck",
-      "version": "0.2.7",
+      "version": "0.2.8",
       "dependencies": {
-        "@ian-pascoe/pi-utils": "^0.10.0",
+        "@ian-pascoe/pi-utils": "^0.11.0",
       },
       "peerDependencies": {
         "@earendil-works/pi-coding-agent": ">=1.1.0",
@@ -65,9 +65,9 @@
     },
     "packages/pi-context-management": {
       "name": "@ian-pascoe/pi-context-management",
-      "version": "0.8.3",
+      "version": "0.8.4",
       "dependencies": {
-        "@ian-pascoe/pi-utils": "^0.10.0",
+        "@ian-pascoe/pi-utils": "^0.11.0",
       },
       "peerDependencies": {
         "@earendil-works/pi-agent-core": ">=1.1.0",
@@ -79,9 +79,9 @@
     },
     "packages/pi-dap": {
       "name": "@ian-pascoe/pi-dap",
-      "version": "0.10.1",
+      "version": "0.10.2",
       "dependencies": {
-        "@ian-pascoe/pi-utils": "^0.10.0",
+        "@ian-pascoe/pi-utils": "^0.11.0",
       },
       "devDependencies": {
         "@vscode/debugprotocol": "^1.68.0",
@@ -94,9 +94,9 @@
     },
     "packages/pi-formatter": {
       "name": "@ian-pascoe/pi-formatter",
-      "version": "0.6.6",
+      "version": "0.6.7",
       "dependencies": {
-        "@ian-pascoe/pi-utils": "^0.10.0",
+        "@ian-pascoe/pi-utils": "^0.11.0",
       },
       "peerDependencies": {
         "@earendil-works/pi-coding-agent": ">=1.1.0",
@@ -105,9 +105,9 @@
     },
     "packages/pi-git-checkpoints": {
       "name": "@ian-pascoe/pi-git-checkpoints",
-      "version": "0.3.6",
+      "version": "0.3.7",
       "dependencies": {
-        "@ian-pascoe/pi-utils": "^0.10.0",
+        "@ian-pascoe/pi-utils": "^0.11.0",
       },
       "peerDependencies": {
         "@earendil-works/pi-coding-agent": ">=1.1.0",
@@ -116,9 +116,9 @@
     },
     "packages/pi-guardian": {
       "name": "@ian-pascoe/pi-guardian",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "dependencies": {
-        "@ian-pascoe/pi-utils": "^0.10.0",
+        "@ian-pascoe/pi-utils": "^0.11.0",
       },
       "peerDependencies": {
         "@earendil-works/pi-ai": ">=1.1.0",
@@ -129,9 +129,9 @@
     },
     "packages/pi-lsp": {
       "name": "@ian-pascoe/pi-lsp",
-      "version": "0.15.2",
+      "version": "0.15.3",
       "dependencies": {
-        "@ian-pascoe/pi-utils": "^0.10.0",
+        "@ian-pascoe/pi-utils": "^0.11.0",
         "cross-spawn": "^7.0.6",
         "vscode-languageserver-protocol": "^3.18.5",
       },
@@ -146,9 +146,9 @@
     },
     "packages/pi-minimal-subagents": {
       "name": "@ian-pascoe/pi-minimal-subagents",
-      "version": "0.21.0",
+      "version": "0.21.1",
       "dependencies": {
-        "@ian-pascoe/pi-utils": "^0.10.0",
+        "@ian-pascoe/pi-utils": "^0.11.0",
         "minimatch": "^10.2.6",
       },
       "peerDependencies": {
@@ -161,9 +161,9 @@
     },
     "packages/pi-secret": {
       "name": "@ian-pascoe/pi-secret",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
-        "@ian-pascoe/pi-utils": "^0.10.0",
+        "@ian-pascoe/pi-utils": "^0.11.0",
       },
       "peerDependencies": {
         "@earendil-works/pi-ai": ">=1.1.0",
@@ -182,9 +182,9 @@
     },
     "packages/pi-termctrl": {
       "name": "@ian-pascoe/pi-termctrl",
-      "version": "0.9.1",
+      "version": "0.9.2",
       "dependencies": {
-        "@ian-pascoe/pi-utils": "^0.10.0",
+        "@ian-pascoe/pi-utils": "^0.11.0",
         "@kitlangton/terminal-control": "^1.2.1",
       },
       "peerDependencies": {
@@ -195,9 +195,9 @@
     },
     "packages/pi-todo": {
       "name": "@ian-pascoe/pi-todo",
-      "version": "0.6.8",
+      "version": "0.6.9",
       "dependencies": {
-        "@ian-pascoe/pi-utils": "^0.10.0",
+        "@ian-pascoe/pi-utils": "^0.11.0",
       },
       "peerDependencies": {
         "@earendil-works/pi-ai": ">=1.1.0",
@@ -208,9 +208,9 @@
     },
     "packages/pi-tps-tracker": {
       "name": "@ian-pascoe/pi-tps-tracker",
-      "version": "0.4.6",
+      "version": "0.4.7",
       "dependencies": {
-        "@ian-pascoe/pi-utils": "^0.10.0",
+        "@ian-pascoe/pi-utils": "^0.11.0",
       },
       "optionalDependencies": {
         "tiktoken": "1.0.22",
@@ -221,7 +221,7 @@
     },
     "packages/pi-utils": {
       "name": "@ian-pascoe/pi-utils",
-      "version": "0.10.0",
+      "version": "0.11.0",
       "dependencies": {
         "proper-lockfile": "^4.1.2",
       },
@@ -243,9 +243,9 @@
     },
     "packages/pi-web-tools": {
       "name": "@ian-pascoe/pi-web-tools",
-      "version": "0.6.7",
+      "version": "0.6.8",
       "dependencies": {
-        "@ian-pascoe/pi-utils": "^0.10.0",
+        "@ian-pascoe/pi-utils": "^0.11.0",
         "htmlparser2": "12.0.0",
         "turndown": "7.2.4",
       },
