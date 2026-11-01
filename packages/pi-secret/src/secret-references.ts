@@ -49,18 +49,30 @@ function matchOf(
   return { escaped: escape === "\\", name: env ?? "", form: "env" };
 }
 
+/**
+ * One reference as the call wrote it, and its form, which decides how to escape it:
+ * - `placeholder`: `{{secret:NAME}}`;
+ * - `expansion`: a shell expansion, `$PI_SECRET_NAME` or `${PI_SECRET_NAME…`, whose escape is the shell's own;
+ * - `word`: the bare `PI_SECRET_NAME`, as in prose.
+ */
+export interface WrittenReference {
+  readonly form: "placeholder" | "expansion" | "word";
+  readonly text: string;
+}
+
 /** Each referenced Secret Name, with its references as the call wrote them, in order of appearance. */
-export type WrittenReferences = ReadonlyMap<string, readonly string[]>;
+export type WrittenReferences = ReadonlyMap<string, readonly WrittenReference[]>;
 
 /**
- * An environment reference as written, with the shell expansion around it (`$NAME` or `${NAME}`),
- * so that a backslash put right before it is the shell's own escape, which Pi Secret leaves alone.
+ * An environment reference as written: with the shell expansion that opens it (`$` or `${`, and a
+ * `}` right after the name), so a backslash put right before it is the shell's own escape.
  */
-function writtenEnvReference(text: string, start: number, end: number): string {
+function writtenEnvReference(text: string, start: number, end: number): WrittenReference {
   const word = text.slice(start, end);
-  if (text.slice(start - 2, start) === "${" && text[end] === "}") return `\${${word}}`;
-  if (text[start - 1] === "$") return `$${word}`;
-  return word;
+  if (text.slice(start - 2, start) === "${")
+    return { form: "expansion", text: `\${${word}${text[end] === "}" ? "}" : ""}` };
+  if (text[start - 1] === "$") return { form: "expansion", text: `$${word}` };
+  return { form: "word", text: word };
 }
 
 /**
@@ -70,18 +82,18 @@ function writtenEnvReference(text: string, start: number, end: number): string {
  * Escaped references name nothing.
  */
 export function secretReferencesByName(value: JsonValue): WrittenReferences {
-  const references = new Map<string, string[]>();
+  const references = new Map<string, WrittenReference[]>();
   visitStrings(value, (text) => {
     for (const found of text.matchAll(REFERENCE)) {
       const match = matchOf(found.slice(1), text, found.index);
       if (match === undefined || match.escaped) continue;
-      const written =
+      const written: WrittenReference =
         match.form === "env"
           ? writtenEnvReference(text, found.index, found.index + found[0].length)
-          : found[0];
+          : { form: "placeholder", text: found[0] };
       const forms = references.get(match.name);
       if (forms === undefined) references.set(match.name, [written]);
-      else if (!forms.includes(written)) forms.push(written);
+      else if (!forms.some((form) => form.text === written.text)) forms.push(written);
     }
   });
   return references;

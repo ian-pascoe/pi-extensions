@@ -66,6 +66,7 @@ import { renderSecretCall, renderSecretResult } from "./secret-render.js";
 import {
   isSecretName,
   secretReferencesByName,
+  type WrittenReference,
   type WrittenReferences,
   rewriteReferences,
   secretEnvName,
@@ -258,15 +259,20 @@ const DEFAULT_LIST_LIMIT = 20;
 
 const WITHHELD_RESULT =
   "Pi Secret could not check this tool result for Secret values, so it was withheld. The tool did run.";
-/** How to write the references in `examples`, one per form, as literal text instead. */
-const escapeHint = (examples: readonly string[]) =>
-  `To write a reference as literal text instead, put a backslash right before it, as in ${examples.map((example) => `\\${example}`).join(" or ")}; Pi Secret removes the backslash.`;
+/** What removes the backslash that escapes each form, so the hint is true of each example. */
+const ESCAPE_REMOVED_BY = {
+  placeholder: "which Pi Secret removes before the tool runs",
+  word: "which Pi Secret removes before the tool runs",
+  expansion: "the shell's own escape, which Pi Secret leaves as written",
+} as const satisfies Record<WrittenReference["form"], string>;
 
-/** The first of `written` in each Secret Reference form, so the escape hint shows each form present. */
-function oneOfEachForm(written: readonly string[]): string[] {
-  const placeholder = written.find((text) => text.startsWith("{{"));
-  const env = written.find((text) => !text.startsWith("{{"));
-  return [placeholder, env].filter((text) => text !== undefined);
+/** How to write each form in `written` as literal text instead, with its first reference as the example. */
+function escapeHint(written: readonly WrittenReference[]): string {
+  const examples = (["placeholder", "word", "expansion"] as const).flatMap((form) => {
+    const example = written.find((reference) => reference.form === form);
+    return example === undefined ? [] : [`\\${example.text}, ${ESCAPE_REMOVED_BY[form]}`];
+  });
+  return `To write a reference as literal text instead, put a backslash right before it: ${examples.join("; ")}.`;
 }
 
 function iso(time: number): string {
@@ -281,6 +287,8 @@ function iso(time: number): string {
 function unresolvedReason(references: WrittenReferences): string | undefined {
   const writtenWhere = (keep: (name: string) => boolean) =>
     [...references].flatMap(([name, written]) => (keep(name) ? written : []));
+  const listed = (written: readonly WrittenReference[]) =>
+    written.map((reference) => reference.text).join(", ");
   const malformed = writtenWhere((name) => !isSecretName(name));
   const unheld = writtenWhere((name) => isSecretName(name) && !isSecretHeld(name));
   const sentences = ["The call did not run."];
@@ -290,17 +298,16 @@ function unresolvedReason(references: WrittenReferences): string | undefined {
         ? "is not a valid Secret Reference"
         : "are not valid Secret References";
     sentences.push(
-      `${malformed.join(", ")} ${verb}: a Secret Name uses uppercase letters, digits, and underscores, and does not start with a digit.`,
+      `${listed(malformed)} ${verb}: a Secret Name uses uppercase letters, digits, and underscores, and does not start with a digit.`,
     );
   }
   if (unheld.length > 0) {
     sentences.push(
-      `It references ${unheld.join(", ")}, which this session does not hold. The Secret expired, was forgotten, or was never provided. Call secret_ask to request it again.`,
+      `It references ${listed(unheld)}, which this session does not hold. The Secret expired, was forgotten, or was never provided. Call secret_ask to request it again.`,
     );
   }
-  const examples = oneOfEachForm([...malformed, ...unheld]);
-  if (examples.length === 0) return undefined;
-  sentences.push(escapeHint(examples));
+  if (sentences.length === 1) return undefined;
+  sentences.push(escapeHint([...malformed, ...unheld]));
   return sentences.join(" ");
 }
 
@@ -731,7 +738,7 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
         } catch (cause) {
           return {
             block: true,
-            reason: `The call did not run. Pi Secret could not read ${forms.join(", ")} from its Secret Provider: ${errorMessage(cause)}. Ask the user to unlock or sign in to it, or call secret_ask_grant again. ${TROUBLESHOOTING_HINT}`,
+            reason: `The call did not run. Pi Secret could not read ${forms.map((form) => form.text).join(", ")} from its Secret Provider: ${errorMessage(cause)}. Ask the user to unlock or sign in to it, or call secret_ask_grant again. ${TROUBLESHOOTING_HINT}`,
           };
         }
         if (value === undefined)
