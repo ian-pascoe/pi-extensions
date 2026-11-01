@@ -49,19 +49,36 @@ function matchOf(
   return { escaped: escape === "\\", name: env ?? "", form: "env" };
 }
 
+/** Each referenced Secret Name, with its references as the call wrote them, in order of appearance. */
+export type WrittenReferences = ReadonlyMap<string, readonly string[]>;
+
+/**
+ * An environment reference as written, with the shell expansion around it (`$NAME` or `${NAME}`),
+ * so that a backslash put right before it is the shell's own escape, which Pi Secret leaves alone.
+ */
+function writtenEnvReference(text: string, start: number, end: number): string {
+  const word = text.slice(start, end);
+  if (text.slice(start - 2, start) === "${" && text[end] === "}") return `\${${word}}`;
+  if (text[start - 1] === "$") return `$${word}`;
+  return word;
+}
+
 /**
  * Every Secret Name a value references, in either form, including names that are not valid Secret
  * Names (such as `{{secret:lower}}`), so a call naming one can be refused rather than run as typed.
- * Each name maps to its references as written, such as `PI_SECRET_NAME`, in order of first
- * appearance, so a refusal can quote the text that triggered it. Escaped references name nothing.
+ * Each name maps to its references as written, so a refusal can quote the text that triggered it.
+ * Escaped references name nothing.
  */
-export function secretReferencesByName(value: JsonValue): Map<string, string[]> {
+export function secretReferencesByName(value: JsonValue): WrittenReferences {
   const references = new Map<string, string[]>();
   visitStrings(value, (text) => {
     for (const found of text.matchAll(REFERENCE)) {
       const match = matchOf(found.slice(1), text, found.index);
       if (match === undefined || match.escaped) continue;
-      const written = found[0];
+      const written =
+        match.form === "env"
+          ? writtenEnvReference(text, found.index, found.index + found[0].length)
+          : found[0];
       const forms = references.get(match.name);
       if (forms === undefined) references.set(match.name, [written]);
       else if (!forms.includes(written)) forms.push(written);

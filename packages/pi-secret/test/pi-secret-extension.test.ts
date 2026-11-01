@@ -84,32 +84,47 @@ describe("Secret Request and Secret References", () => {
       "a Secret Reference",
       { text: "{{secret:NEVER_PROVIDED}}" },
       "{{secret:NEVER_PROVIDED}}",
+      ["{{secret:NEVER_PROVIDED}}"],
+    ],
+    [
+      "a Secret Reference written twice",
+      { text: "{{secret:NEVER_PROVIDED}} and {{secret:NEVER_PROVIDED}}" },
       "{{secret:NEVER_PROVIDED}}",
+      ["{{secret:NEVER_PROVIDED}}"],
     ],
     [
       "an environment reference",
       { text: "curl -u $PI_SECRET_NEVER_PROVIDED" },
-      "PI_SECRET_NEVER_PROVIDED",
-      "PI_SECRET_NEVER_PROVIDED",
+      "$PI_SECRET_NEVER_PROVIDED",
+      ["$PI_SECRET_NEVER_PROVIDED"],
+    ],
+    [
+      "a braced environment reference",
+      { text: "curl -u ${PI_SECRET_NEVER_PROVIDED}" },
+      "${PI_SECRET_NEVER_PROVIDED}",
+      ["${PI_SECRET_NEVER_PROVIDED}"],
     ],
     [
       "a Secret Reference in both forms",
       { text: "{{secret:NEVER_PROVIDED}} or $PI_SECRET_NEVER_PROVIDED" },
-      "{{secret:NEVER_PROVIDED}}, PI_SECRET_NEVER_PROVIDED",
-      "{{secret:NEVER_PROVIDED}}",
+      "{{secret:NEVER_PROVIDED}}, $PI_SECRET_NEVER_PROVIDED",
+      ["{{secret:NEVER_PROVIDED}}", "$PI_SECRET_NEVER_PROVIDED"],
     ],
   ])(
-    "blocks a call whose %s names no held Secret, quoting it as written, and says to ask again",
-    async (_kind, args, written, example) => {
+    "blocks a call whose %s names no held Secret, quoting it as written, and shows how to escape each form",
+    async (_kind, args, written, examples) => {
       const harness = await createSecretHarness();
       harness.responses.push(toolCalls(["echo", args, "call-echo"]), reply("Done."));
       await harness.session.prompt("Go.");
 
       expect(harness.received).toEqual([]);
-      const text = harness.resultText("call-echo");
+      const text = harness.resultText("call-echo") ?? "";
       expect(text).toContain(`It references ${written}, which this session does not hold.`);
       expect(text).toContain("Call secret_ask to request it again");
-      expect(text).toContain(`put a backslash right before it, as in \\${example};`);
+      const escaped = examples.map((example) => `\\${example}`).join(" or ");
+      expect(text).toContain(`put a backslash right before it, as in ${escaped};`);
+      // The reason names only the forms the call wrote.
+      expect(text.includes("{{")).toBe(examples.some((example) => example.startsWith("{{")));
     },
   );
 
@@ -117,17 +132,17 @@ describe("Secret Request and Secret References", () => {
     [
       "a malformed Secret Name",
       { text: "{{secret:lower-case}}" },
-      "{{secret:lower-case}} does not name a valid Secret Name",
+      "{{secret:lower-case}} is not a valid Secret Reference",
     ],
     [
       "an empty Secret Reference",
       { text: "{{secret:}}" },
-      "{{secret:}} does not name a valid Secret Name",
+      "{{secret:}} is not a valid Secret Reference",
     ],
     [
       "a malformed environment reference",
       { text: "echo $PI_SECRET_lower" },
-      "PI_SECRET_lower does not name a valid Secret Name",
+      "$PI_SECRET_lower is not a valid Secret Reference",
     ],
   ])("blocks a call with %s and says what a Secret Name looks like", async (_kind, args, named) => {
     const harness = await createSecretHarness();
@@ -151,7 +166,7 @@ describe("Secret Request and Secret References", () => {
 
     expect(harness.received).toEqual([]);
     expect(harness.resultText("call-echo")).toBe(
-      "The call did not run. {{secret:bad name}} does not name a valid Secret Name: a Secret Name uses uppercase letters, digits, and underscores, and does not start with a digit. It references {{secret:NEVER_PROVIDED}}, which this session does not hold. The Secret expired, was forgotten, or was never provided. Call secret_ask to request it again. To write a reference as literal text instead, put a backslash right before it, as in \\{{secret:bad name}}; Pi Secret removes the backslash.",
+      "The call did not run. {{secret:bad name}} is not a valid Secret Reference: a Secret Name uses uppercase letters, digits, and underscores, and does not start with a digit. It references {{secret:NEVER_PROVIDED}}, which this session does not hold. The Secret expired, was forgotten, or was never provided. Call secret_ask to request it again. To write a reference as literal text instead, put a backslash right before it, as in \\{{secret:bad name}}; Pi Secret removes the backslash.",
     );
   });
 

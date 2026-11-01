@@ -66,6 +66,7 @@ import { renderSecretCall, renderSecretResult } from "./secret-render.js";
 import {
   isSecretName,
   secretReferencesByName,
+  type WrittenReferences,
   rewriteReferences,
   secretEnvName,
 } from "./secret-references.js";
@@ -257,9 +258,16 @@ const DEFAULT_LIST_LIMIT = 20;
 
 const WITHHELD_RESULT =
   "Pi Secret could not check this tool result for Secret values, so it was withheld. The tool did run.";
-/** How to write `written`, a reference as it appeared, as literal text instead. */
-const escapeHint = (written: string) =>
-  `To write a reference as literal text instead, put a backslash right before it, as in \\${written}; Pi Secret removes the backslash.`;
+/** How to write the references in `examples`, one per form, as literal text instead. */
+const escapeHint = (examples: readonly string[]) =>
+  `To write a reference as literal text instead, put a backslash right before it, as in ${examples.map((example) => `\\${example}`).join(" or ")}; Pi Secret removes the backslash.`;
+
+/** The first of `written` in each Secret Reference form, so the escape hint shows each form present. */
+function oneOfEachForm(written: readonly string[]): string[] {
+  const placeholder = written.find((text) => text.startsWith("{{"));
+  const env = written.find((text) => !text.startsWith("{{"));
+  return [placeholder, env].filter((text) => text !== undefined);
+}
 
 function iso(time: number): string {
   return new Date(time).toISOString();
@@ -270,17 +278,17 @@ function iso(time: number): string {
  * malformed name and a name this session does not hold each get their own advice. Each is quoted as
  * the call wrote it, in whichever form, so the caller can find and escape the text that triggered it.
  */
-function unresolvedReason(references: ReadonlyMap<string, readonly string[]>): string | undefined {
-  const written = (keep: (name: string) => boolean) =>
-    [...references].flatMap(([name, forms]) => (keep(name) ? forms : []));
-  const malformed = written((name) => !isSecretName(name));
-  const unheld = written((name) => isSecretName(name) && !isSecretHeld(name));
+function unresolvedReason(references: WrittenReferences): string | undefined {
+  const writtenWhere = (keep: (name: string) => boolean) =>
+    [...references].flatMap(([name, written]) => (keep(name) ? written : []));
+  const malformed = writtenWhere((name) => !isSecretName(name));
+  const unheld = writtenWhere((name) => isSecretName(name) && !isSecretHeld(name));
   const sentences = ["The call did not run."];
   if (malformed.length > 0) {
     const verb =
       malformed.length === 1
-        ? "does not name a valid Secret Name"
-        : "do not name valid Secret Names";
+        ? "is not a valid Secret Reference"
+        : "are not valid Secret References";
     sentences.push(
       `${malformed.join(", ")} ${verb}: a Secret Name uses uppercase letters, digits, and underscores, and does not start with a digit.`,
     );
@@ -290,9 +298,9 @@ function unresolvedReason(references: ReadonlyMap<string, readonly string[]>): s
       `It references ${unheld.join(", ")}, which this session does not hold. The Secret expired, was forgotten, or was never provided. Call secret_ask to request it again.`,
     );
   }
-  const [example] = [...malformed, ...unheld];
-  if (example === undefined) return undefined;
-  sentences.push(escapeHint(example));
+  const examples = oneOfEachForm([...malformed, ...unheld]);
+  if (examples.length === 0) return undefined;
+  sentences.push(escapeHint(examples));
   return sentences.join(" ");
 }
 
