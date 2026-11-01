@@ -34,6 +34,7 @@ import {
 import { streamSimple as streamAnthropic } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { streamSimple as streamBedrock } from "@earendil-works/pi-ai/api/bedrock-converse-stream";
 import { streamSimple as streamOpenAICompletions } from "@earendil-works/pi-ai/api/openai-completions";
+import { recordToolOutputs } from "@ian-pascoe/pi-utils/tool-testing";
 import { Type } from "typebox";
 import guardian from "../../src/index.js";
 import type { GuardianOptions } from "../../src/guardian-settings.js";
@@ -408,6 +409,7 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
     return stream;
   };
 
+  const outputs = recordToolOutputs();
   const loader = new DefaultResourceLoader({
     cwd: dir,
     agentDir: dir,
@@ -554,6 +556,8 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
         }),
       ...(options.withoutGuardian ? [] : [guardian]),
       ...(options.after ?? []),
+      // Last, so it records results after the other extensions' `tool_result` handlers.
+      outputs.extension,
     ],
     systemPromptOverride: () =>
       options.systemPrompt ?? "Standing instructions: finish the user's task.",
@@ -578,6 +582,10 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
   const { session } = await createAgentSession(sessionOptions);
   onTestFinished(() => {
     session.dispose();
+  });
+  // Every tool result in every test must conform to its tool's declared outputSchema.
+  onTestFinished(() => {
+    outputs.check((name) => session.getToolDefinition(name));
   });
   const responses: AssistantMessage[] = [];
   const agentRequests: Context["messages"][] = [];
