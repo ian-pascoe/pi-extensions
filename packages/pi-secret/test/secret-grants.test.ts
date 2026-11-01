@@ -140,7 +140,7 @@ describe("Secret Grants", () => {
 
     expect(harness.received).toEqual([]);
     expect(harness.resultText("call-echo")).toContain(
-      "could not read {{secret:GH_TOKEN}} from its Secret Provider: Fake Vault is locked",
+      "could not read PI_SECRET_GH_TOKEN from its Secret Provider: Fake Vault is locked",
     );
     expect(harness.resultText("call-list")).toContain(`GH_TOKEN: held from ${TOKEN}`);
   });
