@@ -154,7 +154,7 @@ describe("Pi MCP Selector autocomplete", () => {
     expect(await provider.getSuggestions(["@gith"], 0, 5, { signal: cancelled.signal })).toBeNull();
   });
 
-  test("delegates completely when no server matches or the @ is not a server prefix in prose", async () => {
+  test("delegates completely when the @ is not a server prefix in prose, or no server is reachable", async () => {
     const native = new NativeProvider();
     native.suggestions = files("@zz", "zzz.ts");
     const { provider } = await setup(native);
@@ -171,6 +171,31 @@ describe("Pi MCP Selector autocomplete", () => {
       expect(await provider.getSuggestions([...lines], 0, col, options())).toBe(native.suggestions);
       expect(native.calls).toHaveLength(1);
     }
+    // Nothing matches a server and no file collides, so native's answer passes through as is.
+    native.calls.length = 0;
+    expect(await provider.getSuggestions(["@zz"], 0, 3, options())).toBe(native.suggestions);
+    // An empty Catalogue leaves even a colliding file untouched.
+    native.suggestions = files("@github", "github");
+    const empty = await setup(native, []);
+    expect(await empty.provider.getSuggestions(["@github"], 0, 7, options())).toBe(
+      native.suggestions,
+    );
+  });
+
+  test("a fuzzy query that matches no server still inserts a server-named file as @./name", async () => {
+    const native = new NativeProvider();
+    native.suggestions = files("@ghb", "github", "ghb.md");
+    const { provider } = await setup(native);
+    const result = await provider.getSuggestions(["@ghb"], 0, 4, options());
+    expect(result).toEqual({
+      prefix: "@ghb",
+      items: [
+        { value: "@./github", label: "github" },
+        { value: "@ghb.md", label: "ghb.md" },
+      ],
+    });
+    // Native's own items are not modified.
+    expect(native.suggestions.items[0]).toEqual({ value: "@github", label: "github" });
   });
 
   test("a native item named like a server is inserted as @./name, leaving native's item alone", async () => {

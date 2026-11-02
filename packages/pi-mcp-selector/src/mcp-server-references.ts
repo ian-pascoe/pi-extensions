@@ -21,7 +21,7 @@ const SERVER_NAME = /^[A-Za-z0-9_-]+$/u;
 type CatalogueTool = Pick<ToolInfo, "exposure" | "namespace">;
 
 /** Hyphen and underscore name the same server, since Pi's namespace folds them together. */
-const nameKey = (name: string): string => name.replaceAll("-", "_");
+export const nameKey = (name: string): string => name.replaceAll("-", "_");
 
 const firstLine = (text: string | undefined): string | undefined =>
   text

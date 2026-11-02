@@ -3,7 +3,7 @@
 Point the model at MCP servers with `@server-name` anywhere in a user message.
 Type `@` to open Pi's native completion popup: your MCP servers are listed first,
 then the usual file results. Selecting a server leaves shorthand in the editor.
-Repeat to mention several servers.
+Repeat to reference several servers.
 
 ```bash
 pi install npm:@ian-pascoe/pi-mcp-selector
@@ -58,7 +58,7 @@ does not matter, and neither does whether `codemode` is active.
   configured `description` or the first line of the server's instructions, or just
   `MCP server` without either.
 
-## Sharing `@` with file mentions
+## Sharing `@` with file paths
 
 Pi's native `@` completion lists files. Both appear in one popup, built here
 over whatever provider is already installed:
@@ -66,9 +66,11 @@ over whatever provider is already installed:
 - `@` alone lists every server by name, then the native files.
 - `@git` lists servers whose name contains `git` (case-insensitive, names that
   start with it first), then the native files.
-- The popup only merges for an unquoted `@name` in prose that matches at least one
-  server; otherwise native completion runs untouched. A file named like a server
-  is inserted as `@./name`, so selecting a file never produces a server link.
+- The popup only merges for an unquoted `@name` in prose while at least one server
+  is in the catalogue; otherwise native completion runs untouched. Servers are
+  listed only when they match the query, but a file named like a server is always
+  inserted as `@./name`, even for a fuzzy query such as `@ghb` that matches no
+  server, so selecting a file never produces a server link.
 
 If file search fails or finds nothing, the servers are still listed. Pi does not
 expand `@path` in submitted messages, so only the popup and the literal text are

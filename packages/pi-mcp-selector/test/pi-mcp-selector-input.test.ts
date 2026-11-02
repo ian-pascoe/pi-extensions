@@ -34,7 +34,7 @@ describe("Pi MCP Selector input", () => {
     });
   });
 
-  test("keeps servers that are not codemode-active or loaded mentionable", async () => {
+  test("keeps servers that are not codemode-active or loaded referenceable", async () => {
     const harness = new McpSelectorHarness();
     harness.tools = [
       mcpTool({ name: "github", exposure: "deferred" }),
@@ -75,7 +75,7 @@ describe("Pi MCP Selector input", () => {
     ).toEqual({ action: "transform", text: GITHUB });
   });
 
-  test("leaves extension-generated messages, unknown names, and file mentions unchanged", async () => {
+  test("leaves extension-generated messages, unknown names, and file paths unchanged", async () => {
     const harness = new McpSelectorHarness();
     expect(await harness.emit({ type: "input", source: "extension", text: "@github" })).toEqual({
       action: "continue",
