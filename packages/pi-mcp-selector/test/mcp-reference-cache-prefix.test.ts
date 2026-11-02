@@ -277,17 +277,17 @@ describe("MCP Server References keep the cached prefix stable", () => {
       fauxAssistantMessage("Three."),
     );
     await fixture.session.prompt("Hello");
-    await fixture.session.prompt("Look in @github, not @dev_radius.");
-    await fixture.session.prompt("And again with @github's tools");
+    await fixture.session.prompt("Look in +github, not +dev_radius.");
+    await fixture.session.prompt("And again with +github's tools");
     expect(fixture.turns).toHaveLength(3);
     expectStablePrefix(fixture.turns);
 
     // The model sees links, and the listed servers are the same before and after.
     expect(userTexts(fixture.turns[1]).at(-1)).toBe(
-      'Look in [@github](mcp://github "MCP server mcp__github"), not [@dev_radius](mcp://dev-radius "MCP server mcp__dev_radius").',
+      'Look in [+github](mcp://github "MCP server mcp__github"), not [+dev_radius](mcp://dev-radius "MCP server mcp__dev_radius").',
     );
     expect(userTexts(fixture.turns[2]).at(-1)).toBe(
-      'And again with [@github](mcp://github "MCP server mcp__github")\'s tools',
+      'And again with [+github](mcp://github "MCP server mcp__github")\'s tools',
     );
     // MCP tools stay behind codemode, so the reference has nothing to declare or load.
     expect(fixture.turns[0]?.tools.map((tool) => tool.name)).toEqual([
@@ -306,8 +306,8 @@ describe("MCP Server References keep the cached prefix stable", () => {
     const fixture = await createFixture(["github"]);
     fixture.responses.push(fauxAssistantMessage("One."), fauxAssistantMessage("Two."));
     await fixture.session.prompt("Hello");
-    await fixture.session.prompt("Ask @jira and @github.com about it");
+    await fixture.session.prompt("Ask +jira and +github.com about it");
     expectStablePrefix(fixture.turns);
-    expect(userTexts(fixture.turns[1]).at(-1)).toBe("Ask @jira and @github.com about it");
+    expect(userTexts(fixture.turns[1]).at(-1)).toBe("Ask +jira and +github.com about it");
   });
 });
