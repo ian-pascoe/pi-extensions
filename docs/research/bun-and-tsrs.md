@@ -456,6 +456,8 @@ Question: can oxlint's type-aware rules and `typeCheck` run on tsrs instead of `
 
 ### Recommendation for this repo
 
+> **Superseded** on 2026-11-02: the type-aware rules now run on the npm-published `@maschwenk/tsrslint`; see ADR 0011's Typechecker section.
+
 - Keep tsgolint for now. The env-var route needs a source-built binary, and a bad path is fatal (verified).
 - To move TS checking to tsrs: set `typeCheck: false`, keep `typeAware: true`, and add a `tsrs -p … --noEmit` CI step.
 - Re-check when tsrs #378 closes or an npm tsrs release contains `tsrs-lint`.
