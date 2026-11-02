@@ -60,20 +60,20 @@ The type-aware rules run on [tsrslint](https://github.com/maschwenk/tsrslint) (`
 
 - **Selection.** oxlint 1.90.0 has no setting that selects its backend. It looks for the executable in the undocumented `OXLINT_TSGOLINT_PATH`, then `node_modules/.bin/tsgolint` in each ancestor directory, then `tsgolint` on `PATH`. `mise.toml` sets the variable under `[env]` to `{{config_root}}/node_modules/.bin/tsrslint`. The CLI, lint-staged, CI (mise-action exports `[env]` by default) and the oxlint language server Pi starts inherit it whenever mise is active in the shell that starts them.
 - **Launcher.** That path is the package's Node launcher, which `execve`s the platform binary from Bun's isolated store, whose path carries the version. It adds about 35 ms per run.
-- **Failure mode.** `oxlint-tsgolint` is removed, so in CI, where nothing else provides `tsgolint`, a missing variable or an oxlint release that stops reading it fails `lint` loudly. That is why `oxlint` can keep its caret range. Locally, a shell without mise falls back to any `tsgolint` on `PATH`.
+- **Failure mode.** `oxlint-tsgolint` is removed, so in CI, where nothing else provides `tsgolint`, a missing variable or an oxlint release that stops reading it fails `lint` loudly. That is why `oxlint` can keep its caret range: CI catches such a release. Locally, a shell without mise falls back to any `tsgolint` in an ancestor `node_modules/.bin` or on `PATH`.
 
 The evidence below was measured for this amendment on 2026-11-02, on one 8-core Mac, with tsgolint run through `OXLINT_TSGOLINT_PATH` from a separate install. Its figures differ from [the research](../research/bun-and-tsrs.md)'s, which used a fixture file and a source build of upstream `tsrs-lint`.
 
-- **Parity.** With all 61 type-aware rules enabled and `typeCheck: true`, tsgolint 7.0.2005 and tsrslint 0.1.6 reported the same 8,901 diagnostics on this repository: their (file, code, line, column, message) multisets are identical. 34 distinct codes fired, rule and TypeScript codes together. Rules that never fired are covered only by tsrslint's own suite, which runs tsgolint's test cases for all 61 rules.
+- **Parity.** With all 61 type-aware rules enabled and `typeCheck: true`, tsgolint 7.0.2005 and tsrslint 0.1.6 reported the same 8,901 diagnostics on this repository: their (file, code, line, column, message) multisets are identical. 34 distinct codes fired, rule and TypeScript codes together. Rules that never fired are covered only by tsrslint's own suite, which runs tsgolint's extracted Go test cases for all 61 rules on every commit (7,933 of 7,961 pass and 28 are skipped as upstream skips them, per its `docs/rules.md` on 2026-11-02).
 - **Speed and memory.** `oxlint` with the repository config, median of 3: tsgolint 10.3 s at 1,713 MiB process-tree peak RSS, tsrslint 3.6 s at 2,052 MiB (sampled every 0.1 s with `ps`). Peak memory is not lower here; [oxc-project/tsrs#855](https://github.com/oxc-project/tsrs/issues/855) reports that headless memory grows with the number of tsconfig projects.
-- **Platforms.** tsrslint ships binaries for macOS arm64 and Linux x64 and arm64 (glibc) only. On Windows, Intel macOS and musl Linux the launcher finds no binary, so `bun run lint` and the pre-commit hook fail there.
+- **Platforms.** tsrslint ships binaries for macOS arm64 and Linux x64 and arm64 (glibc) only. On Windows, Intel macOS and musl Linux the launcher finds no binary, so `bun run lint` and the pre-commit and pre-push hooks fail there.
 - **Version drift.** tsrslint 0.1.6 embeds a tsrs that ports TypeScript 7.1-dev, while the `tsrs` typechecker is 0.20.1 (7.1.0-beta), so printed types in rule messages can still differ slightly from `tsrs` output.
 
 Rejected:
 
 - **Building upstream `tsrs-lint` from oxc-project/tsrs `main`.** It needs a Rust toolchain on every contributor and CI machine and builds an unreleased commit; tsrslint ships prebuilt npm binaries with provenance.
 - **A wrapper script that sets the variable and runs oxlint.** Every oxlint entry point (scripts, lint-staged, the `.pi/settings.json` language server) would have to call it, whereas `[env]` reaches them all unchanged.
-- **Keeping `oxlint-tsgolint` as a fallback.** A run without mise's environment would silently lint on the old backend.
+- **Keeping `oxlint-tsgolint` as a dependency.** Its `node_modules/.bin/tsgolint` would let any run without mise's environment, CI included, silently lint on the old backend.
 - **Keeping `typeCheck: true` as a second checker.** It is redundant, since `tsrs` already matches `tsc`, and it would repeat every TypeScript error in the oxlint output and in the LSP, where oxlint is a second server alongside `tsrs`.
 
 ## Considered Options
