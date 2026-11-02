@@ -1,8 +1,26 @@
 import { posix, win32 } from "node:path";
 import { Type, type Static } from "typebox";
-import { Value } from "typebox/value";
 import { isMap, isScalar, parseDocument } from "yaml";
+import { listRecentThroughCli, readConfiguredHostsSafely } from "./host-cli.js";
 import type { HostEnvironment, IssueHost, IssueSummary } from "./issue-host.js";
+
+/** Letters, digits, and single hyphens, not starting or ending with one. */
+const OWNER_PATTERN = "[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9]))*";
+/** Letters, digits, `.`, `_`, and `-`. */
+const REPO_PATTERN = "[A-Za-z0-9._-]+";
+
+const ownerPattern = new RegExp(`^${OWNER_PATTERN}$`);
+const repoPattern = new RegExp(`^${REPO_PATTERN}$`);
+
+/** The owner and repository of exactly `owner/repo`, or undefined for any other text. */
+export function parseOwnerRepo(text: string): { owner: string; repo: string } | undefined {
+  const [owner, repo, ...rest] = text.split("/");
+  if (rest.length > 0 || owner === undefined || repo === undefined) return undefined;
+  if (!ownerPattern.test(owner) || !repoPattern.test(repo) || repo === "." || repo === "..") {
+    return undefined;
+  }
+  return { owner, repo };
+}
 
 function canonicalGitHubHost(host: string): string | undefined {
   const lower = host.toLowerCase();
@@ -41,7 +59,9 @@ const GitHubItem = Type.Object({
   state: Type.Union([Type.Literal("open"), Type.Literal("closed")]),
   draft: Type.Optional(Type.Union([Type.Boolean(), Type.Null()])),
   pull_request: Type.Optional(
-    Type.Object({ merged_at: Type.Optional(Type.Union([Type.String(), Type.Null()])) }),
+    Type.Object({
+      merged_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+    }),
   ),
 });
 
@@ -55,45 +75,42 @@ function summarize(item: Static<typeof GitHubItem>): IssueSummary {
 
 // `gh` exits 4 when it needs authentication, and prints nothing at all when it is not installed
 // (Pi's exec reports a failed spawn as exit code 1 with no output).
-function needsGitHubCli(code: number, stderr: string): boolean {
+function needsGitHubCli({ code, stderr }: { code: number; stderr: string }): boolean {
   return code === 4 || stderr.trim() === "" || /gh auth login|not logged in/i.test(stderr);
 }
 
 export const GITHUB: IssueHost = {
+  sigils: ["#"],
+  cli: { name: "GitHub CLI", command: "gh" },
+  qualifier: `${OWNER_PATTERN}/${REPO_PATTERN}`,
   canonicalHost: canonicalGitHubHost,
-  async configuredHosts({ environment, readText }) {
-    const hosts = new Set<string>();
-    const host = environment.env["GH_HOST"];
-    if (host) hosts.add(host.toLowerCase());
-    try {
+  parseRepository: parseOwnerRepo,
+  configuredHosts({ environment, readText }) {
+    return readConfiguredHostsSafely(async () => {
+      const hosts = new Map<string, string>();
+      const add = (host: string): void => {
+        const lower = host.toLowerCase();
+        hosts.set(lower, lower);
+      };
+      const host = environment.env["GH_HOST"];
+      if (host) add(host);
       const text = await readText(hostsFilePath(environment));
-      if (text !== undefined) for (const key of hostKeys(text)) hosts.add(key.toLowerCase());
-    } catch {
-      // No readable configuration, so nothing is configured.
-    }
-    return hosts;
+      if (text !== undefined) for (const key of hostKeys(text)) add(key);
+      return hosts;
+    });
   },
   issueUrl: (repository, number) =>
     `https://${repository.host}/${repository.owner}/${repository.repo}/issues/${number}`,
-  async listRecent(repository, run, signal) {
+  listRecent(repository, _sigil, run, signal) {
     const path = `repos/${repository.owner}/${repository.repo}/issues?state=all&sort=updated&per_page=100`;
-    try {
-      const result = await run("gh", ["api", "--hostname", repository.host, path], {
-        signal,
-        timeout: 20_000,
-      });
-      if (result.killed) return { ok: false, reason: "unavailable" };
-      if (result.code !== 0) {
-        const reason = needsGitHubCli(result.code, result.stderr) ? "needs-cli" : "unavailable";
-        return { ok: false, reason };
-      }
-      const parsed: unknown = JSON.parse(result.stdout);
-      if (!Array.isArray(parsed)) return { ok: false, reason: "unavailable" };
-      const issues: IssueSummary[] = [];
-      for (const item of parsed) if (Value.Check(GitHubItem, item)) issues.push(summarize(item));
-      return { ok: true, issues };
-    } catch {
-      return { ok: false, reason: "unavailable" };
-    }
+    return listRecentThroughCli({
+      cli: GITHUB.cli,
+      args: ["api", "--hostname", repository.host, path],
+      run,
+      signal,
+      needsCli: needsGitHubCli,
+      schema: GitHubItem,
+      summarize,
+    });
   },
 };

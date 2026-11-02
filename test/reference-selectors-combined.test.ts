@@ -1,8 +1,8 @@
 /**
- * Pi Skills Selector (`$`), Pi MCP Selector (`&`), and Pi Issues Selector (`#`) each stack a
+ * Pi Skills Selector (`$`), Pi MCP Selector (`&`), and Pi Issues Selector (`#`, and `!` on GitLab) each stack a
  * completion provider over the one below and each rewrites the user's message in an `input`
  * handler. None depends on the others, so any load order is valid; this proves each order still
- * completes `/`, `@file`, `&server`, `$skill`, and `#123`, and converts a message that holds every
+ * completes `/`, `@file`, `&server`, `$skill`, `#123`, and on a GitLab remote `!7`, and converts a message that holds every
  * kind of reference without one package damaging another's links.
  *
  * Why this lives at the repository root: see `formatter-lsp-combined-order.test.ts`. The harness
@@ -81,6 +81,16 @@ function mcpTool(name: string, description: string): ToolInfo {
 }
 
 const FILES = ["notes.txt", "github"];
+const GITHUB_REMOTE = "remote.origin.url git@github.com:acme/widgets.git\n";
+const GITLAB_REMOTE = "remote.origin.url git@gitlab.com:group/sub/project.git\n";
+const GITLAB_ISSUES = JSON.stringify([
+  { id: 901, iid: 123, title: "Fix login redirect", state: "opened" },
+  { id: 902, iid: 12, title: "Add dark mode", state: "closed" },
+]);
+const GITLAB_MERGE_REQUESTS = JSON.stringify([
+  { id: 801, iid: 7, title: "Login rewrite", state: "opened", draft: false },
+  { id: 802, iid: 70, title: "Dark mode", state: "merged", draft: false },
+]);
 const GH_ISSUES = JSON.stringify([
   { number: 123, title: "Fix login redirect", state: "open" },
   { number: 12, title: "Add dark mode", state: "closed" },
@@ -121,7 +131,10 @@ class Host {
   private readonly handlers: Handler[] = [];
   private readonly sessionStarts: Handler[] = [];
 
-  constructor(order: readonly SelectorName[]) {
+  constructor(
+    order: readonly SelectorName[],
+    private readonly remote = GITHUB_REMOTE,
+  ) {
     for (const name of order) {
       const api = {
         on: (event: string, handler: Handler) => {
@@ -129,15 +142,17 @@ class Host {
         },
         getCommands: () => [skillCommand("review"), skillCommand("ponytail")],
         getAllTools: () => [mcpTool("github", "Search code and issues")],
-        exec: async (command: string) =>
-          command === "git"
-            ? {
-                stdout: "remote.origin.url git@github.com:acme/widgets.git\n",
-                stderr: "",
-                code: 0,
-                killed: false,
-              }
-            : { stdout: GH_ISSUES, stderr: "", code: 0, killed: false },
+        exec: async (command: string, args: string[]) => {
+          if (command === "git") {
+            return { stdout: this.remote, stderr: "", code: 0, killed: false };
+          }
+          if (command === "glab") {
+            const merge = args.some((arg) => arg.includes("/merge_requests?"));
+            const stdout = merge ? GITLAB_MERGE_REQUESTS : GITLAB_ISSUES;
+            return { stdout, stderr: "", code: 0, killed: false };
+          }
+          return { stdout: GH_ISSUES, stderr: "", code: 0, killed: false };
+        },
       };
       // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: This boundary harness supplies every ExtensionAPI member the selectors use.
       SELECTORS[name](api as unknown as ExtensionAPI);
@@ -276,6 +291,67 @@ describe.each(orders.map((order) => [order.join(" → "), order] as const))(
       const host = new Host(order);
       const once = await host.submit("Use $review, &github, #12 and acme/other#1.");
       expect(await host.submit(once)).toBe(once);
+    });
+
+    describe("on a GitLab remote", () => {
+      test("! completes merge requests beside $, &, @, / and # completions", async () => {
+        const provider = await new Host(order, GITLAB_REMOTE).provider();
+
+        expect(await complete(provider, "see !7", (item) => item.value === "!7")).toEqual({
+          values: ["!7", "!70"],
+          applied: "see !7 ",
+        });
+        expect(await complete(provider, "see !dark", (item) => item.value === "!70")).toMatchObject(
+          { applied: "see !70 " },
+        );
+        expect(await complete(provider, "fix #1", (item) => item.value === "#123")).toEqual({
+          values: ["#123", "#12"],
+          applied: "fix #123 ",
+        });
+        expect(await complete(provider, "use $re", (item) => item.value === "$review")).toEqual({
+          values: ["$review"],
+          applied: "use $review ",
+        });
+        expect(await complete(provider, "ask &gi", (item) => item.value === "&github")).toEqual({
+          values: ["&github"],
+          applied: "ask &github ",
+        });
+        expect(await complete(provider, "see @no", (item) => item.value === "@notes.txt")).toEqual({
+          values: ["@notes.txt"],
+          applied: "see @notes.txt ",
+        });
+        expect(await complete(provider, "/he", (item) => item.value === "help")).toMatchObject({
+          applied: "/help ",
+        });
+      });
+
+      test("no selector takes ! where it is no token, and bash mode keeps its own completion", async () => {
+        const provider = await new Host(order, GITLAB_REMOTE).provider();
+        for (const line of ["a != b", "wow!7", "`!7`", "R&!7"]) {
+          const suggestions = await provider.getSuggestions([line], 0, line.length, { signal });
+          expect(suggestions?.items.map((item) => item.value) ?? []).toEqual([]);
+        }
+        // A message starting with `!` is a bash command: `!7` is not offered, `@file` still is.
+        const bash = await provider.getSuggestions(["!cat @no"], 0, 8, { signal });
+        expect(bash?.items.map((item) => item.value)).toEqual(["@notes.txt"]);
+        const bashMergeRequest = await provider.getSuggestions(["!echo !7"], 0, 8, { signal });
+        expect(bashMergeRequest?.items.map((item) => item.value) ?? []).toEqual([]);
+      });
+
+      test("one message holding every kind of reference converts fully", async () => {
+        const converted = await new Host(order, GITLAB_REMOTE).submit(
+          "Use $review with &github to fix #12 and !7, see other/team/proj!3, not `!7`, a != b or &!7.",
+        );
+        expect(converted).toBe(
+          'Use [$review](/skills/review/SKILL.md) with [&github](mcp://github "MCP server mcp__github") to fix [#12](https://gitlab.com/group/sub/project/-/issues/12) and [!7](https://gitlab.com/group/sub/project/-/merge_requests/7), see [other/team/proj!3](https://gitlab.com/other/team/proj/-/merge_requests/3), not `!7`, a != b or &!7.',
+        );
+      });
+
+      test("converting is idempotent across the selectors", async () => {
+        const host = new Host(order, GITLAB_REMOTE);
+        const once = await host.submit("Use $review, &github, #12, !7 and other/team/proj#1.");
+        expect(await host.submit(once)).toBe(once);
+      });
     });
   },
 );

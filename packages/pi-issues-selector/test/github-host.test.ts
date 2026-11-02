@@ -11,12 +11,46 @@ const reply =
 
 describe("GitHub issue URLs", () => {
   test("always use the /issues/ path, which GitHub redirects to /pull/ for pull requests", () => {
-    expect(GITHUB.issueUrl({ host: "github.com", owner: "acme", repo: "widgets" }, 12)).toBe(
+    expect(GITHUB.issueUrl({ host: "github.com", owner: "acme", repo: "widgets" }, 12, "#")).toBe(
       "https://github.com/acme/widgets/issues/12",
     );
-    expect(GITHUB.issueUrl({ host: "octo.ghe.com", owner: "me", repo: "core" }, "7")).toBe(
+    expect(GITHUB.issueUrl({ host: "octo.ghe.com", owner: "me", repo: "core" }, "7", "#")).toBe(
       "https://octo.ghe.com/me/core/issues/7",
     );
+  });
+});
+
+describe("GitHub adapter", () => {
+  test("uses # alone and declares the GitHub CLI", () => {
+    expect(GITHUB.sigils).toEqual(["#"]);
+    expect(GITHUB.cli).toEqual({ name: "GitHub CLI", command: "gh" });
+  });
+
+  test("a repository path is exactly owner/repo", () => {
+    expect(GITHUB.parseRepository("acme/my.repo_1")).toEqual({
+      owner: "acme",
+      repo: "my.repo_1",
+    });
+    for (const path of [
+      "",
+      "acme",
+      "acme/widgets/extra",
+      "group/sub/widgets",
+      "-acme/widgets",
+      "acme--x/widgets",
+      "acme/..",
+      "acme/wid gets",
+    ]) {
+      expect(GITHUB.parseRepository(path)).toBeUndefined();
+    }
+  });
+
+  test("its qualifier is owner/repo", () => {
+    const qualifier = new RegExp(`^${GITHUB.qualifier}$`);
+    expect(qualifier.test("a-b/c.d_e")).toBe(true);
+    for (const text of ["acme", "x/y/z", "-a/b", "a--b/c", "a/"]) {
+      expect(qualifier.test(text)).toBe(false);
+    }
   });
 });
 
@@ -25,6 +59,7 @@ describe("GitHub recent issues", () => {
     const calls: unknown[] = [];
     await GITHUB.listRecent(
       { host: "octo.ghe.com", owner: "me", repo: "core" },
+      "#",
       async (command, args, options) => {
         calls.push([command, args, options?.signal === signal, options?.timeout !== undefined]);
         return { stdout: "[]", stderr: "", code: 0, killed: false };
@@ -50,25 +85,51 @@ describe("GitHub recent issues", () => {
     const items = [
       { number: 5, title: "Open issue", state: "open" },
       { number: 4, title: "Closed issue", state: "closed" },
-      { number: 3, title: "Open PR", state: "open", pull_request: { merged_at: null } },
-      { number: 2, title: "Draft PR", state: "open", draft: true, pull_request: {} },
+      {
+        number: 3,
+        title: "Open PR",
+        state: "open",
+        pull_request: { merged_at: null },
+      },
+      {
+        number: 2,
+        title: "Draft PR",
+        state: "open",
+        draft: true,
+        pull_request: {},
+      },
       {
         number: 1,
         title: "Merged PR",
         state: "closed",
         pull_request: { merged_at: "2026-01-01T00:00:00Z" },
       },
-      { number: 0, title: "Closed PR", state: "closed", pull_request: { merged_at: null } },
+      {
+        number: 0,
+        title: "Closed PR",
+        state: "closed",
+        pull_request: { merged_at: null },
+      },
     ];
-    expect(await GITHUB.listRecent(repository, reply(JSON.stringify(items)), signal)).toEqual({
+    expect(await GITHUB.listRecent(repository, "#", reply(JSON.stringify(items)), signal)).toEqual({
       ok: true,
       issues: [
         { number: 5, title: "Open issue", kind: "issue", state: "open" },
         { number: 4, title: "Closed issue", kind: "issue", state: "closed" },
         { number: 3, title: "Open PR", kind: "pull request", state: "open" },
         { number: 2, title: "Draft PR", kind: "pull request", state: "draft" },
-        { number: 1, title: "Merged PR", kind: "pull request", state: "merged" },
-        { number: 0, title: "Closed PR", kind: "pull request", state: "closed" },
+        {
+          number: 1,
+          title: "Merged PR",
+          kind: "pull request",
+          state: "merged",
+        },
+        {
+          number: 0,
+          title: "Closed PR",
+          kind: "pull request",
+          state: "closed",
+        },
       ],
     });
   });
@@ -83,7 +144,7 @@ describe("GitHub recent issues", () => {
       { number: 7, title: "odd state", state: "locked" },
       { number: 8, title: "kept", state: "open" },
     ]);
-    expect(await GITHUB.listRecent(repository, reply(stdout), signal)).toEqual({
+    expect(await GITHUB.listRecent(repository, "#", reply(stdout), signal)).toEqual({
       ok: true,
       issues: [{ number: 8, title: "kept", kind: "issue", state: "open" }],
     });
@@ -95,7 +156,7 @@ describe("GitHub recent issues", () => {
     ["a missing gh, which prints nothing", reply("", 1, "")],
     ["a host gh is not signed in to", reply("", 1, "gh auth login --hostname octo.ghe.com")],
   ])("asks for the GitHub CLI after %s", async (_name, run) => {
-    expect(await GITHUB.listRecent(repository, run, signal)).toEqual({
+    expect(await GITHUB.listRecent(repository, "#", run, signal)).toEqual({
       ok: false,
       reason: "needs-cli",
     });
@@ -115,7 +176,7 @@ describe("GitHub recent issues", () => {
       },
     ],
   ])("fails quietly after %s", async (_name, run) => {
-    expect(await GITHUB.listRecent(repository, run, signal)).toEqual({
+    expect(await GITHUB.listRecent(repository, "#", run, signal)).toEqual({
       ok: false,
       reason: "unavailable",
     });
@@ -147,10 +208,12 @@ describe("GitHub configured hosts", () => {
     platform = "darwin",
   ): Promise<string[]> =>
     [
-      ...(await GITHUB.configuredHosts({
-        environment: environment(env, platform),
-        readText: reads(files).readText,
-      })),
+      ...(
+        await GITHUB.configuredHosts({
+          environment: environment(env, platform),
+          readText: reads(files).readText,
+        })
+      ).keys(),
     ].sort();
 
   test.each([
@@ -202,7 +265,10 @@ describe("GitHub configured hosts", () => {
     ],
   ])("reads %s", async (_name, env, platform, expected) => {
     const { readText, paths } = reads({});
-    await GITHUB.configuredHosts({ environment: environment(env, platform), readText });
+    await GITHUB.configuredHosts({
+      environment: environment(env, platform),
+      readText,
+    });
     expect(paths).toEqual([expected]);
   });
 
@@ -255,8 +321,11 @@ describe("GitHub configured hosts", () => {
       throw new Error("EACCES");
     };
     expect(
-      await GITHUB.configuredHosts({ environment: environment({}), readText: failing }),
-    ).toEqual(new Set());
+      await GITHUB.configuredHosts({
+        environment: environment({}),
+        readText: failing,
+      }),
+    ).toEqual(new Map());
   });
 
   test("a non-empty GH_HOST adds its host, with or without hosts.yml", async () => {

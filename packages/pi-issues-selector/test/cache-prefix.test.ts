@@ -48,7 +48,7 @@ const directories: string[] = [];
 const sessions: AgentSession[] = [];
 
 afterEach(async () => {
-  // A GHES case points gh's config directory at a temporary one; no other fixture may see it.
+  // A case points the CLIs' config directories at temporary ones; no other fixture may see them.
   vi.unstubAllEnvs();
   for (const session of sessions.splice(0)) session.dispose();
   await Promise.all(
@@ -74,6 +74,8 @@ async function createFixture({
   // A real checkout, so the extension reads the Issue Repository the way it does in Pi.
   await run("git", ["init", "-q"], { cwd });
   await run("git", ["remote", "add", "origin", remote], { cwd });
+  // A developer's own glab configuration must not recognise or claim a host.
+  vi.stubEnv("GLAB_CONFIG_DIR", join(cwd, "glab-config"));
   if (signedInHosts.length > 0) {
     // A developer's own GH_HOST must not recognise the host either.
     vi.stubEnv("GH_HOST", "");
@@ -263,6 +265,43 @@ describe("Issue References on a GitHub Enterprise Server remote", () => {
     await session.prompt("Please fix #12");
     await session.prompt("Again");
     expect(userTexts(requests[1]!)[0]).toBe("Please fix #12");
+    expectByteIdenticalPrefix(requests[0]!, requests[1]!);
+  }, 30_000);
+});
+
+describe("Issue References on a GitLab remote", () => {
+  const options = { remote: "git@gitlab.com:group/sub/project.git" };
+
+  test("# and ! convert without disturbing the tool definitions, system prompt, or earlier history", async () => {
+    const { session, requests, responses } = await createFixture(options);
+    responses.push(
+      fauxAssistantMessage("Hello."),
+      fauxAssistantMessage("Looked."),
+      fauxAssistantMessage("Still here."),
+    );
+    await session.prompt("Hello there");
+    await session.prompt("Fix #12 and !3, compare with other/team/proj#4.");
+    await session.prompt("Anything else?");
+    expect(requests).toHaveLength(3);
+
+    expect(userTexts(requests[1]!)).toEqual([
+      "Hello there",
+      "Fix [#12](https://gitlab.com/group/sub/project/-/issues/12) and [!3](https://gitlab.com/group/sub/project/-/merge_requests/3), compare with [other/team/proj#4](https://gitlab.com/other/team/proj/-/issues/4).",
+    ]);
+    expect(requests[2]!.messages.length).toBeGreaterThan(requests[1]!.messages.length);
+    for (let index = 1; index < requests.length; index++) {
+      expectByteIdenticalPrefix(requests[index - 1]!, requests[index]!);
+    }
+    expect(requests[0]!.tools).toBe(requests[2]!.tools);
+    expect(requests[0]!.systemPrompt).toBe(requests[2]!.systemPrompt);
+  }, 30_000);
+
+  test("literal text sends the user message untouched", async () => {
+    const { session, requests, responses } = await createFixture(options);
+    responses.push(fauxAssistantMessage("Ok."), fauxAssistantMessage("Ok."));
+    await session.prompt("Look at `!3` and a != b");
+    await session.prompt("Again");
+    expect(userTexts(requests[1]!)[0]).toBe("Look at `!3` and a != b");
     expectByteIdenticalPrefix(requests[0]!, requests[1]!);
   }, 30_000);
 });

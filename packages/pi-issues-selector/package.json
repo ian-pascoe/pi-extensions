@@ -2,10 +2,11 @@
   "name": "@ian-pascoe/pi-issues-selector",
   "version": "0.1.0",
   "private": false,
-  "description": "Native Issue Reference autocomplete and GitHub link conversion for Pi user input.",
+  "description": "Native Issue Reference autocomplete and GitHub and GitLab link conversion for Pi user input.",
   "keywords": [
     "autocomplete",
     "github",
+    "gitlab",
     "issues",
     "pi",
     "pi-extension",
