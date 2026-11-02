@@ -42,7 +42,8 @@
     "./ui": "./src/ui.ts",
     "./ui-testing": "./src/ui-testing.ts",
     "./secret-registry": "./src/secret-registry.ts",
-    "./queued-steer": "./src/queued-steer.ts"
+    "./queued-steer": "./src/queued-steer.ts",
+    "./prose-references": "./src/prose-references.ts"
   },
   "publishConfig": {
     "main": "./dist/index.js",
@@ -107,6 +108,10 @@
       "./queued-steer": {
         "types": "./dist/queued-steer.d.ts",
         "import": "./dist/queued-steer.js"
+      },
+      "./prose-references": {
+        "types": "./dist/prose-references.d.ts",
+        "import": "./dist/prose-references.js"
       }
     },
     "access": "public",

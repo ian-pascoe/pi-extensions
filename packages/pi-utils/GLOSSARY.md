@@ -49,3 +49,13 @@ _Avoid_: Pending message, interrupt
 **Steer Yield**:
 A waiting tool call ending early because a Queued Steer is pending for its session, leaving what it waited on running. Its result reports the reason `steered`.
 _Avoid_: Interrupt, cancellation, abort
+
+### Reference shorthand
+
+**Prose Span**:
+A run of user-message Markdown that reads as plain text, outside code, existing links, HTML, and escapes. Reference shorthand expands only inside one.
+_Avoid_: Plain-text region, non-code text
+
+**Reference Sigil**:
+The character that opens a reference shorthand: `$` for a Skill, `@` for an MCP server, `#` for an issue. It opens completion and conversion only at a token boundary in a Prose Span.
+_Avoid_: Trigger character, prefix

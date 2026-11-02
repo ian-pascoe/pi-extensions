@@ -175,6 +175,9 @@
     "packages/pi-skills-selector": {
       "name": "@ian-pascoe/pi-skills-selector",
       "version": "0.3.0",
+      "dependencies": {
+        "@ian-pascoe/pi-utils": "^0.11.0",
+      },
       "peerDependencies": {
         "@earendil-works/pi-coding-agent": ">=1.1.0",
         "@earendil-works/pi-tui": ">=1.1.0",

@@ -10,6 +10,8 @@ pi install npm:@ian-pascoe/pi-skills-selector
 ```
 
 Requires Pi `>=1.1.0` and Node `>=22.19.0`. There are no settings or extra tools.
+Prose Span detection and the completion popup stack come from
+[`@ian-pascoe/pi-utils/prose-references`](../pi-utils/README.md#prose-references).
 
 ## Submission
 
@@ -42,10 +44,9 @@ completion, keyboard controls, and custom editors. Conversion applies to termina
 and RPC `prompt` input, including steering and follow-ups, without changing
 attachments or message routing. Extension-generated input is unchanged.
 
-**RPC limitation:** direct `steer` and `follow_up` commands bypass Pi's
-input hooks, so their shorthand stays literal. Send `prompt` with
-`streamingBehavior: "steer"` or `"followUp"` while streaming to get conversion.
-This extension uses public hooks rather than patching Pi's message pipeline.
+Direct RPC `steer` and `follow_up` commands run Pi's input hooks too, so their
+shorthand converts like a `prompt` sent while streaming. This extension uses
+public hooks rather than patching Pi's message pipeline.
 
 ## Troubleshooting
 

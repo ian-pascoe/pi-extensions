@@ -24,6 +24,7 @@ The Pi packages and `typebox` are optional peers; Pi's extension loader supplies
 | `./agent-lineage`              | `typebox`                                                                        |
 | `./secret-registry`            | Nothing                                                                          |
 | `./queued-steer`               | Nothing                                                                          |
+| `./prose-references`           | `@earendil-works/pi-tui` (`Marked`)                                              |
 | `./layered-settings`           | `typebox`                                                                        |
 | `./null-optional-arguments`    | `typebox`                                                                        |
 | `./tool-testing`               | `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and `typebox`        |
@@ -52,6 +53,14 @@ Type-only imports from `@earendil-works/pi-ai` and `@earendil-works/pi-coding-ag
 - `watchQueuedSteer(sessionId)` returns `{ signal, dispose }` for one wait: an `AbortSignal` aborted once a steer is pending, at once when one already is. Call `dispose` when the wait ends.
 
 A steer stays pending from when it is queued until Pi starts the next turn, so every wait that starts in between yields at once. An `input` handler that consumes the input still raises the signal, because Pi does not tell other handlers.
+
+## Prose references
+
+`@ian-pascoe/pi-utils/prose-references` holds the Reference Sigil machinery that selector packages share: `$` for a Skill today, `@` for an MCP server and `#` for an issue later. Shorthand expands only inside a Prose Span: user-message Markdown that reads as plain text, outside code, existing links, HTML, and escapes, found with pi-tui's `Marked` lexer and mapped back onto the original source (tables, tabs, escapes, and CRLF included). Each caller supplies its sigil, a name grammar, and what a name resolves to.
+
+- `replaceProseReferences(text, { sigil, name, resolve })` replaces each `<sigil><name>` token in a Prose Span with `resolve(name)`; `undefined` leaves it literal. `name` is regular-expression source for one complete name (list longer alternatives first), so a caller can match a catalogue of names or a pattern such as `[A-Za-z0-9_-]+`. A token must start at a boundary and end at one, so `foo@bar`, `@@bar`, and `@bar.baz` stay literal.
+- `findProseReferencePrefix(text, cursorOffset, { sigil, partialName })` returns the sigil plus partial name that ends at the cursor, or `null` outside a Prose Span or off a token boundary. `partialName` is regular-expression source for the characters a half-typed name may hold.
+- `stackProseReferenceAutocomplete(current, { sigil, partialName, suggest })` returns an autocomplete provider that owns the popup at the sigil's prefix, with `suggest(query)` supplying the items (values start with the sigil), and delegates everything else, including applying other providers' items, to `current`. Selecting an item inserts it followed by a space.
 
 ## Null for optional tool arguments
 

@@ -12,6 +12,9 @@ This is the release procedure. Migration implementation publishes nothing.
   otherwise leaves an in-range consumer unreleased. The Changesets config sets
   `___experimentalUnsafeOptions_WILL_CHANGE_IN_PATCH.updateInternalDependents`
   to `always` for this; recheck the option name when upgrading Changesets.
+- `@ian-pascoe/pi-skills-selector` consumes `@ian-pascoe/pi-utils/prose-references`
+  as a regular dependency, so it is patch-bumped on every pi-utils release like any
+  other consumer.
 - `pi-adaptive-thinking`, `pi-byterover`, `@ian-pascoe/pi-codemode`,
   `@ian-pascoe/pi-mcp`, and `@ian-pascoe/pi-git-status-widget` are retired. They remain on npm only as deprecated
   historical artifacts and must not return to release automation.
