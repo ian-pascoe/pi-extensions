@@ -1,6 +1,6 @@
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
-import type { IssueRepository, RunCommand } from "./issue-repository.js";
+import type { HostedRepository, RunCommand } from "./issue-repository.js";
 
 export interface IssueSummary {
   number: number;
@@ -20,11 +20,14 @@ export type IssueListing =
 export interface IssueHost {
   /** The host this adapter serves under a remote's host name, or undefined for other hosts. */
   canonicalHost(host: string): string | undefined;
-  /** The web page of issue or pull request `number`. */
-  issueUrl(repository: IssueRepository, number: number | string): string;
+  /**
+   * The web page of issue or pull request `number`. Repositories passed to this and to
+   * `listRecent` carry the host `canonicalHost` returned.
+   */
+  issueUrl(repository: HostedRepository, number: number | string): string;
   /** The most recently updated issues and pull requests, newest first. */
   listRecent(
-    repository: IssueRepository,
+    repository: HostedRepository,
     run: RunCommand,
     signal: AbortSignal,
   ): Promise<IssueListing>;
@@ -65,12 +68,11 @@ function needsGitHubCli(code: number, stderr: string): boolean {
 export const GITHUB: IssueHost = {
   canonicalHost: canonicalGitHubHost,
   issueUrl: (repository, number) =>
-    `https://${canonicalGitHubHost(repository.host) ?? repository.host}/${repository.owner}/${repository.repo}/issues/${number}`,
+    `https://${repository.host}/${repository.owner}/${repository.repo}/issues/${number}`,
   async listRecent(repository, run, signal) {
-    const host = canonicalGitHubHost(repository.host) ?? repository.host;
     const path = `repos/${repository.owner}/${repository.repo}/issues?state=all&sort=updated&per_page=100`;
     try {
-      const result = await run("gh", ["api", "--hostname", host, path], {
+      const result = await run("gh", ["api", "--hostname", repository.host, path], {
         signal,
         timeout: 20_000,
       });

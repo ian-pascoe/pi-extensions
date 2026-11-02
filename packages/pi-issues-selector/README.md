@@ -30,17 +30,28 @@ network lookup. The submitted transcript stores the links rather than a separate
 raw message.
 
 - **`#123`** resolves against the _Issue Repository_ (below). Outside a Git
-  repository, or beside a remote on an unsupported host, it stays literal.
+  repository, or beside remotes that name no repository on a supported host, it
+  stays literal.
 - **`owner/repo#123`** names its repository and uses the Issue Repository's host,
-  or `github.com` outside a Git repository. Beside an unsupported remote it stays
-  literal. Owners are letters, digits, and single hyphens; repositories add `.` and
+  or `github.com` when the checkout has no remotes at all (or is not a checkout).
+  When remotes exist but none names a repository on a supported host (a GitLab
+  remote, a nested group, a local path, a `file://` URL, an SSH host alias), it
+  stays literal. Owners are letters, digits, and single hyphens; repositories add `.` and
   `_`; there are exactly two segments. A file path such as `docs/guide.md#12`
   looks the same, so put paths in code.
-- Numbers are 1 to 10 digits with no leading zero, and are not followed by a word
-  character, `#`, or a `.` and a word character: `#123.`, `#123)`, `#123,`, `(#123)`,
-  and a heading's `## Fix #123` convert (as on GitHub, so does `my #1 priority`);
-  `\#123`, `&#123;`, `#1st`, `#123abc`, `#123.5`, `issue#123`, `PR#1`, `##123`,
-  `#0`, `#0123`, code, link text, and existing Markdown links stay literal.
+- Numbers are 1 to 10 digits with no leading zero. A token (the number, or
+  `owner/repo` and its number) converts only at a boundary:
+  - It is not preceded by a letter, digit, `_`, `#`, `/`, `+`, `-`, `&`, `.`, `:`,
+    or `@`: so `issue#123`, `PR#1`, `##123`, `a-#1`, `&#123;`, `/acme/other#1`, and
+    `@acme/other#1` stay literal, while a start of text, whitespace, or an opening
+    bracket or quote lets it convert.
+  - It is not followed by a letter, digit, `_`, `#`, `/`, `+`, or `-`, nor by a `.` and
+    a letter, digit, or `_`: so `#1st`, `#123abc`, `#123.5`, `#12/3`, and `#12-3` stay
+    literal, while `#123.`, `#123)`, `#123,`, `#123;`, and `#123: …` convert.
+  - `0` and a leading zero (`#0`, `#0123`) are not numbers.
+
+  A heading's `## Fix #123` and `my #1 priority` convert (as on GitHub). `\#123`,
+  code, link text, existing Markdown links, and HTML blocks stay literal.
 
 ### Issue Repository
 
@@ -74,7 +85,8 @@ the popup opens after the next character.
 
 Suggestions need the [GitHub CLI](https://cli.github.com) signed in to the
 repository's host. Once per session and host, when `gh` is missing or signed out,
-Pi shows `Issue suggestions need the GitHub CLI (gh) signed in to <host>.` Network
+Pi shows `Issue suggestions need the GitHub CLI (gh) signed in to <host>. Run
+/skill:pi-issues-selector to diagnose.` Network
 errors, rate limits, and repositories you cannot read show no suggestions and no
 notice. Conversion never needs `gh`.
 

@@ -1,24 +1,14 @@
-import type { ExecResult } from "@earendil-works/pi-coding-agent";
+import type { ExecOptions, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-/** A hosted repository as a git remote names it; `host` is lower-case and carries no port. */
-export interface IssueRepository {
+/** A repository on a hosting service: where a git remote points. `host` is lower-case, no port. */
+export interface HostedRepository {
   host: string;
   owner: string;
   repo: string;
 }
 
-export interface CommandOptions {
-  cwd?: string;
-  signal?: AbortSignal;
-  timeout?: number;
-}
-
 /** Runs a program without a shell, as Pi's `exec` does. */
-export type RunCommand = (
-  command: string,
-  args: string[],
-  options: CommandOptions,
-) => Promise<ExecResult>;
+export type RunCommand = ExtensionAPI["exec"];
 
 /** Letters, digits, and single hyphens, not starting or ending with one. */
 export const OWNER_PATTERN = "[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9]))*";
@@ -29,23 +19,31 @@ const ownerPattern = new RegExp(`^${OWNER_PATTERN}$`);
 const repoPattern = new RegExp(`^${REPO_PATTERN}$`);
 const hostPattern = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/;
 
-function repositoryAt(host: string, path: string): IssueRepository | undefined {
-  const segments = path
-    .replace(/^\/+/, "")
-    .replace(/\/+$/, "")
-    .replace(/\.git$/, "")
-    .split("/");
-  const [owner, repo] = segments;
-  if (segments.length !== 2 || owner === undefined || repo === undefined) return undefined;
+/** The owner and repository of exactly `owner/repo`, or undefined for any other text. */
+export function parseOwnerRepo(text: string): { owner: string; repo: string } | undefined {
+  const [owner, repo, ...rest] = text.split("/");
+  if (rest.length > 0 || owner === undefined || repo === undefined) return undefined;
   if (!ownerPattern.test(owner) || !repoPattern.test(repo) || repo === "." || repo === "..") {
     return undefined;
   }
+  return { owner, repo };
+}
+
+function repositoryAt(host: string, path: string): HostedRepository | undefined {
+  const named = parseOwnerRepo(
+    path
+      .replace(/^\/+/, "")
+      .replace(/\/+$/, "")
+      .replace(/\.git$/, ""),
+  );
   const lowerHost = host.toLowerCase();
-  return hostPattern.test(lowerHost) ? { host: lowerHost, owner, repo } : undefined;
+  return named !== undefined && hostPattern.test(lowerHost)
+    ? { host: lowerHost, ...named }
+    : undefined;
 }
 
 /** The hosted repository a remote URL names: `https://`, `ssh://`, or `[user@]host:owner/repo`. */
-export function parseRemoteUrl(url: string): IssueRepository | undefined {
+export function parseRemoteUrl(url: string): HostedRepository | undefined {
   const trimmed = url.trim();
   const scheme = /^(?:https?|ssh):\/\/(?:[^@/]*@)?([^/:@]+)(?::\d+)?\/(.*)$/i.exec(trimmed);
   if (scheme?.[1] !== undefined && scheme[2] !== undefined) {
@@ -79,7 +77,7 @@ function readRemotes(configOutput: string): RemoteConfig[] {
   return [...remotes.values()];
 }
 
-function repositoryOf(remote: RemoteConfig): IssueRepository | undefined {
+function repositoryOf(remote: RemoteConfig): HostedRepository | undefined {
   for (const url of remote.urls) {
     const parsed = parseRemoteUrl(url);
     if (parsed !== undefined) return parsed;
@@ -93,7 +91,7 @@ function repositoryOf(remote: RemoteConfig): IssueRepository | undefined {
  * resolved (`gh-resolved` is `base`, or `owner/repo` on that remote's host); else `upstream`,
  * `github`, `origin`; else the first remote whose URL parses.
  */
-export function selectIssueRepository(configOutput: string): IssueRepository | undefined {
+export function selectIssueRepository(configOutput: string): HostedRepository | undefined {
   const remotes = readRemotes(configOutput).flatMap((remote) => {
     const repository = repositoryOf(remote);
     return repository === undefined ? [] : [{ remote, repository }];
@@ -110,13 +108,29 @@ export function selectIssueRepository(configOutput: string): IssueRepository | u
   return remotes[0]?.repository;
 }
 
-/** The Issue Repository of the git checkout at `cwd`, or undefined outside one or without remotes. */
+/**
+ * What the git remotes say about the Issue Repository: `none` when there are no remotes to ask
+ * (outside a checkout, or a checkout without any), `unresolved` when remotes exist but none names
+ * a hosted repository (a local path, `file://`, a nested GitLab group), else the one chosen.
+ */
+export type IssueRepositoryLookup =
+  | { kind: "none" }
+  | { kind: "unresolved" }
+  | { kind: "found"; repository: HostedRepository };
+
+export function lookupIssueRepository(configOutput: string): IssueRepositoryLookup {
+  const repository = selectIssueRepository(configOutput);
+  if (repository !== undefined) return { kind: "found", repository };
+  return readRemotes(configOutput).length > 0 ? { kind: "unresolved" } : { kind: "none" };
+}
+
+/** The Issue Repository of the git checkout at `cwd`; `none` when git cannot say. */
 export async function resolveIssueRepository(
   run: RunCommand,
   cwd: string,
   signal?: AbortSignal,
-): Promise<IssueRepository | undefined> {
-  const options: CommandOptions = { cwd, timeout: 5_000 };
+): Promise<IssueRepositoryLookup> {
+  const options: ExecOptions = { cwd, timeout: 5_000 };
   if (signal !== undefined) options.signal = signal;
   try {
     const result = await run(
@@ -124,8 +138,8 @@ export async function resolveIssueRepository(
       ["config", "--get-regexp", "^remote\\..*\\.(url|gh-resolved)$"],
       options,
     );
-    return result.code === 0 ? selectIssueRepository(result.stdout) : undefined;
+    return result.code === 0 ? lookupIssueRepository(result.stdout) : { kind: "none" };
   } catch {
-    return undefined;
+    return { kind: "none" };
   }
 }

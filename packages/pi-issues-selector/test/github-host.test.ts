@@ -44,7 +44,7 @@ describe("GitHub recent issues", () => {
     await GITHUB.listRecent(
       { host: "octo.ghe.com", owner: "me", repo: "core" },
       async (command, args, options) => {
-        calls.push([command, args, options.signal === signal, options.timeout !== undefined]);
+        calls.push([command, args, options?.signal === signal, options?.timeout !== undefined]);
         return { stdout: "[]", stderr: "", code: 0, killed: false };
       },
       signal,
@@ -62,19 +62,6 @@ describe("GitHub recent issues", () => {
         true,
       ],
     ]);
-  });
-
-  test("asks about github.com for an ssh.github.com remote", async () => {
-    const args: string[][] = [];
-    await GITHUB.listRecent(
-      { host: "ssh.github.com", owner: "me", repo: "core" },
-      async (_command, received) => {
-        args.push(received);
-        return { stdout: "[]", stderr: "", code: 0, killed: false };
-      },
-      signal,
-    );
-    expect(args[0]?.slice(1, 3)).toEqual(["--hostname", "github.com"]);
   });
 
   test("tells issues from pull requests and reads each state", async () => {

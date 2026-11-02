@@ -370,6 +370,33 @@ describe("Pi Issues Selector input", () => {
     expect(harness.calls).toEqual([]);
   });
 
+  test.each([
+    ["a non-GitHub host", "remote.origin.url git@gitlab.com:acme/widgets.git\n"],
+    ["a nested GitLab group", "remote.origin.url https://gitlab.com/group/sub/widgets.git\n"],
+    ["a local path", "remote.origin.url /srv/git/widgets.git\n"],
+    ["a file URL", "remote.origin.url file:///srv/git/widgets.git\n"],
+    ["an SSH host alias", "remote.origin.url git@gh-work:acme/widgets.git\n"],
+  ])("leaves every reference literal beside %s", async (_name, remotes) => {
+    const harness = new IssuesSelectorHarness();
+    harness.remotes = remotes;
+    expect(await submit(harness, "See #1 and acme/other#2")).toEqual({ action: "continue" });
+  });
+
+  test("links an ssh.github.com remote on github.com", async () => {
+    const harness = new IssuesSelectorHarness();
+    harness.remotes = "remote.origin.url ssh://git@ssh.github.com:443/acme/widgets.git\n";
+    expect(await submit(harness, "See #1")).toEqual({
+      action: "transform",
+      text: "See [#1](https://github.com/acme/widgets/issues/1)",
+    });
+    await (
+      await harness.provider()
+    ).getSuggestions(["see #"], 0, 5, {
+      signal: new AbortController().signal,
+    });
+    expect(harness.ghCalls[0]?.args.slice(1, 3)).toEqual(["--hostname", "github.com"]);
+  });
+
   test("leaves bare references literal without a repository or beside another host", async () => {
     const harness = new IssuesSelectorHarness();
     harness.remotes = "";

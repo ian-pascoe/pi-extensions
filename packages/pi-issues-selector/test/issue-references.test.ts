@@ -1,14 +1,18 @@
 import { describe, expect, test } from "vitest";
-import type { IssueRepository } from "../src/issue-repository.js";
+import type { HostedRepository, IssueRepositoryLookup } from "../src/issue-repository.js";
 import { transformIssueReferences } from "../src/issue-references.js";
 
-const github: IssueRepository = { host: "github.com", owner: "acme", repo: "widgets" };
+const github: HostedRepository = { host: "github.com", owner: "acme", repo: "widgets" };
+const found = (repository: HostedRepository): IssueRepositoryLookup => ({
+  kind: "found",
+  repository,
+});
 const bare = (number: number | string): string =>
   `[#${number}](https://github.com/acme/widgets/issues/${number})`;
 const qualified = (target: string, number: number | string): string =>
   `[${target}#${number}](https://github.com/${target}/issues/${number})`;
-const convert = (text: string, repository: IssueRepository | undefined = github): string =>
-  transformIssueReferences(text, repository);
+const convert = (text: string, lookup: IssueRepositoryLookup = found(github)): string =>
+  transformIssueReferences(text, lookup);
 
 describe("bare #123", () => {
   test.each([
@@ -73,7 +77,7 @@ describe("bare #123", () => {
   });
 
   test("is literal without an Issue Repository", () => {
-    expect(transformIssueReferences("See #123", undefined)).toBe("See #123");
+    expect(transformIssueReferences("See #123", { kind: "none" })).toBe("See #123");
   });
 });
 
@@ -114,31 +118,39 @@ describe("owner/repo#123", () => {
     expect(convert(text)).toBe(text);
   });
 
-  test("defaults to github.com outside a Git repository", () => {
-    expect(transformIssueReferences("See acme/other#5 and #6.", undefined)).toBe(
+  test("defaults to github.com when the checkout has no remotes", () => {
+    expect(transformIssueReferences("See acme/other#5 and #6.", { kind: "none" })).toBe(
       `See ${qualified("acme/other", 5)} and #6.`,
+    );
+  });
+});
+
+describe("remotes that name no hosted repository", () => {
+  test("leave every reference literal, qualified or not", () => {
+    expect(transformIssueReferences("#7 and me/other#8", { kind: "unresolved" })).toBe(
+      "#7 and me/other#8",
     );
   });
 });
 
 describe("hosts", () => {
   test("links on the Issue Repository's host", () => {
-    const enterprise: IssueRepository = { host: "octo.ghe.com", owner: "me", repo: "core" };
-    expect(convert("#7 and me/other#8", enterprise)).toBe(
+    const enterprise: HostedRepository = { host: "octo.ghe.com", owner: "me", repo: "core" };
+    expect(convert("#7 and me/other#8", found(enterprise))).toBe(
       "[#7](https://octo.ghe.com/me/core/issues/7) and [me/other#8](https://octo.ghe.com/me/other/issues/8)",
     );
   });
 
   test("links ssh.github.com remotes on github.com", () => {
-    const ssh: IssueRepository = { host: "ssh.github.com", owner: "me", repo: "core" };
-    expect(convert("#7", ssh)).toBe("[#7](https://github.com/me/core/issues/7)");
+    const ssh: HostedRepository = { host: "ssh.github.com", owner: "me", repo: "core" };
+    expect(convert("#7", found(ssh))).toBe("[#7](https://github.com/me/core/issues/7)");
   });
 
   test.each(["gitlab.com", "gh-work", "bitbucket.org", "github.com.evil.example", "ghe.com"])(
     "leaves every reference literal beside a %s remote",
     (host) => {
-      const other: IssueRepository = { host, owner: "me", repo: "core" };
-      expect(convert("#7 and me/other#8", other)).toBe("#7 and me/other#8");
+      const other: HostedRepository = { host, owner: "me", repo: "core" };
+      expect(convert("#7 and me/other#8", found(other))).toBe("#7 and me/other#8");
     },
   );
 });

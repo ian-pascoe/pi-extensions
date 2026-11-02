@@ -3,6 +3,7 @@ import type { AutocompleteProvider } from "@earendil-works/pi-tui";
 import { stackProseReferenceAutocomplete } from "@ian-pascoe/pi-utils/prose-references";
 import { findIssueHost } from "./github-host.js";
 import {
+  EXCLUDE_BEFORE,
   ISSUE_PARTIAL_NAME,
   ISSUE_SIGIL,
   MAY_HOLD_ISSUE_REFERENCE,
@@ -11,10 +12,6 @@ import {
 import { suggestIssues } from "./issue-suggestions.js";
 import { resolveIssueRepository, type RunCommand } from "./issue-repository.js";
 import { RecentIssues } from "./recent-issues.js";
-
-// Characters other than letters and digits that keep `#` from opening a completion: an HTML entity
-// such as `&#123;` is not a reference. Matches the conversion rule.
-const EXCLUDE_BEFORE = "&.:@";
 
 export default function issuesSelectorExtension(pi: ExtensionAPI): void {
   const run: RunCommand = (command, args, options) => pi.exec(command, args, options);
@@ -39,8 +36,9 @@ export default function issuesSelectorExtension(pi: ExtensionAPI): void {
         partialName: ISSUE_PARTIAL_NAME,
         excludeBefore: EXCLUDE_BEFORE,
         suggest: async (query, signal) => {
-          const repository = await resolveIssueRepository(run, cwd, signal);
-          if (repository === undefined || signal.aborted) return [];
+          const lookup = await resolveIssueRepository(run, cwd, signal);
+          if (lookup.kind !== "found" || signal.aborted) return [];
+          const { repository } = lookup;
           const served = findIssueHost(repository.host);
           if (served === undefined) return [];
           const { adapter, host } = served;
@@ -65,8 +63,8 @@ export default function issuesSelectorExtension(pi: ExtensionAPI): void {
     if (event.source === "extension" || !MAY_HOLD_ISSUE_REFERENCE.test(event.text)) {
       return { action: "continue" };
     }
-    const repository = await resolveIssueRepository(run, ctx.cwd);
-    const text = transformIssueReferences(event.text, repository);
+    const lookup = await resolveIssueRepository(run, ctx.cwd);
+    const text = transformIssueReferences(event.text, lookup);
     if (text === event.text) return { action: "continue" };
     return event.images === undefined
       ? { action: "transform", text }

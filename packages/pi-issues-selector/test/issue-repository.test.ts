@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, test } from "vitest";
 import {
+  lookupIssueRepository,
+  parseOwnerRepo,
   parseRemoteUrl,
   resolveIssueRepository,
   selectIssueRepository,
@@ -143,6 +145,33 @@ describe("selectIssueRepository", () => {
   });
 });
 
+describe("lookupIssueRepository", () => {
+  test("tells no remotes from remotes that name no hosted repository", () => {
+    expect(lookupIssueRepository("")).toEqual({ kind: "none" });
+    expect(lookupIssueRepository("remote.local.url /srv/git/widgets.git\n")).toEqual({
+      kind: "unresolved",
+    });
+    expect(
+      lookupIssueRepository(
+        "remote.origin.url https://gitlab.com/group/sub/widgets.git\nremote.mirror.url file:///srv/x\n",
+      ),
+    ).toEqual({ kind: "unresolved" });
+    expect(lookupIssueRepository("remote.origin.url git@github.com:acme/widgets.git\n")).toEqual({
+      kind: "found",
+      repository: { host: "github.com", owner: "acme", repo: "widgets" },
+    });
+  });
+});
+
+describe("parseOwnerRepo", () => {
+  test("accepts exactly owner/repo", () => {
+    expect(parseOwnerRepo("acme/my.repo_1")).toEqual({ owner: "acme", repo: "my.repo_1" });
+    for (const text of ["acme", "a/b/c", "-a/b", "a--b/c", "a/..", "a/.", "a/", "/a", "a/b c"]) {
+      expect(parseOwnerRepo(text)).toBeUndefined();
+    }
+  });
+});
+
 describe("resolveIssueRepository", () => {
   const directories: string[] = [];
   const run = promisify(execFile);
@@ -154,7 +183,7 @@ describe("resolveIssueRepository", () => {
 
   // The real `git config --get-regexp`, so the parser meets git's actual output format.
   const gitRunner = (): RunCommand => async (command, args, options) => {
-    const result = spawnSync(command, args, { cwd: options.cwd, encoding: "utf8" });
+    const result = spawnSync(command, args, { cwd: options?.cwd, encoding: "utf8" });
     return {
       stdout: result.stdout,
       stderr: result.stderr,
@@ -177,9 +206,8 @@ describe("resolveIssueRepository", () => {
       ["remote", "add", "upstream", "https://github.com/acme/widgets.git"],
     );
     expect(await resolveIssueRepository(gitRunner(), cwd)).toEqual({
-      host: "github.com",
-      owner: "acme",
-      repo: "widgets",
+      kind: "found",
+      repository: { host: "github.com", owner: "acme", repo: "widgets" },
     });
   });
 
@@ -189,24 +217,35 @@ describe("resolveIssueRepository", () => {
       ["remote", "add", "upstream", "https://github.com/acme/widgets.git"],
       ["config", "remote.origin.gh-resolved", "base"],
     );
-    expect((await resolveIssueRepository(gitRunner(), cwd))?.owner).toBe("me");
+    expect(await resolveIssueRepository(gitRunner(), cwd)).toMatchObject({
+      repository: { owner: "me" },
+    });
   });
 
   test("has no repository outside Git, without remotes, or without git", async () => {
     const outside = await mkdtemp(join(tmpdir(), "pi-issues-outside-"));
     directories.push(outside);
-    expect(await resolveIssueRepository(gitRunner(), outside)).toBeUndefined();
-    expect(await resolveIssueRepository(gitRunner(), await repository())).toBeUndefined();
+    expect(await resolveIssueRepository(gitRunner(), outside)).toEqual({ kind: "none" });
+    expect(await resolveIssueRepository(gitRunner(), await repository())).toEqual({ kind: "none" });
     const missing: RunCommand = async () => {
       throw new Error("spawn git ENOENT");
     };
-    expect(await resolveIssueRepository(missing, outside)).toBeUndefined();
+    expect(await resolveIssueRepository(missing, outside)).toEqual({ kind: "none" });
+  });
+
+  test.each([
+    ["a nested GitLab group", "https://gitlab.com/group/sub/widgets.git"],
+    ["a local path", "/srv/git/widgets.git"],
+    ["a file URL", "file:///srv/git/widgets.git"],
+  ])("a remote at %s leaves the Issue Repository unresolved, not absent", async (_name, url) => {
+    const cwd = await repository(["remote", "add", "origin", url]);
+    expect(await resolveIssueRepository(gitRunner(), cwd)).toEqual({ kind: "unresolved" });
   });
 
   test("asks git for exactly the remote URLs and gh markers, in the session directory", async () => {
     const calls: unknown[] = [];
     await resolveIssueRepository(async (command, args, options) => {
-      calls.push([command, args, options.cwd]);
+      calls.push([command, args, options?.cwd]);
       return { stdout: "", stderr: "", code: 1, killed: false };
     }, "/work/project");
     expect(calls).toEqual([
