@@ -2,8 +2,8 @@ import type { InputEvent } from "@earendil-works/pi-coding-agent";
 import { describe, expect, test } from "vitest";
 import { McpSelectorHarness, mcpTool } from "./mcp-selector-harness.js";
 
-const GITHUB = '[+github](mcp://github "MCP server mcp__github")';
-const RADIUS = '[+dev-radius](mcp://dev-radius "MCP server mcp__dev_radius")';
+const GITHUB = '[&github](mcp://github "MCP server mcp__github")';
+const RADIUS = '[&dev-radius](mcp://dev-radius "MCP server mcp__dev_radius")';
 
 describe("Pi MCP Selector input", () => {
   test("first prompt converts references to servers in the bound Catalogue", async () => {
@@ -12,7 +12,7 @@ describe("Pi MCP Selector input", () => {
       await harness.emit({
         type: "input",
         source: "interactive",
-        text: "Use +github and +dev-radius.",
+        text: "Use &github and &dev-radius.",
       }),
     ).toEqual({ action: "transform", text: `Use ${GITHUB} and ${RADIUS}.` });
   });
@@ -20,16 +20,16 @@ describe("Pi MCP Selector input", () => {
   test("reads the Catalogue fresh on every submission", async () => {
     const harness = new McpSelectorHarness();
     harness.tools = [];
-    expect(await harness.emit({ type: "input", source: "interactive", text: "+github" })).toEqual({
+    expect(await harness.emit({ type: "input", source: "interactive", text: "&github" })).toEqual({
       action: "continue",
     });
     harness.tools = [mcpTool({ name: "github" })];
-    expect(await harness.emit({ type: "input", source: "interactive", text: "+github" })).toEqual({
+    expect(await harness.emit({ type: "input", source: "interactive", text: "&github" })).toEqual({
       action: "transform",
       text: GITHUB,
     });
     harness.tools = [mcpTool({ name: "github", exposure: "hidden" })];
-    expect(await harness.emit({ type: "input", source: "interactive", text: "+github" })).toEqual({
+    expect(await harness.emit({ type: "input", source: "interactive", text: "&github" })).toEqual({
       action: "continue",
     });
   });
@@ -41,7 +41,7 @@ describe("Pi MCP Selector input", () => {
       mcpTool({ name: "dev-radius", exposure: "direct" }),
     ];
     expect(
-      await harness.emit({ type: "input", source: "interactive", text: "+github +dev-radius" }),
+      await harness.emit({ type: "input", source: "interactive", text: "&github &dev-radius" }),
     ).toEqual({ action: "transform", text: `${GITHUB} ${RADIUS}` });
   });
 
@@ -53,7 +53,7 @@ describe("Pi MCP Selector input", () => {
         const event: InputEvent = {
           type: "input",
           source,
-          text: "+github",
+          text: "&github",
           streamingBehavior,
           images: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
         };
@@ -63,7 +63,7 @@ describe("Pi MCP Selector input", () => {
           images: event.images,
         });
         expect(event.streamingBehavior).toBe(streamingBehavior);
-        expect(event.text).toBe("+github");
+        expect(event.text).toBe("&github");
       }
     },
   );
@@ -71,20 +71,20 @@ describe("Pi MCP Selector input", () => {
   test.each(["print", "json"] as const)("converts in %s mode", async (mode) => {
     const harness = new McpSelectorHarness();
     expect(
-      await harness.emit({ type: "input", source: "interactive", text: "+github" }, mode),
+      await harness.emit({ type: "input", source: "interactive", text: "&github" }, mode),
     ).toEqual({ action: "transform", text: GITHUB });
   });
 
   test("leaves extension-generated messages, unknown names, and file paths unchanged", async () => {
     const harness = new McpSelectorHarness();
-    expect(await harness.emit({ type: "input", source: "extension", text: "+github" })).toEqual({
+    expect(await harness.emit({ type: "input", source: "extension", text: "&github" })).toEqual({
       action: "continue",
     });
     expect(
       await harness.emit({
         type: "input",
         source: "interactive",
-        text: "+unknown +src/index.ts +github.com +./github",
+        text: "&unknown &src/index.ts &github.com &./github",
       }),
     ).toEqual({ action: "continue" });
   });
@@ -93,7 +93,7 @@ describe("Pi MCP Selector input", () => {
     const harness = new McpSelectorHarness();
     harness.tools = [];
     expect(
-      await harness.emit({ type: "input", source: "interactive", text: "ask +github" }),
+      await harness.emit({ type: "input", source: "interactive", text: "ask &github" }),
     ).toEqual({ action: "continue" });
   });
 });

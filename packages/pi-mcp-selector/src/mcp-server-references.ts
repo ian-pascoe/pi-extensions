@@ -10,7 +10,7 @@ export interface McpServer {
   description?: string;
 }
 
-export const MCP_SERVER_SIGIL = "+";
+export const MCP_SERVER_SIGIL = "&";
 
 /** Characters a partially typed server name may hold; Pi allows letters, digits, `_`, and `-`. */
 export const MCP_SERVER_PARTIAL_NAME = "[A-Za-z0-9_-]*";
@@ -83,9 +83,9 @@ export function matchMcpServers(servers: readonly McpServer[], query: string): M
 const escapeRegex = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
- * Converts `+server` shorthand for a catalogue server into `[+server](mcp://server "MCP server
+ * Converts `&server` shorthand for a catalogue server into `[&server](mcp://server "MCP server
  * mcp__server")` inside Prose Spans. Unknown names, code, links, and names that run into a path,
- * domain, or `name:text` stay literal.
+ * domain, `name:text`, or `;` (an HTML entity such as `&amp;`) stay literal.
  */
 export function transformMcpServerReferences(text: string, servers: readonly McpServer[]): string {
   const catalogue = new Map(servers.map((server) => [nameKey(server.name), server]));
@@ -96,8 +96,9 @@ export function transformMcpServerReferences(text: string, servers: readonly Mcp
   if (names.length === 0) return text;
   return replaceProseReferences(text, {
     sigil: MCP_SERVER_SIGIL,
-    // A colon opens a reference only before a space (`+server: list`); `+server:resource` is a URI.
-    name: `(?:${names.join("|")})(?!:\\S)`,
+    // A colon opens a reference only before a space (`&server: list`); `&server:resource` is a URI.
+    // A semicolon right after the name would make an HTML entity (`&amp;`), which stays literal.
+    name: `(?:${names.join("|")})(?!:\\S|;)`,
     resolve: (typed) => {
       const server = catalogue.get(nameKey(typed));
       if (server === undefined) return undefined;
