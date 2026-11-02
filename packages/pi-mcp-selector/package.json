@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-mcp-selector",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": false,
   "description": "Native MCP Server Reference autocomplete and link conversion for Pi user input.",
   "keywords": [
