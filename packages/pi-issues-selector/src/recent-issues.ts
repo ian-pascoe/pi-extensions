@@ -1,4 +1,4 @@
-import type { IssueListing } from "./github-host.js";
+import type { IssueListing } from "./issue-host.js";
 
 export interface RecentIssuesOptions {
   now?: () => number;

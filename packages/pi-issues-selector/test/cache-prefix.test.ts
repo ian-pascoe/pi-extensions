@@ -75,6 +75,8 @@ async function createFixture({
   await run("git", ["init", "-q"], { cwd });
   await run("git", ["remote", "add", "origin", remote], { cwd });
   if (signedInHosts.length > 0) {
+    // A developer's own GH_HOST must not recognise the host either.
+    vi.stubEnv("GH_HOST", "");
     const ghConfigDir = join(cwd, "gh-config");
     await mkdir(ghConfigDir);
     await writeFile(

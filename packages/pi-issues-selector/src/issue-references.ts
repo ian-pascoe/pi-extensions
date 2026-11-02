@@ -23,9 +23,9 @@ const ISSUE_NUMBER = "[1-9][0-9]{0,9}";
 
 /**
  * Replaces `#123` and `owner/repo#123` in prose with Markdown links to the issue's web page.
- * Bare numbers need an Issue Repository on an Issue Host. A qualified reference uses that host
+ * Bare numbers need an Issue Repository on a host name an Issue Host serves. A qualified reference uses that host
  * and its adapter, or github.com when the checkout has no remotes at all, and stays literal when
- * remotes exist but the selected one is not on an Issue Host.
+ * remotes exist but no Issue Host serves the selected one's host name.
  */
 export function transformIssueReferences(text: string, lookup: IssueRepositoryLookup): string {
   if (lookup.kind === "unresolved") return text;

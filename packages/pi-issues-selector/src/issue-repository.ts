@@ -3,10 +3,9 @@ import {
   findIssueHost,
   readConfiguredHosts,
   type ConfiguredHosts,
-  type HostEnvironment,
+  type HostSources,
   type IssueHost,
-  type ReadText,
-} from "./github-host.js";
+} from "./issue-host.js";
 
 /** A repository on a hosting service: where a git remote points. `host` is lower-case, no port. */
 export interface HostedRepository {
@@ -119,7 +118,7 @@ export function selectIssueRepository(configOutput: string): HostedRepository | 
 /**
  * What the git remotes say about the Issue Repository: `none` when there are no remotes to ask
  * (outside a checkout, or a checkout without any), `unresolved` when remotes exist but the
- * selected one names no repository on an Issue Host (a local path, `file://`, a nested GitLab
+ * selected one names no repository on a host name an Issue Host serves (a local path, `file://`, a nested GitLab
  * group, an unrecognised host), else the one chosen with the adapter serving it and the host its
  * URLs use. Another remote is never chosen in place of an unrecognised one.
  */
@@ -142,17 +141,11 @@ export async function lookupIssueRepository(
     : { kind: "found", repository, adapter: served.adapter, host: served.host };
 }
 
-/** Where the CLIs' configured hosts come from: the environment and a way to read a file. */
-export interface HostSources {
-  environment: HostEnvironment;
-  readText: ReadText;
-}
-
 /** The Issue Repository of the git checkout at `cwd`; `none` when git cannot say. */
 export async function resolveIssueRepository(
   run: RunCommand,
   cwd: string,
-  { environment, readText }: HostSources,
+  sources: HostSources,
   signal?: AbortSignal,
 ): Promise<IssueRepositoryLookup> {
   const options: ExecOptions = { cwd, timeout: 5_000 };
@@ -164,7 +157,7 @@ export async function resolveIssueRepository(
       options,
     );
     return result.code === 0
-      ? await lookupIssueRepository(result.stdout, () => readConfiguredHosts(environment, readText))
+      ? await lookupIssueRepository(result.stdout, () => readConfiguredHosts(sources))
       : { kind: "none" };
   } catch {
     return { kind: "none" };

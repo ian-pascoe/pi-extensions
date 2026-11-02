@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, test } from "vitest";
-import { GITHUB, type HostEnvironment, type ReadText } from "../src/github-host.js";
+import { GITHUB } from "../src/github-host.js";
+import type { HostEnvironment, ReadText } from "../src/issue-host.js";
 import {
   lookupIssueRepository,
   parseOwnerRepo,

@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import type { HostSources } from "./issue-repository.js";
+import type { HostSources } from "./issue-host.js";
 
 /** The real environment and file system, for the host CLIs' configuration. */
 export function systemHostSources(): HostSources {

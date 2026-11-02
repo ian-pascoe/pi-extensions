@@ -342,6 +342,29 @@ describe("Pi Issues Selector notices", () => {
     };
   };
 
+  test.each([
+    ["no hosts.yml", undefined],
+    ["a malformed hosts.yml", "a: [unclosed\n  : : :\n"],
+  ])(
+    "%s recognises no host: no popup, no gh call, no notice, and references stay literal",
+    async (_name, hostsFile) => {
+      if (hostsFile !== undefined) await writeFile(join(ghConfigDir, "hosts.yml"), hostsFile);
+      const harness = new IssuesSelectorHarness();
+      // Were the host recognised, gh would be asked and would say it needs signing in.
+      needsCli(harness);
+      harness.remotes = "remote.origin.url https://github.corp.example/acme/widgets.git\n";
+      const provider = await harness.provider();
+      expect(await suggest(provider, "see #")).toBeNull();
+      expect(await harness.emit({ type: "input", source: "interactive", text: "Fix #12" })).toEqual(
+        {
+          action: "continue",
+        },
+      );
+      expect(harness.ghCalls).toHaveLength(0);
+      expect(harness.notices).toEqual([]);
+    },
+  );
+
   test("says once per host that suggestions need a signed-in GitHub CLI", async () => {
     const harness = new IssuesSelectorHarness();
     needsCli(harness);
@@ -469,12 +492,14 @@ describe("Pi Issues Selector input", () => {
     });
   });
 
-  test("a malformed hosts.yml is silent: references stay literal and nothing is shown", async () => {
-    await writeFile(join(ghConfigDir, "hosts.yml"), "a: [unclosed\n  : : :\n");
+  test("converts on a host named by GH_HOST, with no hosts.yml", async () => {
+    vi.stubEnv("GH_HOST", "github.corp.example");
     const harness = new IssuesSelectorHarness();
     harness.remotes = "remote.origin.url https://github.corp.example/acme/widgets.git\n";
-    expect(await submit(harness, "Fix #12")).toEqual({ action: "continue" });
-    expect(harness.notices).toEqual([]);
+    expect(await submit(harness, "Fix #12")).toEqual({
+      action: "transform",
+      text: "Fix [#12](https://github.corp.example/acme/widgets/issues/12)",
+    });
   });
 
   test("treats a failing git like a missing repository", async () => {

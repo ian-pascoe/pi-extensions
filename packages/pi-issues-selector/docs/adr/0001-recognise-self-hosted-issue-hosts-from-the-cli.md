@@ -1,6 +1,6 @@
 # Recognise self-hosted Issue Hosts from the CLI's own host list
 
-A remote is served when its host is an **Issue Host**: built in (`github.com`, `ssh.github.com`, `*.ghe.com`), or a host the service's CLI is signed in to or told to use. For GitHub that is the top-level keys of `gh`'s `hosts.yml`, found from `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, Windows `APPDATA`, or `~/.config/gh` exactly as `gh` finds it, plus a non-empty `GH_HOST`. The file is read for key names only, afresh on each resolution, and never for a built-in host. A missing or malformed file recognises nothing, silently. A host claimed by more than one service is not recognised. The evidence, with `gh` source references, is in [the host CLI research](../../../../docs/research/issue-host-clis.md).
+An **Issue Host** (the hosting service, GitHub today) serves a remote's host name when it is built in (`github.com`, `ssh.github.com`, `*.ghe.com`), or is a host the service's CLI is signed in to or told to use. For GitHub that is the top-level keys of `gh`'s `hosts.yml`, found from `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, Windows `APPDATA`, or `~/.config/gh` exactly as `gh` finds it, plus a non-empty `GH_HOST`. The file is read for key names only, afresh on each resolution, and never for a built-in host. A missing or malformed file recognises nothing, silently. A host claimed by more than one service is not recognised. The evidence, with `gh` source references, is in [the host CLI research](../../../../docs/research/issue-host-clis.md).
 
 ## Why the CLI's list
 
