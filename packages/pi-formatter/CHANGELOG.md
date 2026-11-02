@@ -1,5 +1,12 @@
 # @ian-pascoe/pi-formatter
 
+## 0.6.7
+
+### Patch Changes
+
+- Updated dependencies [0e63000]
+  - @ian-pascoe/pi-utils@0.11.0
+
 ## 0.6.6
 
 ### Patch Changes

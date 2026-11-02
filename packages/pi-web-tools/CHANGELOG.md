@@ -1,5 +1,12 @@
 # @ian-pascoe/pi-web-tools
 
+## 0.6.8
+
+### Patch Changes
+
+- Updated dependencies [0e63000]
+  - @ian-pascoe/pi-utils@0.11.0
+
 ## 0.6.7
 
 ### Patch Changes

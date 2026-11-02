@@ -1,5 +1,12 @@
 # @ian-pascoe/pi-dap
 
+## 0.10.2
+
+### Patch Changes
+
+- Updated dependencies [0e63000]
+  - @ian-pascoe/pi-utils@0.11.0
+
 ## 0.10.1
 
 ### Patch Changes
