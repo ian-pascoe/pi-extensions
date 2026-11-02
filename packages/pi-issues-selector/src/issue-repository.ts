@@ -118,9 +118,9 @@ export function selectIssueRepository(configOutput: string): HostedRepository | 
 /**
  * What the git remotes say about the Issue Repository: `none` when there are no remotes to ask
  * (outside a checkout, or a checkout without any), `unresolved` when remotes exist but the
- * selected one names no repository on a host name an Issue Host serves (a local path, `file://`, a nested GitLab
- * group, an unrecognised host), else the one chosen with the adapter serving it and the host its
- * URLs use. Another remote is never chosen in place of an unrecognised one.
+ * selected one names no repository on a host name an Issue Host serves (a local path, `file://`,
+ * a nested GitLab group, an unrecognised host), else the one chosen with the adapter serving it
+ * and the host its URLs use. Another remote is never chosen in place of an unrecognised one.
  */
 export type IssueRepositoryLookup =
   | { kind: "none" }

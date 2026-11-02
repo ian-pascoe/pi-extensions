@@ -58,6 +58,18 @@ export interface IssueHost {
 
 const HOSTS: readonly IssueHost[] = [GITHUB];
 
+/** An adapter and the host its URLs use for a remote. */
+export interface ServingHost {
+  adapter: IssueHost;
+  host: string;
+}
+
+/** What serves a qualified `owner/repo#123` when the checkout has no remotes at all. */
+export const DEFAULT_ISSUE_HOST: ServingHost = {
+  adapter: GITHUB,
+  host: "github.com",
+};
+
 /** The hosts each adapter's CLI is configured for, by adapter. */
 export type ConfiguredHosts = ReadonlyMap<IssueHost, ReadonlySet<string>>;
 
@@ -80,7 +92,7 @@ export async function readConfiguredHosts(sources: HostSources): Promise<Configu
 export async function findIssueHost(
   host: string,
   configured: () => Promise<ConfiguredHosts>,
-): Promise<{ adapter: IssueHost; host: string } | undefined> {
+): Promise<ServingHost | undefined> {
   const builtIn = HOSTS.flatMap((adapter) => {
     const canonical = adapter.canonicalHost(host);
     return canonical === undefined ? [] : [{ adapter, host: canonical }];

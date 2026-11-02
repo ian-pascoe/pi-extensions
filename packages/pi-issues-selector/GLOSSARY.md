@@ -9,9 +9,9 @@ An explicit mention of a GitHub issue or pull request in a user message, written
 _Avoid_: PR reference, ticket mention, issue link
 
 **Issue Host**:
-The hosting service (GitHub today) serving a remote's host name, recognised built in or from a host the service's CLI is signed in to.
+The hosting service (GitHub today) serving a remote's host name, recognised built in or from a host the service's CLI is signed in to or told to use (`GH_HOST`).
 _Avoid_: forge, provider, platform
 
 **Issue Repository**:
-The hosted repository a bare `#123` resolves against, chosen from the working directory's git remotes on an Issue Host the way `gh` chooses its base repository.
+The hosted repository a bare `#123` resolves against, chosen from the working directory's git remotes, on a host name an Issue Host serves, the way `gh` chooses its base repository.
 _Avoid_: Upstream repository, base repo, origin, reference repository
