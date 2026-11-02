@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, test } from "vitest";
+import { GITHUB } from "../src/github-host.js";
+import type { HostEnvironment, ReadText } from "../src/issue-host.js";
 import {
   lookupIssueRepository,
   parseOwnerRepo,
@@ -146,20 +148,76 @@ describe("selectIssueRepository", () => {
 });
 
 describe("lookupIssueRepository", () => {
-  test("tells no remotes from remotes that name no hosted repository", () => {
-    expect(lookupIssueRepository("")).toEqual({ kind: "none" });
-    expect(lookupIssueRepository("remote.local.url /srv/git/widgets.git\n")).toEqual({
+  const configuredOf =
+    (...hosts: string[]) =>
+    async () =>
+      new Map([[GITHUB, new Set(hosts)]]);
+  const github = { kind: "found", adapter: GITHUB, host: "github.com" } as const;
+
+  test("tells no remotes from remotes that name no hosted repository", async () => {
+    const none = configuredOf();
+    expect(await lookupIssueRepository("", none)).toEqual({ kind: "none" });
+    expect(await lookupIssueRepository("remote.local.url /srv/git/widgets.git\n", none)).toEqual({
       kind: "unresolved",
     });
     expect(
-      lookupIssueRepository(
+      await lookupIssueRepository(
         "remote.origin.url https://gitlab.com/group/sub/widgets.git\nremote.mirror.url file:///srv/x\n",
+        none,
       ),
     ).toEqual({ kind: "unresolved" });
-    expect(lookupIssueRepository("remote.origin.url git@github.com:acme/widgets.git\n")).toEqual({
-      kind: "found",
-      repository: { host: "github.com", owner: "acme", repo: "widgets" },
+    expect(
+      await lookupIssueRepository("remote.origin.url git@github.com:acme/widgets.git\n", none),
+    ).toEqual({ ...github, repository: { host: "github.com", owner: "acme", repo: "widgets" } });
+  });
+
+  test("a found repository carries the serving adapter and its canonical host", async () => {
+    expect(
+      await lookupIssueRepository(
+        "remote.origin.url ssh://git@ssh.github.com:443/acme/widgets.git\n",
+        configuredOf(),
+      ),
+    ).toEqual({
+      ...github,
+      repository: { host: "ssh.github.com", owner: "acme", repo: "widgets" },
     });
+  });
+
+  test("a remote on a configured host is found; on any other host it is unresolved", async () => {
+    const remote = "remote.origin.url https://github.corp.example/acme/widgets.git\n";
+    expect(await lookupIssueRepository(remote, configuredOf("github.corp.example"))).toEqual({
+      kind: "found",
+      adapter: GITHUB,
+      host: "github.corp.example",
+      repository: { host: "github.corp.example", owner: "acme", repo: "widgets" },
+    });
+    expect(await lookupIssueRepository(remote, configuredOf("other.example"))).toEqual({
+      kind: "unresolved",
+    });
+  });
+
+  test.each([
+    ["an SSH host alias", "origin=git@github-work:acme/widgets.git"],
+    ["Bitbucket", "origin=https://bitbucket.org/acme/widgets.git"],
+  ])(
+    "selection is unchanged: %s on the selected remote is unresolved, and no other remote is chosen",
+    async (_name, selected) => {
+      const [name, url] = selected.split("=");
+      const lookup = await lookupIssueRepository(
+        `remote.${name}.url ${url}\nremote.mirror.url https://github.com/acme/mirror.git\n`,
+        configuredOf(),
+      );
+      expect(lookup).toEqual({ kind: "unresolved" });
+    },
+  );
+
+  test("a gh-resolved remote on an unrecognised host is unresolved, though origin is built in", async () => {
+    expect(
+      await lookupIssueRepository(
+        "remote.fork.url https://github.corp.example/acme/widgets.git\nremote.fork.gh-resolved base\nremote.origin.url https://github.com/me/widgets.git\n",
+        configuredOf(),
+      ),
+    ).toEqual({ kind: "unresolved" });
   });
 });
 
@@ -173,6 +231,9 @@ describe("parseOwnerRepo", () => {
 });
 
 describe("resolveIssueRepository", () => {
+  const environment: HostEnvironment = { env: {}, platform: "linux", homedir: "/home/me" };
+  const unreadable: ReadText = async () => undefined;
+  const hosts = { environment, readText: unreadable };
   const directories: string[] = [];
   const run = promisify(execFile);
   afterEach(async () => {
@@ -205,10 +266,47 @@ describe("resolveIssueRepository", () => {
       ["remote", "add", "origin", "git@github.com:me/widgets.git"],
       ["remote", "add", "upstream", "https://github.com/acme/widgets.git"],
     );
-    expect(await resolveIssueRepository(gitRunner(), cwd)).toEqual({
+    expect(await resolveIssueRepository(gitRunner(), cwd, hosts)).toEqual({
       kind: "found",
+      adapter: GITHUB,
+      host: "github.com",
       repository: { host: "github.com", owner: "acme", repo: "widgets" },
     });
+  });
+
+  test("reads no configuration file when the remote's host is built in", async () => {
+    const cwd = await repository(["remote", "add", "origin", "git@github.com:acme/widgets.git"]);
+    const paths: string[] = [];
+    const readText: ReadText = async (path) => {
+      paths.push(path);
+      return undefined;
+    };
+    await resolveIssueRepository(gitRunner(), cwd, { environment, readText });
+    expect(paths).toEqual([]);
+  });
+
+  test("recognises a remote on a host in hosts.yml, re-reading the file on every resolution", async () => {
+    const cwd = await repository([
+      "remote",
+      "add",
+      "origin",
+      "https://github.corp.example/acme/widgets.git",
+    ]);
+    let file: string | undefined;
+    const paths: string[] = [];
+    const readText: ReadText = async (path) => {
+      paths.push(path);
+      return file;
+    };
+    const resolve = () => resolveIssueRepository(gitRunner(), cwd, { environment, readText });
+    expect(await resolve()).toEqual({ kind: "unresolved" });
+    file = "github.corp.example:\n  user: me\n";
+    expect(await resolve()).toMatchObject({
+      kind: "found",
+      host: "github.corp.example",
+      repository: { host: "github.corp.example", owner: "acme", repo: "widgets" },
+    });
+    expect(paths).toEqual(["/home/me/.config/gh/hosts.yml", "/home/me/.config/gh/hosts.yml"]);
   });
 
   test("honours a real gh-resolved marker", async () => {
@@ -217,7 +315,7 @@ describe("resolveIssueRepository", () => {
       ["remote", "add", "upstream", "https://github.com/acme/widgets.git"],
       ["config", "remote.origin.gh-resolved", "base"],
     );
-    expect(await resolveIssueRepository(gitRunner(), cwd)).toMatchObject({
+    expect(await resolveIssueRepository(gitRunner(), cwd, hosts)).toMatchObject({
       repository: { owner: "me" },
     });
   });
@@ -225,12 +323,14 @@ describe("resolveIssueRepository", () => {
   test("has no repository outside Git, without remotes, or without git", async () => {
     const outside = await mkdtemp(join(tmpdir(), "pi-issues-outside-"));
     directories.push(outside);
-    expect(await resolveIssueRepository(gitRunner(), outside)).toEqual({ kind: "none" });
-    expect(await resolveIssueRepository(gitRunner(), await repository())).toEqual({ kind: "none" });
+    expect(await resolveIssueRepository(gitRunner(), outside, hosts)).toEqual({ kind: "none" });
+    expect(await resolveIssueRepository(gitRunner(), await repository(), hosts)).toEqual({
+      kind: "none",
+    });
     const missing: RunCommand = async () => {
       throw new Error("spawn git ENOENT");
     };
-    expect(await resolveIssueRepository(missing, outside)).toEqual({ kind: "none" });
+    expect(await resolveIssueRepository(missing, outside, hosts)).toEqual({ kind: "none" });
   });
 
   test.each([
@@ -239,15 +339,19 @@ describe("resolveIssueRepository", () => {
     ["a file URL", "file:///srv/git/widgets.git"],
   ])("a remote at %s leaves the Issue Repository unresolved, not absent", async (_name, url) => {
     const cwd = await repository(["remote", "add", "origin", url]);
-    expect(await resolveIssueRepository(gitRunner(), cwd)).toEqual({ kind: "unresolved" });
+    expect(await resolveIssueRepository(gitRunner(), cwd, hosts)).toEqual({ kind: "unresolved" });
   });
 
   test("asks git for exactly the remote URLs and gh markers, in the session directory", async () => {
     const calls: unknown[] = [];
-    await resolveIssueRepository(async (command, args, options) => {
-      calls.push([command, args, options?.cwd]);
-      return { stdout: "", stderr: "", code: 1, killed: false };
-    }, "/work/project");
+    await resolveIssueRepository(
+      async (command, args, options) => {
+        calls.push([command, args, options?.cwd]);
+        return { stdout: "", stderr: "", code: 1, killed: false };
+      },
+      "/work/project",
+      hosts,
+    );
     expect(calls).toEqual([
       ["git", ["config", "--get-regexp", "^remote\\..*\\.(url|gh-resolved)$"], "/work/project"],
     ]);

@@ -1,42 +1,36 @@
+import { posix, win32 } from "node:path";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
-import type { HostedRepository, RunCommand } from "./issue-repository.js";
-
-export interface IssueSummary {
-  number: number;
-  title: string;
-  kind: "issue" | "pull request";
-  state: "open" | "closed" | "draft" | "merged";
-}
-
-export type IssueListing =
-  | { ok: true; issues: IssueSummary[] }
-  | { ok: false; reason: "needs-cli" | "unavailable" };
-
-/**
- * What one hosting service needs for Issue References. GitHub is the only one today; a future
- * provider adds an adapter here ([#509](https://github.com/ian-pascoe/pi-extensions/issues/509)).
- */
-export interface IssueHost {
-  /** The host this adapter serves under a remote's host name, or undefined for other hosts. */
-  canonicalHost(host: string): string | undefined;
-  /**
-   * The web page of issue or pull request `number`. Repositories passed to this and to
-   * `listRecent` carry the host `canonicalHost` returned.
-   */
-  issueUrl(repository: HostedRepository, number: number | string): string;
-  /** The most recently updated issues and pull requests, newest first. */
-  listRecent(
-    repository: HostedRepository,
-    run: RunCommand,
-    signal: AbortSignal,
-  ): Promise<IssueListing>;
-}
+import { isMap, isScalar, parseDocument } from "yaml";
+import type { HostEnvironment, IssueHost, IssueSummary } from "./issue-host.js";
 
 function canonicalGitHubHost(host: string): string | undefined {
   const lower = host.toLowerCase();
   if (lower === "github.com" || lower === "ssh.github.com") return "github.com";
   return /^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.ghe\.com$/.test(lower) ? lower : undefined;
+}
+
+/**
+ * The path of `gh`'s `hosts.yml`. The directory is chosen as `gh` chooses it: the first of
+ * `GH_CONFIG_DIR`, `$XDG_CONFIG_HOME/gh`, on Windows `%APPDATA%\GitHub CLI`, and `~/.config/gh`
+ * that is set and non-empty.
+ */
+function hostsFilePath({ env, platform, homedir }: HostEnvironment): string {
+  const { join } = platform === "win32" ? win32 : posix;
+  const configDir = env["GH_CONFIG_DIR"];
+  if (configDir) return join(configDir, "hosts.yml");
+  const xdg = env["XDG_CONFIG_HOME"];
+  if (xdg) return join(xdg, "gh", "hosts.yml");
+  const appData = env["APPDATA"];
+  if (platform === "win32" && appData) return join(appData, "GitHub CLI", "hosts.yml");
+  return join(homedir, ".config", "gh", "hosts.yml");
+}
+
+/** The top-level keys of a `hosts.yml`, which are host names. Values may hold tokens, so are never read. */
+function hostKeys(text: string): string[] {
+  const document = parseDocument(text, { logLevel: "silent" });
+  if (document.errors.length > 0 || !isMap(document.contents)) return [];
+  return document.contents.items.flatMap(({ key }) => (isScalar(key) ? [String(key.value)] : []));
 }
 
 // The parts of an item of GitHub's issues listing that the popup reads. A pull request also has a
@@ -67,6 +61,18 @@ function needsGitHubCli(code: number, stderr: string): boolean {
 
 export const GITHUB: IssueHost = {
   canonicalHost: canonicalGitHubHost,
+  async configuredHosts({ environment, readText }) {
+    const hosts = new Set<string>();
+    const host = environment.env["GH_HOST"];
+    if (host) hosts.add(host.toLowerCase());
+    try {
+      const text = await readText(hostsFilePath(environment));
+      if (text !== undefined) for (const key of hostKeys(text)) hosts.add(key.toLowerCase());
+    } catch {
+      // No readable configuration, so nothing is configured.
+    }
+    return hosts;
+  },
   issueUrl: (repository, number) =>
     `https://${repository.host}/${repository.owner}/${repository.repo}/issues/${number}`,
   async listRecent(repository, run, signal) {
@@ -91,14 +97,3 @@ export const GITHUB: IssueHost = {
     }
   },
 };
-
-const HOSTS: readonly IssueHost[] = [GITHUB];
-
-/** The adapter serving a remote's host, with the canonical host its URLs use. */
-export function findIssueHost(host: string): { adapter: IssueHost; host: string } | undefined {
-  for (const adapter of HOSTS) {
-    const canonical = adapter.canonicalHost(host);
-    if (canonical !== undefined) return { adapter, host: canonical };
-  }
-  return undefined;
-}

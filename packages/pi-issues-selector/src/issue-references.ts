@@ -1,5 +1,5 @@
 import { replaceProseReferences } from "@ian-pascoe/pi-utils/prose-references";
-import { findIssueHost } from "./github-host.js";
+import { DEFAULT_ISSUE_HOST } from "./issue-host.js";
 import { OWNER_PATTERN, REPO_PATTERN, parseOwnerRepo } from "./issue-repository.js";
 import type { IssueRepositoryLookup } from "./issue-repository.js";
 
@@ -23,16 +23,14 @@ const ISSUE_NUMBER = "[1-9][0-9]{0,9}";
 
 /**
  * Replaces `#123` and `owner/repo#123` in prose with Markdown links to the issue's web page.
- * Bare numbers need an Issue Repository on a supported host. A qualified reference uses that
- * host, or github.com when the checkout has no remotes at all, and stays literal when remotes
- * exist but none names a repository on a supported host.
+ * Bare numbers need an Issue Repository on a host name an Issue Host serves. A qualified
+ * reference uses that host and its adapter, or github.com when the checkout has no remotes at all,
+ * and stays literal when remotes exist but no Issue Host serves the selected one's host name.
  */
 export function transformIssueReferences(text: string, lookup: IssueRepositoryLookup): string {
   if (lookup.kind === "unresolved") return text;
   const repository = lookup.kind === "found" ? lookup.repository : undefined;
-  const target = findIssueHost(repository?.host ?? "github.com");
-  if (target === undefined) return text;
-  const { adapter, host } = target;
+  const { adapter, host } = lookup.kind === "found" ? lookup : DEFAULT_ISSUE_HOST;
   return replaceProseReferences(text, {
     sigil: ISSUE_SIGIL,
     name: ISSUE_NUMBER,

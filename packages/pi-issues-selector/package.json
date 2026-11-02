@@ -38,7 +38,8 @@
     "typecheck": "tsrs --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@ian-pascoe/pi-utils": "^0.12.0"
+    "@ian-pascoe/pi-utils": "^0.12.0",
+    "yaml": "^2.9.1"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=1.1.0",

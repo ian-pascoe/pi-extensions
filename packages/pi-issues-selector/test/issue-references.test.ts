@@ -1,11 +1,18 @@
 import { describe, expect, test } from "vitest";
-import type { HostedRepository, IssueRepositoryLookup } from "../src/issue-repository.js";
+import { GITHUB } from "../src/github-host.js";
+import {
+  lookupIssueRepository,
+  type HostedRepository,
+  type IssueRepositoryLookup,
+} from "../src/issue-repository.js";
 import { transformIssueReferences } from "../src/issue-references.js";
 
 const github: HostedRepository = { host: "github.com", owner: "acme", repo: "widgets" };
-const found = (repository: HostedRepository): IssueRepositoryLookup => ({
+const found = (repository: HostedRepository, host = repository.host): IssueRepositoryLookup => ({
   kind: "found",
   repository,
+  adapter: GITHUB,
+  host,
 });
 const bare = (number: number | string): string =>
   `[#${number}](https://github.com/acme/widgets/issues/${number})`;
@@ -134,23 +141,72 @@ describe("remotes that name no hosted repository", () => {
 });
 
 describe("hosts", () => {
-  test("links on the Issue Repository's host", () => {
-    const enterprise: HostedRepository = { host: "octo.ghe.com", owner: "me", repo: "core" };
-    expect(convert("#7 and me/other#8", found(enterprise))).toBe(
+  // End to end: the remotes and the configured hosts decide the lookup, which decides the links.
+  const submit = async (text: string, remotes: string, ...configured: string[]) =>
+    transformIssueReferences(
+      text,
+      await lookupIssueRepository(remotes, async () => new Map([[GITHUB, new Set(configured)]])),
+    );
+
+  test("links on the Issue Repository's host", async () => {
+    expect(
+      await submit("#7 and me/other#8", "remote.origin.url https://octo.ghe.com/me/core.git\n"),
+    ).toBe(
       "[#7](https://octo.ghe.com/me/core/issues/7) and [me/other#8](https://octo.ghe.com/me/other/issues/8)",
     );
   });
 
-  test("links ssh.github.com remotes on github.com", () => {
-    const ssh: HostedRepository = { host: "ssh.github.com", owner: "me", repo: "core" };
-    expect(convert("#7", found(ssh))).toBe("[#7](https://github.com/me/core/issues/7)");
+  test("links ssh.github.com remotes on github.com", async () => {
+    expect(await submit("#7", "remote.origin.url ssh://git@ssh.github.com:443/me/core.git\n")).toBe(
+      "[#7](https://github.com/me/core/issues/7)",
+    );
   });
 
-  test.each(["gitlab.com", "gh-work", "bitbucket.org", "github.com.evil.example", "ghe.com"])(
-    "leaves every reference literal beside a %s remote",
-    (host) => {
-      const other: HostedRepository = { host, owner: "me", repo: "core" };
-      expect(convert("#7 and me/other#8", found(other))).toBe("#7 and me/other#8");
+  test("links a remote on a configured host, over https, dropping the port and the .git", async () => {
+    expect(
+      await submit(
+        "Fix #12",
+        "remote.origin.url https://github.corp.example/acme/widgets.git\n",
+        "github.corp.example",
+      ),
+    ).toBe("Fix [#12](https://github.corp.example/acme/widgets/issues/12)");
+    expect(
+      await submit(
+        "Fix #12 and acme/other#3",
+        "remote.origin.url ssh://git@GitHub.Corp.Example:2222/acme/widgets.git\n",
+        "github.corp.example",
+      ),
+    ).toBe(
+      "Fix [#12](https://github.corp.example/acme/widgets/issues/12) and [acme/other#3](https://github.corp.example/acme/other/issues/3)",
+    );
+  });
+
+  test.each([
+    ["gitlab.com", "https://gitlab.com/me/core.git"],
+    ["an SSH host alias", "git@gh-work:me/core.git"],
+    ["bitbucket.org", "https://bitbucket.org/me/core.git"],
+    ["a look-alike of github.com", "https://github.com.evil.example/me/core.git"],
+    ["ghe.com itself", "https://ghe.com/me/core.git"],
+    ["a host that is not configured", "https://github.corp.example/me/core.git"],
+  ])("leaves every reference literal beside %s", async (_name, url) => {
+    expect(await submit("#7 and me/other#8", `remote.origin.url ${url}\n`)).toBe(
+      "#7 and me/other#8",
+    );
+  });
+
+  test.each([
+    ["an SSH host alias", "origin=git@github-work:acme/widgets.git"],
+    ["bitbucket.org", "origin=https://bitbucket.org/acme/widgets.git"],
+  ])(
+    "never falls through to another remote: %s on origin stays literal beside a github.com mirror",
+    async (_name, origin) => {
+      const [name, url] = origin.split("=");
+      expect(
+        await submit(
+          "Fix #12",
+          `remote.${name}.url ${url}\nremote.mirror.url https://github.com/acme/mirror.git\n`,
+        ),
+      ).toBe("Fix #12");
     },
   );
 });

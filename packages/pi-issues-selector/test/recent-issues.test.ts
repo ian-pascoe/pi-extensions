@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import type { IssueListing } from "../src/github-host.js";
+import type { IssueListing } from "../src/issue-host.js";
 import { RecentIssues } from "../src/recent-issues.js";
 
 const listing = (...numbers: number[]): IssueListing => ({

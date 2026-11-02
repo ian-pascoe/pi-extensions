@@ -1,7 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteProvider } from "@earendil-works/pi-tui";
 import { stackProseReferenceAutocomplete } from "@ian-pascoe/pi-utils/prose-references";
-import { findIssueHost } from "./github-host.js";
 import {
   EXCLUDE_BEFORE,
   ISSUE_PARTIAL_NAME,
@@ -12,6 +11,7 @@ import {
 import { suggestIssues } from "./issue-suggestions.js";
 import { resolveIssueRepository, type RunCommand } from "./issue-repository.js";
 import { RecentIssues } from "./recent-issues.js";
+import { systemHostSources } from "./system-host-sources.js";
 
 export default function issuesSelectorExtension(pi: ExtensionAPI): void {
   const run: RunCommand = (command, args, options) => pi.exec(command, args, options);
@@ -36,12 +36,9 @@ export default function issuesSelectorExtension(pi: ExtensionAPI): void {
         partialName: ISSUE_PARTIAL_NAME,
         excludeBefore: EXCLUDE_BEFORE,
         suggest: async (query, signal) => {
-          const lookup = await resolveIssueRepository(run, cwd, signal);
+          const lookup = await resolveIssueRepository(run, cwd, systemHostSources(), signal);
           if (lookup.kind !== "found" || signal.aborted) return [];
-          const { repository } = lookup;
-          const served = findIssueHost(repository.host);
-          if (served === undefined) return [];
-          const { adapter, host } = served;
+          const { repository, adapter, host } = lookup;
           const key = `${host}/${repository.owner}/${repository.repo}`.toLowerCase();
           const listing = await recent.get(
             key,
@@ -63,7 +60,7 @@ export default function issuesSelectorExtension(pi: ExtensionAPI): void {
     if (event.source === "extension" || !MAY_HOLD_ISSUE_REFERENCE.test(event.text)) {
       return { action: "continue" };
     }
-    const lookup = await resolveIssueRepository(run, ctx.cwd);
+    const lookup = await resolveIssueRepository(run, ctx.cwd, systemHostSources());
     const text = transformIssueReferences(event.text, lookup);
     if (text === event.text) return { action: "continue" };
     return event.images === undefined

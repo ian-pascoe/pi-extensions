@@ -1,5 +1,5 @@
 import { fuzzyFilter, type AutocompleteItem } from "@earendil-works/pi-tui";
-import type { IssueSummary } from "./github-host.js";
+import type { IssueSummary } from "./issue-host.js";
 import { ISSUE_SIGIL } from "./issue-references.js";
 
 export const MAX_ISSUE_SUGGESTIONS = 20;

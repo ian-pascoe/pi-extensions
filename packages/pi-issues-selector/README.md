@@ -30,13 +30,13 @@ network lookup. The submitted transcript stores the links rather than a separate
 raw message.
 
 - **`#123`** resolves against the _Issue Repository_ (below). Outside a Git
-  repository, or beside remotes that name no repository on a supported host, it
-  stays literal.
+  repository, or when no Issue Host serves the selected remote's host name
+  (below), it stays literal.
 - **`owner/repo#123`** names its repository and uses the Issue Repository's host,
   or `github.com` when the checkout has no remotes at all (or is not a checkout).
-  When remotes exist but none names a repository on a supported host (a GitLab
-  remote, a nested group, a local path, a `file://` URL, an SSH host alias), it
-  stays literal. Owners are letters, digits, and single hyphens; repositories add `.` and
+  When remotes exist but no Issue Host serves the selected one's host name (a
+  GitLab remote, a nested group, a local path, a `file://` URL, an SSH host alias,
+  a host `gh` is not signed in to), it stays literal. Owners are letters, digits, and single hyphens; repositories add `.` and
   `_`; there are exactly two segments. A file path such as `docs/guide.md#12`
   looks the same, so put paths in code.
 - Numbers are 1 to 10 digits with no leading zero. A token (the number, or
@@ -59,10 +59,44 @@ Read fresh from `git config --get-regexp '^remote\..*\.(url|gh-resolved)$'` in t
 session directory on each submission that holds a candidate, choosing as `gh`
 does: the remote `gh` resolved (`gh repo set-default`); else `upstream`, `github`,
 `origin`; else the first remote whose URL parses (`https://`, `git@host:`,
-`ssh://`). Supported hosts are `github.com`, `ssh.github.com` (linked on
-`github.com`), and GitHub Enterprise Cloud `*.ghe.com`. SSH host aliases from
-`~/.ssh/config` and `insteadOf` rewrites are not resolved, so such remotes stay
-literal. Other providers are not supported yet
+`ssh://`). If no Issue Host serves the chosen remote's host name, the Issue Repository
+is unresolved and references stay literal; another remote is never chosen in its
+place. `insteadOf` rewrites are not resolved.
+
+### Issue Hosts
+
+An _Issue Host_ is the hosting service serving a remote's host name; GitHub is the
+only one today. It serves a host name that is:
+
+- **Built in:** `github.com`, `ssh.github.com` (linked on `github.com`), and
+  GitHub Enterprise Cloud `*.ghe.com`. No configuration is read for these.
+- **GitHub Enterprise Server:** any host that `gh` is signed in to, or that
+  `GH_HOST` names. Sign in with `gh auth login --hostname <host>`. The host is
+  recognised from the top-level keys of `gh`'s `hosts.yml` (a host stays listed
+  there even when its token lives in the OS keyring), read afresh on each
+  resolution, so signing in takes effect on the next message. Only key names are
+  read, never tokens, and a missing or malformed file recognises nothing, without
+  an error or notice. `gh auth status` is not used: it makes network calls.
+
+`gh` finds its configuration directory from, in order: `GH_CONFIG_DIR`,
+`$XDG_CONFIG_HOME/gh`, on Windows `%APPDATA%\GitHub CLI`, then `~/.config/gh`
+(empty values count as unset). `GH_TOKEN` and `GITHUB_TOKEN` add only
+`github.com`, which is built in; `GH_ENTERPRISE_TOKEN` adds no host, so use
+`gh auth login --hostname <host>` or set `GH_HOST`. `GH_HOST` only adds a host: a
+remote on any other recognised host still wins.
+
+Limits:
+
+- Links always use `https` and never carry a port: `ssh://git@host:2222/…` and
+  `https://host:8443/…` link as `https://host/…`.
+- An SSH host that differs from the web host stays literal unless `gh` lists it.
+- SSH host aliases from `~/.ssh/config` stay literal.
+- A host that more than one service claims is not recognised: no link is better
+  than a wrong one.
+
+Why `gh`'s own host list, and not a Pi setting, is recorded in
+[ADR 0001](https://github.com/ian-pascoe/pi-extensions/blob/main/packages/pi-issues-selector/docs/adr/0001-recognise-self-hosted-issue-hosts-from-the-cli.md). Other
+Issue Hosts are not supported yet
 ([#509](https://github.com/ian-pascoe/pi-extensions/issues/509)).
 
 ## Completion popup
@@ -84,7 +118,8 @@ it anyway; conversion does not need the list), search GitHub, or complete
 the popup opens after the next character.
 
 Suggestions need the [GitHub CLI](https://cli.github.com) signed in to the
-repository's host. Once per session and host, when `gh` is missing or signed out,
+repository's host; on GitHub Enterprise Server the popup lists through
+`gh api --hostname <host> …`. Once per session and host, when `gh` is missing or signed out,
 Pi shows `Issue suggestions need the GitHub CLI (gh) signed in to <host>. Run
 /skill:pi-issues-selector to diagnose.` Network
 errors, rate limits, and repositories you cannot read show no suggestions and no
@@ -100,9 +135,9 @@ attachments or message routing. Extension-generated input is unchanged.
 ## Troubleshooting
 
 - **No popup:** confirm the extension loaded, use an interactive terminal, and type
-  `#` after a space. Check the repository has a GitHub remote and `gh auth status`
-  lists its host. `/skill:pi-issues-selector` walks through it.
+  `#` after a space. Check the repository has a remote whose host name an Issue Host serves, and `gh auth
+  status` lists its host. `/skill:pi-issues-selector` walks through it.
 - **No link:** check the exact reference against the rules above, the remote's
-  host, and whether the text is escaped, in code, or already inside a link.
+  host (on GitHub Enterprise Server, `gh auth login --hostname <host>`), and whether the text is escaped, in code, or already inside a link.
 - **Wrong repository:** inspect `git remote -v` and `gh repo set-default --view`;
   the selector picks the same remote `gh` does.
