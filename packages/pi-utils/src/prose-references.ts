@@ -138,21 +138,24 @@ function assertSigil(sigil: string): void {
   }
 }
 
-// The sigil sits in a character class below, so escape it for that context too.
-const classSigil = (sigil: string): string => sigil.replace(/[\]^-]/g, "\\$&");
+// Sigils and excluded characters sit in character classes below, so escape them for that context.
+const classSigil = (characters: string): string => characters.replace(/[\\\]^-]/g, "\\$&");
 
 function matchesReferenceSource(
   text: string,
   start: number,
   reference: string,
   sigil: string,
+  excludeBefore: string,
 ): boolean {
   const end = start + reference.length;
   const before = text.slice(0, start);
   const sigilClass = classSigil(sigil);
   return (
     text.slice(start, end) === reference &&
-    !new RegExp(`[\\p{L}\\p{M}\\p{N}${sigilClass}/-]$`, "u").test(before) &&
+    !new RegExp(`[\\p{L}\\p{M}\\p{N}${sigilClass}${classSigil(excludeBefore)}/-]$`, "u").test(
+      before,
+    ) &&
     !/(?<!\\)(?:\\\\)*\\_$/u.test(before) &&
     !new RegExp(`^\\\\[_${sigilClass}/-]`, "u").test(text.slice(end))
   );
@@ -162,15 +165,27 @@ export interface ProseReferenceReplacement {
   /** The Reference Sigil that opens the shorthand, one character such as `$`, `@`, or `#`. */
   sigil: string;
   /**
+   * Characters that may not directly precede a token, beyond the letters, digits, sigil, `/`, `-`,
+   * and `_` that never do. Taken literally, not as a regular expression.
+   */
+  excludeBefore?: string;
+  /**
+   * Regular-expression source for a qualifier written directly before the sigil, such as
+   * `owner/repo` in `owner/repo#12`. It is optional in the text, is passed to `resolve`, and takes
+   * the token's boundary before it. Capture groups are not allowed.
+   */
+  qualifier?: string;
+  /**
    * Regular-expression source for one complete name after the sigil. It is tried as written, so
    * list longer alternatives first. Capture groups are not allowed.
    */
   name: string;
   /**
-   * The replacement for the whole `<sigil><name>` match, or undefined to leave it literal. It is
-   * called only for matches that can convert: at a token boundary in a Prose Span.
+   * The replacement for the whole `[<qualifier>]<sigil><name>` match, or undefined to leave it
+   * literal. `qualifier` is undefined when the token has none. It is called only for matches that
+   * can convert: at a token boundary in a Prose Span.
    */
-  resolve: (name: string) => string | undefined;
+  resolve: (name: string, qualifier?: string) => string | undefined;
 }
 
 /**
@@ -178,11 +193,13 @@ export interface ProseReferenceReplacement {
  * name. Code, existing links, HTML, escapes, and names that are not complete tokens stay literal.
  */
 export function replaceProseReferences(text: string, options: ProseReferenceReplacement): string {
-  const { sigil, name, resolve } = options;
+  const { sigil, name, qualifier, resolve } = options;
+  const excludeBefore = options.excludeBefore ?? "";
   assertSigil(sigil);
   const sigilClass = classSigil(sigil);
+  const qualifierPattern = qualifier === undefined ? "" : `(?:(?<qualifier>${qualifier}))?`;
   const referencePattern = new RegExp(
-    `(?<![\\p{L}\\p{M}\\p{N}_${sigilClass}/+-])${escapeRegex(sigil)}(${name})(?![\\p{L}\\p{M}\\p{N}_${sigilClass}/+-]|\\.[\\p{L}\\p{M}\\p{N}_])`,
+    `(?<![\\p{L}\\p{M}\\p{N}_${sigilClass}${classSigil(excludeBefore)}/+-])${qualifierPattern}${escapeRegex(sigil)}(?<name>${name})(?![\\p{L}\\p{M}\\p{N}_${sigilClass}/+-]|\\.[\\p{L}\\p{M}\\p{N}_])`,
     "gu",
   );
   let result = "";
@@ -190,8 +207,13 @@ export function replaceProseReferences(text: string, options: ProseReferenceRepl
   for (const span of proseSpans(text)) {
     for (const match of span.text.matchAll(referencePattern)) {
       const start = span.positions[match.index];
-      if (start === undefined || !matchesReferenceSource(text, start, match[0], sigil)) continue;
-      const replacement = resolve(match[1] ?? "");
+      if (
+        start === undefined ||
+        !matchesReferenceSource(text, start, match[0], sigil, excludeBefore)
+      ) {
+        continue;
+      }
+      const replacement = resolve(match.groups?.["name"] ?? "", match.groups?.["qualifier"]);
       if (replacement === undefined) continue;
       result += text.slice(offset, start) + replacement;
       offset = start + match[0].length;
@@ -205,6 +227,8 @@ export interface ProseReferencePrefixGrammar {
   sigil: string;
   /** Regular-expression source for the characters of a possibly partial name, such as `[\\w-]*`. */
   partialName: string;
+  /** Characters that may not directly precede the prefix; see `ProseReferenceReplacement`. */
+  excludeBefore?: string;
 }
 
 /**
@@ -217,10 +241,11 @@ export function findProseReferencePrefix(
   grammar: ProseReferencePrefixGrammar,
 ): string | null {
   const { sigil, partialName } = grammar;
+  const excludeBefore = grammar.excludeBefore ?? "";
   assertSigil(sigil);
   const sigilClass = classSigil(sigil);
   const prefixPattern = new RegExp(
-    `(?<![\\p{L}\\p{M}\\p{N}_${sigilClass}/-])${escapeRegex(sigil)}(?:${partialName})$`,
+    `(?<![\\p{L}\\p{M}\\p{N}_${sigilClass}${classSigil(excludeBefore)}/-])${escapeRegex(sigil)}(?:${partialName})$`,
     "u",
   );
   for (const span of proseSpans(text)) {
@@ -228,7 +253,7 @@ export function findProseReferencePrefix(
     if (relativeCursor === 0) continue;
     const prefix = span.text.slice(0, relativeCursor).match(prefixPattern)?.[0];
     return prefix !== undefined &&
-      matchesReferenceSource(text, cursorOffset - prefix.length, prefix, sigil)
+      matchesReferenceSource(text, cursorOffset - prefix.length, prefix, sigil, excludeBefore)
       ? prefix
       : null;
   }
@@ -238,9 +263,14 @@ export function findProseReferencePrefix(
 export interface ProseReferenceAutocomplete extends ProseReferencePrefixGrammar {
   /**
    * Completion items for the name typed so far (the prefix without its sigil). Each item's value
-   * starts with the sigil and is inserted as the shorthand. An empty list shows no popup.
+   * starts with the sigil and is inserted as the shorthand. An empty list shows no popup. It may
+   * be asynchronous; `signal` aborts when the editor moves on, and items that arrive after that
+   * are dropped.
    */
-  suggest: (query: string) => readonly AutocompleteItem[];
+  suggest: (
+    query: string,
+    signal: AbortSignal,
+  ) => readonly AutocompleteItem[] | Promise<readonly AutocompleteItem[]>;
 }
 
 /**
@@ -252,13 +282,15 @@ export function stackProseReferenceAutocomplete(
   current: AutocompleteProvider,
   options: ProseReferenceAutocomplete,
 ): AutocompleteProvider {
-  const { sigil, partialName, suggest } = options;
+  const { sigil, partialName, excludeBefore, suggest } = options;
   assertSigil(sigil);
   const prefixAt = (lines: string[], cursorLine: number, cursorCol: number): string | null => {
     const cursorOffset = lines
       .slice(0, cursorLine)
       .reduce((offset, line) => offset + line.length + 1, cursorCol);
-    return findProseReferencePrefix(lines.join("\n"), cursorOffset, { sigil, partialName });
+    const grammar: ProseReferencePrefixGrammar = { sigil, partialName };
+    if (excludeBefore !== undefined) grammar.excludeBefore = excludeBefore;
+    return findProseReferencePrefix(lines.join("\n"), cursorOffset, grammar);
   };
   return {
     triggerCharacters: [...new Set([...(current.triggerCharacters ?? []), sigil])],
@@ -267,7 +299,8 @@ export function stackProseReferenceAutocomplete(
       if (prefix === null)
         return current.getSuggestions(lines, cursorLine, cursorCol, requestOptions);
       if (requestOptions.signal.aborted) return null;
-      const items = suggest(prefix.slice(sigil.length));
+      const items = await suggest(prefix.slice(sigil.length), requestOptions.signal);
+      if (requestOptions.signal.aborted) return null;
       return items.length === 0 ? null : { prefix, items: [...items] };
     },
     applyCompletion(lines, cursorLine, cursorCol, item, prefix) {

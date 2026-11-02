@@ -333,6 +333,100 @@ describe.each(["$", "@", "#"])("stacked autocomplete with the %s Reference Sigil
   });
 });
 
+describe("qualified references", () => {
+  const qualifier = "[a-z]+/[a-z]+";
+  const options = {
+    sigil: "#",
+    name: "[1-9][0-9]*",
+    qualifier,
+    resolve: (name: string, qualified?: string) => `<${qualified ?? ""}#${name}>`,
+  };
+
+  it("passes the qualifier written before the sigil to resolve, or undefined", () => {
+    expect(replaceProseReferences("see #1, acme/app#22 and (acme/app#3).", options)).toBe(
+      "see <#1>, <acme/app#22> and (<acme/app#3>).",
+    );
+  });
+
+  it("applies the usual boundaries to the qualifier, not to the sigil after it", () => {
+    const text = "x-acme/app#1 a/b/c#2 acme/app#3x acme/app#4/ acme/app##5 `acme/app#6` \\#7 #8x";
+    expect(replaceProseReferences(text, options)).toBe(text);
+  });
+
+  it("leaves a qualified name literal when resolve declines it", () => {
+    expect(
+      replaceProseReferences("acme/app#1 #2", {
+        ...options,
+        resolve: (name, qualified) => (qualified === undefined ? `<${name}>` : undefined),
+      }),
+    ).toBe("acme/app#1 <2>");
+  });
+});
+
+describe("excludeBefore", () => {
+  const options = { sigil: "#", name: "[1-9][0-9]*", excludeBefore: "&.:", resolve: () => "<N>" };
+
+  it("keeps a token literal when an excluded character precedes it", () => {
+    expect(replaceProseReferences("&#12; a.#1 b:#2 (#3) #4", options)).toBe(
+      "&#12; a.#1 b:#2 (<N>) <N>",
+    );
+    expect(replaceProseReferences("&#12;", { ...options, excludeBefore: "" })).toBe("&<N>;");
+  });
+
+  it("applies to qualified tokens and to the completion prefix", () => {
+    const qualified = { ...options, qualifier: "[a-z]+/[a-z]+" };
+    expect(replaceProseReferences(".a/b#1 a/b#2", qualified)).toBe(".a/b#1 <N>");
+    const grammar = { sigil: "#", partialName: "[0-9]*", excludeBefore: "&" };
+    expect(findProseReferencePrefix("&#1", 3, grammar)).toBeNull();
+    expect(findProseReferencePrefix("&#1", 3, { sigil: "#", partialName: "[0-9]*" })).toBe("#1");
+    expect(findProseReferencePrefix(" #1", 3, grammar)).toBe("#1");
+  });
+
+  it("treats the characters literally, whatever they mean in a regular expression", () => {
+    expect(
+      replaceProseReferences("a^#1 b]#2 c\\#3 #4", { ...options, excludeBefore: "^]\\-" }),
+    ).toBe("a^#1 b]#2 c\\#3 <N>");
+  });
+});
+
+describe("asynchronous completion suggestions", () => {
+  const current: AutocompleteProvider = {
+    getSuggestions: async () => null,
+    applyCompletion: (lines, cursorLine, cursorCol) => ({ lines, cursorLine, cursorCol }),
+  };
+
+  it("awaits suggest and hands it the request's signal", async () => {
+    const controller = new AbortController();
+    let received: AbortSignal | undefined;
+    const provider = stackProseReferenceAutocomplete(current, {
+      sigil: "#",
+      partialName: "[0-9]*",
+      suggest: async (query, signal) => {
+        received = signal;
+        return [{ value: `#${query}1`, label: `#${query}1` }];
+      },
+    });
+    expect(await provider.getSuggestions(["see #2"], 0, 6, { signal: controller.signal })).toEqual({
+      prefix: "#2",
+      items: [{ value: "#21", label: "#21" }],
+    });
+    expect(received).toBe(controller.signal);
+  });
+
+  it("drops suggestions that arrive after the request was cancelled", async () => {
+    const controller = new AbortController();
+    const provider = stackProseReferenceAutocomplete(current, {
+      sigil: "#",
+      partialName: "[0-9]*",
+      suggest: async () => {
+        controller.abort();
+        return [{ value: "#1", label: "#1" }];
+      },
+    });
+    expect(await provider.getSuggestions(["#"], 0, 1, { signal: controller.signal })).toBeNull();
+  });
+});
+
 function never(): never {
   throw new Error("Missing fixture item");
 }
