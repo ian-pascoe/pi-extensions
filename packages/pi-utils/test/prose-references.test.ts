@@ -173,6 +173,19 @@ describe("replaceProseReferences", () => {
     expect(resolved).toEqual(["github", "gitlab", "git"]);
   });
 
+  it("calls resolve only for matches that can convert", () => {
+    const resolved: string[] = [];
+    replaceProseReferences("`@code` [@link](/x) \\@escaped a@mail @@twice @real", {
+      sigil: "@",
+      name: "[a-z]+",
+      resolve: (name) => {
+        resolved.push(name);
+        return undefined;
+      },
+    });
+    expect(resolved).toEqual(["real"]);
+  });
+
   it("does not match a sigil that follows a word character or another copy of itself", () => {
     const options = { name: "[a-z]+", resolve: (name: string) => `<${name}>` };
     expect(replaceProseReferences("a@b @@b @b", { ...options, sigil: "@" })).toBe("a@b @@b <b>");
@@ -186,6 +199,15 @@ describe("replaceProseReferences", () => {
       expect(() => findProseReferencePrefix("text", 0, { sigil, partialName: "a*" })).toThrow(
         TypeError,
       );
+      expect(() =>
+        stackProseReferenceAutocomplete(
+          {
+            getSuggestions: async () => null,
+            applyCompletion: (lines) => ({ lines, cursorLine: 0, cursorCol: 0 }),
+          },
+          { sigil, partialName: "a*", suggest: () => [] },
+        ),
+      ).toThrow(TypeError);
     }
   });
 });

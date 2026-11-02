@@ -166,7 +166,10 @@ export interface ProseReferenceReplacement {
    * list longer alternatives first. Capture groups are not allowed.
    */
   name: string;
-  /** The replacement for the whole `<sigil><name>` match, or undefined to leave it literal. */
+  /**
+   * The replacement for the whole `<sigil><name>` match, or undefined to leave it literal. It is
+   * called only for matches that can convert: at a token boundary in a Prose Span.
+   */
   resolve: (name: string) => string | undefined;
 }
 
@@ -186,10 +189,10 @@ export function replaceProseReferences(text: string, options: ProseReferenceRepl
   let offset = 0;
   for (const span of proseSpans(text)) {
     for (const match of span.text.matchAll(referencePattern)) {
-      const replacement = resolve(match[1] ?? "");
-      if (replacement === undefined) continue;
       const start = span.positions[match.index];
       if (start === undefined || !matchesReferenceSource(text, start, match[0], sigil)) continue;
+      const replacement = resolve(match[1] ?? "");
+      if (replacement === undefined) continue;
       result += text.slice(offset, start) + replacement;
       offset = start + match[0].length;
     }
@@ -250,6 +253,7 @@ export function stackProseReferenceAutocomplete(
   options: ProseReferenceAutocomplete,
 ): AutocompleteProvider {
   const { sigil, partialName, suggest } = options;
+  assertSigil(sigil);
   const prefixAt = (lines: string[], cursorLine: number, cursorCol: number): string | null => {
     const cursorOffset = lines
       .slice(0, cursorLine)

@@ -1,6 +1,6 @@
 # Shared Extension UI context
 
-The Shared Extension UI context names the presentation conventions every package in this repository follows, so tool rows, messages, widgets, and panels read as part of the default Pi interface rather than as separate products, and the shared behaviour of tools that wait.
+The Shared Extension UI context names the presentation conventions every package in this repository follows, so tool rows, messages, widgets, and panels read as part of the default Pi interface rather than as separate products, the shared behaviour of tools that wait, and the reference shorthand that selector packages expand in user messages.
 
 ## Language
 
@@ -58,4 +58,4 @@ _Avoid_: Plain-text region, non-code text
 
 **Reference Sigil**:
 The character that opens a reference shorthand: `$` for a Skill, `@` for an MCP server, `#` for an issue. It opens completion and conversion only at a token boundary in a Prose Span.
-_Avoid_: Trigger character, prefix
+_Avoid_: Trigger character
