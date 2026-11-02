@@ -1,0 +1,57 @@
+{
+  "name": "@ian-pascoe/pi-mcp-selector",
+  "version": "0.0.0",
+  "private": false,
+  "description": "Native MCP Server Reference autocomplete and link conversion for Pi user input.",
+  "keywords": [
+    "autocomplete",
+    "mcp",
+    "pi",
+    "pi-extension",
+    "pi-package"
+  ],
+  "homepage": "https://github.com/ian-pascoe/pi-extensions/tree/main/packages/pi-mcp-selector",
+  "bugs": {
+    "url": "https://github.com/ian-pascoe/pi-extensions/issues"
+  },
+  "license": "MIT",
+  "author": "Ian Pascoe <ian.g.pascoe@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ian-pascoe/pi-extensions.git",
+    "directory": "packages/pi-mcp-selector"
+  },
+  "files": [
+    "src",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsrs --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@ian-pascoe/pi-utils": "^0.11.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=1.1.0",
+    "@earendil-works/pi-tui": ">=1.1.0"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  }
+}

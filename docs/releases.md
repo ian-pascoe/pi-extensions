@@ -12,9 +12,9 @@ This is the release procedure. Migration implementation publishes nothing.
   otherwise leaves an in-range consumer unreleased. The Changesets config sets
   `___experimentalUnsafeOptions_WILL_CHANGE_IN_PATCH.updateInternalDependents`
   to `always` for this; recheck the option name when upgrading Changesets.
-- `@ian-pascoe/pi-skills-selector` consumes `@ian-pascoe/pi-utils/prose-references`
-  as a regular dependency, so it is patch-bumped on every pi-utils release like any
-  other consumer.
+- `@ian-pascoe/pi-skills-selector` and `@ian-pascoe/pi-mcp-selector` consume
+  `@ian-pascoe/pi-utils/prose-references` as a regular dependency, so each is
+  patch-bumped on every pi-utils release like any other consumer.
 - `pi-adaptive-thinking`, `pi-byterover`, `@ian-pascoe/pi-codemode`,
   `@ian-pascoe/pi-mcp`, and `@ian-pascoe/pi-git-status-widget` are retired. They remain on npm only as deprecated
   historical artifacts and must not return to release automation.
@@ -26,8 +26,8 @@ This is the release procedure. Migration implementation publishes nothing.
   `@ian-pascoe/pi-formatter`, `@ian-pascoe/pi-lsp`, `@ian-pascoe/pi-dap`,
   `@ian-pascoe/pi-codemode`, `@ian-pascoe/pi-mcp`,
   and `@ian-pascoe/pi-utils` bootstrap manually at `0.1.0`;
-  `@ian-pascoe/pi-todo`, `@ian-pascoe/pi-web-tools`, `@ian-pascoe/pi-termctrl`, and
-  `@ian-pascoe/pi-command-deck` bootstrap manually at `0.0.0`. The manual
+  `@ian-pascoe/pi-todo`, `@ian-pascoe/pi-web-tools`, `@ian-pascoe/pi-termctrl`,
+  `@ian-pascoe/pi-command-deck`, and `@ian-pascoe/pi-mcp-selector` bootstrap manually at `0.0.0`. The manual
   bootstrap publish needs no Changeset, but the implementation PR still adds a
   `minor` Changeset for the new package; its version PR releases `0.1.0`
   through the trusted-publishing workflow.
@@ -146,6 +146,24 @@ placeholder:
 ```bash
 npm deprecate @ian-pascoe/pi-secret@0.0.0 "Name reservation only; it cannot load. Install 0.1.0 or later."
 ```
+
+## Pi MCP Selector bootstrap
+
+After the implementation PR merges, publish `@ian-pascoe/pi-mcp-selector@0.0.0`
+from `packages/pi-mcp-selector` with `npm publish --access public --provenance=false`
+after the release gates pass, then configure its trusted publisher as for Advisor.
+While the `prose-references` export is unreleased in `@ian-pascoe/pi-utils`, the
+`0.0.0` placeholder cannot load, as with Guardian: it imports that export while its
+manifest range still names the current pi-utils version, and the package-tarball check
+requires that range. Its `minor` Changeset releases the usable `0.1.0` in the version
+PR that releases pi-utils. Then deprecate the placeholder:
+
+```bash
+npm deprecate @ian-pascoe/pi-mcp-selector@0.0.0 "Name reservation only; it cannot load. Install 0.1.0 or later."
+```
+
+Skip the deprecation when the pi-utils release that adds `prose-references` is already
+published and the placeholder loads.
 
 ## Trusted publishing and guarded automation
 
