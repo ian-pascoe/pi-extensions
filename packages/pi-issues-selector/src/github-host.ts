@@ -4,6 +4,24 @@ import { Value } from "typebox/value";
 import { isMap, isScalar, parseDocument } from "yaml";
 import type { HostEnvironment, IssueHost, IssueSummary } from "./issue-host.js";
 
+/** Letters, digits, and single hyphens, not starting or ending with one. */
+const OWNER_PATTERN = "[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9]))*";
+/** Letters, digits, `.`, `_`, and `-`. */
+const REPO_PATTERN = "[A-Za-z0-9._-]+";
+
+const ownerPattern = new RegExp(`^${OWNER_PATTERN}$`);
+const repoPattern = new RegExp(`^${REPO_PATTERN}$`);
+
+/** The owner and repository of exactly `owner/repo`, or undefined for any other text. */
+export function parseOwnerRepo(text: string): { owner: string; repo: string } | undefined {
+  const [owner, repo, ...rest] = text.split("/");
+  if (rest.length > 0 || owner === undefined || repo === undefined) return undefined;
+  if (!ownerPattern.test(owner) || !repoPattern.test(repo) || repo === "." || repo === "..") {
+    return undefined;
+  }
+  return { owner, repo };
+}
+
 function canonicalGitHubHost(host: string): string | undefined {
   const lower = host.toLowerCase();
   if (lower === "github.com" || lower === "ssh.github.com") return "github.com";
@@ -41,7 +59,9 @@ const GitHubItem = Type.Object({
   state: Type.Union([Type.Literal("open"), Type.Literal("closed")]),
   draft: Type.Optional(Type.Union([Type.Boolean(), Type.Null()])),
   pull_request: Type.Optional(
-    Type.Object({ merged_at: Type.Optional(Type.Union([Type.String(), Type.Null()])) }),
+    Type.Object({
+      merged_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+    }),
   ),
 });
 
@@ -60,14 +80,22 @@ function needsGitHubCli(code: number, stderr: string): boolean {
 }
 
 export const GITHUB: IssueHost = {
+  sigils: ["#"],
+  cli: { name: "GitHub CLI", command: "gh" },
+  qualifier: `${OWNER_PATTERN}/${REPO_PATTERN}`,
   canonicalHost: canonicalGitHubHost,
+  parseRepository: parseOwnerRepo,
   async configuredHosts({ environment, readText }) {
-    const hosts = new Set<string>();
+    const hosts = new Map<string, string>();
+    const add = (host: string): void => {
+      const lower = host.toLowerCase();
+      hosts.set(lower, lower);
+    };
     const host = environment.env["GH_HOST"];
-    if (host) hosts.add(host.toLowerCase());
+    if (host) add(host);
     try {
       const text = await readText(hostsFilePath(environment));
-      if (text !== undefined) for (const key of hostKeys(text)) hosts.add(key.toLowerCase());
+      if (text !== undefined) for (const key of hostKeys(text)) add(key);
     } catch {
       // No readable configuration, so nothing is configured.
     }
@@ -75,7 +103,7 @@ export const GITHUB: IssueHost = {
   },
   issueUrl: (repository, number) =>
     `https://${repository.host}/${repository.owner}/${repository.repo}/issues/${number}`,
-  async listRecent(repository, run, signal) {
+  async listRecent(repository, _sigil, run, signal) {
     const path = `repos/${repository.owner}/${repository.repo}/issues?state=all&sort=updated&per_page=100`;
     try {
       const result = await run("gh", ["api", "--hostname", repository.host, path], {

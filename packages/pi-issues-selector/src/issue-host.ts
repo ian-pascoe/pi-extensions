@@ -1,10 +1,11 @@
 import { GITHUB } from "./github-host.js";
+import { GITLAB } from "./gitlab-host.js";
 import type { HostedRepository, RunCommand } from "./issue-repository.js";
 
 export interface IssueSummary {
   number: number;
   title: string;
-  kind: "issue" | "pull request";
+  kind: "issue" | "pull request" | "merge request";
   state: "open" | "closed" | "draft" | "merged";
 }
 
@@ -30,33 +31,54 @@ export interface HostSources {
 }
 
 /**
- * The adapter for one Issue Host: what the hosting service needs for Issue References. GitHub is
- * the only one today; another Issue Host adds an adapter to `HOSTS`
- * ([#509](https://github.com/ian-pascoe/pi-extensions/issues/509)).
+ * The adapter for one Issue Host: what the hosting service needs for Issue References. GitHub and
+ * GitLab have one each in `HOSTS`; another Issue Host adds an adapter there.
  */
 export interface IssueHost {
+  /**
+   * The Reference Sigils the service uses, in the order references are converted: `#` for issues
+   * (GitHub pull requests included), and `!` for GitLab merge requests.
+   */
+  sigils: readonly string[];
+  /** The service's command-line tool, which the popup lists through and the notice names. */
+  cli: { name: string; command: string };
+  /**
+   * Regular-expression source for a repository written in prose before the sigil, such as
+   * `owner/repo` in `owner/repo#12`. Capture groups are not allowed. `parseRepository` re-checks
+   * what it matches.
+   */
+  qualifier: string;
   /** The host this adapter serves under a remote's host name, or undefined for other hosts. */
   canonicalHost(host: string): string | undefined;
   /**
-   * The lower-case hosts the service's CLI is signed in to or told to use, read offline from its
-   * own configuration (key names only, never values). A missing or unreadable file yields none.
-   * Hosts the adapter always serves (`canonicalHost`) need not be listed.
+   * The owner (namespace path) and repository (project) that `path`, the path of a remote URL
+   * without `.git`, names on this service, or undefined when it is not one of its repositories.
    */
-  configuredHosts(sources: HostSources): Promise<ReadonlySet<string>>;
+  parseRepository(path: string): { owner: string; repo: string } | undefined;
   /**
-   * The web page of issue or pull request `number`. Repositories passed to this and to
-   * `listRecent` carry the host `canonicalHost` returned.
+   * The hosts the service's CLI is signed in to or told to use, read offline from its own
+   * configuration (key names only, never values): each lower-case host a remote may name, mapped
+   * to the host its web pages use (itself, unless an SSH host stands for a web host). A missing or
+   * unreadable file yields none. Hosts the adapter always serves (`canonicalHost`) need not be
+   * listed.
    */
-  issueUrl(repository: HostedRepository, number: number | string): string;
-  /** The most recently updated issues and pull requests, newest first. */
+  configuredHosts(sources: HostSources): Promise<ReadonlyMap<string, string>>;
+  /**
+   * The web page of issue, pull request, or merge request `number` for `sigil`. Repositories
+   * passed to this and to `listRecent` carry the host `canonicalHost` or `configuredHosts`
+   * returned.
+   */
+  issueUrl(repository: HostedRepository, number: number | string, sigil: string): string;
+  /** The most recently updated items `sigil` stands for, newest first. */
   listRecent(
     repository: HostedRepository,
+    sigil: string,
     run: RunCommand,
     signal: AbortSignal,
   ): Promise<IssueListing>;
 }
 
-const HOSTS: readonly IssueHost[] = [GITHUB];
+const HOSTS: readonly IssueHost[] = [GITHUB, GITLAB];
 
 /** An adapter and the host its URLs use for a remote. */
 export interface ServingHost {
@@ -71,7 +93,7 @@ export const DEFAULT_ISSUE_HOST: ServingHost = {
 };
 
 /** The hosts each adapter's CLI is configured for, by adapter. */
-export type ConfiguredHosts = ReadonlyMap<IssueHost, ReadonlySet<string>>;
+export type ConfiguredHosts = ReadonlyMap<IssueHost, ReadonlyMap<string, string>>;
 
 /**
  * Reads every adapter's configured hosts, afresh on each call: signing in to a host mid-session
@@ -101,7 +123,8 @@ export async function findIssueHost(
   const lower = host.toLowerCase();
   const claims = [...(await configured())].filter(([, hosts]) => hosts.has(lower));
   const [claim] = claims;
-  return claims.length === 1 && claim !== undefined
-    ? { adapter: claim[0], host: lower }
+  const web = claim?.[1].get(lower);
+  return claims.length === 1 && claim !== undefined && web !== undefined
+    ? { adapter: claim[0], host: web }
     : undefined;
 }

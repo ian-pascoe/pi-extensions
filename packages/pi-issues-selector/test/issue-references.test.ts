@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vitest";
+import { configuredFor } from "./configured-hosts.js";
 import { GITHUB } from "../src/github-host.js";
+import { GITLAB } from "../src/gitlab-host.js";
 import {
   lookupIssueRepository,
   type HostedRepository,
@@ -7,7 +9,11 @@ import {
 } from "../src/issue-repository.js";
 import { transformIssueReferences } from "../src/issue-references.js";
 
-const github: HostedRepository = { host: "github.com", owner: "acme", repo: "widgets" };
+const github: HostedRepository = {
+  host: "github.com",
+  owner: "acme",
+  repo: "widgets",
+};
 const found = (repository: HostedRepository, host = repository.host): IssueRepositoryLookup => ({
   kind: "found",
   repository,
@@ -145,7 +151,7 @@ describe("hosts", () => {
   const submit = async (text: string, remotes: string, ...configured: string[]) =>
     transformIssueReferences(
       text,
-      await lookupIssueRepository(remotes, async () => new Map([[GITHUB, new Set(configured)]])),
+      await lookupIssueRepository(remotes, async () => configuredFor(GITHUB, ...configured)),
     );
 
   test("links on the Issue Repository's host", async () => {
@@ -182,7 +188,7 @@ describe("hosts", () => {
   });
 
   test.each([
-    ["gitlab.com", "https://gitlab.com/me/core.git"],
+    ["a GitLab host glab is not configured for", "https://gitlab.corp.example/me/core.git"],
     ["an SSH host alias", "git@gh-work:me/core.git"],
     ["bitbucket.org", "https://bitbucket.org/me/core.git"],
     ["a look-alike of github.com", "https://github.com.evil.example/me/core.git"],
@@ -209,4 +215,91 @@ describe("hosts", () => {
       ).toBe("Fix #12");
     },
   );
+});
+
+describe("GitLab references", () => {
+  const project: HostedRepository = { host: "gitlab.com", owner: "group/sub", repo: "project" };
+  const lookup: IssueRepositoryLookup = {
+    kind: "found",
+    repository: project,
+    adapter: GITLAB,
+    host: "gitlab.com",
+  };
+  const issue = (number: number | string): string =>
+    `[#${number}](https://gitlab.com/group/sub/project/-/issues/${number})`;
+  const mergeRequest = (number: number | string): string =>
+    `[!${number}](https://gitlab.com/group/sub/project/-/merge_requests/${number})`;
+  const qualifiedIssue = (target: string, number: number | string): string =>
+    `[${target}#${number}](https://gitlab.com/${target}/-/issues/${number})`;
+  const gitLab = (text: string): string => transformIssueReferences(text, lookup);
+
+  test("converts # to an issue link and ! to a merge request link", () => {
+    expect(gitLab("Fix #12 and !3")).toBe(`Fix ${issue(12)} and ${mergeRequest(3)}`);
+    expect(gitLab("!3")).toBe(mergeRequest(3));
+    expect(gitLab("(!3), !4. #5; !6: x")).toBe(
+      `(${mergeRequest(3)}), ${mergeRequest(4)}. ${issue(5)}; ${mergeRequest(6)}: x`,
+    );
+  });
+
+  test("converts qualified references of 2 to 21 segments, on the Issue Repository's host", () => {
+    expect(gitLab("group/sub/proj#12")).toBe(qualifiedIssue("group/sub/proj", 12));
+    expect(gitLab("see a/b!7")).toBe("see [a/b!7](https://gitlab.com/a/b/-/merge_requests/7)");
+    const deep = Array.from({ length: 21 }, (_, index) => `g${index}`).join("/");
+    expect(gitLab(`${deep}#1`)).toBe(qualifiedIssue(deep, 1));
+    expect(gitLab(`${deep}/x#1`)).toBe(`${deep}/x#1`);
+  });
+
+  test.each([
+    "see ./foo/bar#12",
+    "e.g./x#1",
+    "~/a/b#1",
+    "issue#123",
+    "group/proj.git#3",
+    "group/proj.atom#3",
+    "group/proj.git!3",
+    "/group/proj#1",
+    "https://gitlab.com/group/proj#1",
+    "x@group/proj#1",
+    "proj#12",
+    "proj!12",
+    "a != b",
+    "x!=3",
+    "!0",
+    "!012",
+    "Hello!3",
+    "wow!3",
+    "!3x",
+    "!3.5",
+    "`!3`",
+    "[!3](/x)",
+    "\\!3",
+    "!!3",
+    "&!3",
+  ])("keeps %j literal", (text) => {
+    expect(gitLab(text)).toBe(text);
+  });
+
+  test("path-like prose converts, so paths belong in code", () => {
+    expect(gitLab("src/foo#12")).toBe(qualifiedIssue("src/foo", 12));
+    expect(gitLab("`src/foo#12`")).toBe("`src/foo#12`");
+  });
+
+  test("links made by the # pass are left alone by the ! pass, and the conversion is idempotent", () => {
+    const once = gitLab("Fix #12, other/team/proj#4 and !3");
+    expect(once).toBe(
+      `Fix ${issue(12)}, ${qualifiedIssue("other/team/proj", 4)} and ${mergeRequest(3)}`,
+    );
+    expect(gitLab(once)).toBe(once);
+  });
+
+  test("a GitHub Issue Repository converts # only", () => {
+    expect(convert("Fix #12 and !3 and a/b/c#4")).toBe(`Fix ${bare(12)} and !3 and a/b/c#4`);
+  });
+
+  test("is literal without a recognised Issue Repository, and defaults qualified references to github.com", () => {
+    expect(transformIssueReferences("#1 !2 a/b#3", { kind: "unresolved" })).toBe("#1 !2 a/b#3");
+    expect(transformIssueReferences("#1 !2 a/b#3 a/b/c#4", { kind: "none" })).toBe(
+      `#1 !2 ${qualified("a/b", 3)} a/b/c#4`,
+    );
+  });
 });
