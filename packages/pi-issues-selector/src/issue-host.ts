@@ -2,6 +2,18 @@ import { GITHUB } from "./github-host.js";
 import { GITLAB } from "./gitlab-host.js";
 import type { HostedRepository, RunCommand } from "./issue-repository.js";
 
+/**
+ * A Reference Sigil an Issue Host may use: `#` for issues (and GitHub pull requests), `!` for
+ * GitLab merge requests.
+ */
+export type Sigil = "#" | "!";
+
+/** A hosting service's command-line tool, which the popup lists through and the notice names. */
+export interface HostCli {
+  name: string;
+  command: string;
+}
+
 export interface IssueSummary {
   number: number;
   title: string;
@@ -39,9 +51,9 @@ export interface IssueHost {
    * The Reference Sigils the service uses, in the order references are converted: `#` for issues
    * (GitHub pull requests included), and `!` for GitLab merge requests.
    */
-  sigils: readonly string[];
-  /** The service's command-line tool, which the popup lists through and the notice names. */
-  cli: { name: string; command: string };
+  sigils: readonly Sigil[];
+  /** The service's command-line tool. */
+  cli: HostCli;
   /**
    * Regular-expression source for a repository written in prose before the sigil, such as
    * `owner/repo` in `owner/repo#12`. Capture groups are not allowed. `parseRepository` re-checks
@@ -68,17 +80,29 @@ export interface IssueHost {
    * passed to this and to `listRecent` carry the host `canonicalHost` or `configuredHosts`
    * returned.
    */
-  issueUrl(repository: HostedRepository, number: number | string, sigil: string): string;
+  issueUrl(repository: HostedRepository, number: number | string, sigil: Sigil): string;
   /** The most recently updated items `sigil` stands for, newest first. */
   listRecent(
     repository: HostedRepository,
-    sigil: string,
+    sigil: Sigil,
     run: RunCommand,
     signal: AbortSignal,
   ): Promise<IssueListing>;
 }
 
 const HOSTS: readonly IssueHost[] = [GITHUB, GITLAB];
+
+/**
+ * Whether `path` is a repository path an Issue Host accepts on `host`: when an adapter serves
+ * `host` as a built-in, that adapter must accept it; for any other host, which only the CLIs'
+ * configured hosts can classify, an adapter's accepting it is enough.
+ */
+export function acceptsRepository(host: string, path: string): boolean {
+  const builtIn = HOSTS.filter((adapter) => adapter.canonicalHost(host) !== undefined);
+  return (builtIn.length > 0 ? builtIn : HOSTS).some(
+    (adapter) => adapter.parseRepository(path) !== undefined,
+  );
+}
 
 /** An adapter and the host its URLs use for a remote. */
 export interface ServingHost {

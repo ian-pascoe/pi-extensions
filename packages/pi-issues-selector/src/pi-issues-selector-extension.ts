@@ -10,6 +10,7 @@ import {
   MERGE_REQUEST_SIGIL,
   transformIssueReferences,
 } from "./issue-references.js";
+import type { HostCli, Sigil } from "./issue-host.js";
 import { suggestIssues } from "./issue-suggestions.js";
 import { resolveIssueRepository, type RunCommand } from "./issue-repository.js";
 import { RecentIssues } from "./recent-issues.js";
@@ -28,7 +29,7 @@ export default function issuesSelectorExtension(pi: ExtensionAPI): void {
     notifiedHosts.clear();
     if (ctx.mode !== "tui") return;
     const cwd = ctx.cwd;
-    const notifyOnce = (host: string, cli: { name: string; command: string }): void => {
+    const notifyOnce = (host: string, cli: HostCli): void => {
       if (notifiedHosts.has(host)) return;
       notifiedHosts.add(host);
       ctx.ui.notify(
@@ -38,7 +39,7 @@ export default function issuesSelectorExtension(pi: ExtensionAPI): void {
     };
     // The items `sigil` stands for in the Issue Repository, nothing when its Issue Host has none.
     const suggestFor =
-      (sigil: string) =>
+      (sigil: Sigil) =>
       async (query: string, signal: AbortSignal): Promise<AutocompleteItem[]> => {
         const lookup = await resolveIssueRepository(run, cwd, systemHostSources(), signal);
         if (lookup.kind !== "found" || signal.aborted) return [];

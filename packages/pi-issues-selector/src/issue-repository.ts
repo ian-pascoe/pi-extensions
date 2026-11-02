@@ -1,6 +1,6 @@
 import type { ExecOptions, ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { parseOwnerRepo } from "./github-host.js";
 import {
+  acceptsRepository,
   findIssueHost,
   readConfiguredHosts,
   type ConfiguredHosts,
@@ -69,16 +69,25 @@ interface RemoteConfig {
   glabResolvedLegacy: string | undefined;
 }
 
-/** What `git config --get-regexp` is asked for: remote URLs and the `gh` and `glab` markers. */
-const REMOTE_CONFIG_PATTERN = "^remote\\..*\\.(url|gh-resolved|glab-resolved-base|glab-resolved)$";
+/** The remote settings read: the URL, and the markers `gh` and `glab` leave on a resolved remote. */
+const REMOTE_SETTINGS = ["url", "gh-resolved", "glab-resolved-base", "glab-resolved"] as const;
+type RemoteSetting = (typeof REMOTE_SETTINGS)[number];
 
-const REMOTE_KEYS = /^remote\.(.+)\.(url|gh-resolved|glab-resolved-base|glab-resolved) (.*)$/;
+/** What `git config --get-regexp` is asked for. */
+const REMOTE_CONFIG_PATTERN = `^remote\\..*\\.(${REMOTE_SETTINGS.join("|")})$`;
+
+const REMOTE_SETTING_LINE = new RegExp(`^remote\\.(.+)\\.(${REMOTE_SETTINGS.join("|")}) (.*)$`);
+
+const isRemoteSetting = (key: string): key is RemoteSetting =>
+  REMOTE_SETTINGS.some((setting) => setting === key);
 
 function readRemotes(configOutput: string): RemoteConfig[] {
   const remotes = new Map<string, RemoteConfig>();
   for (const line of configOutput.split("\n")) {
-    const entry = REMOTE_KEYS.exec(line.trimEnd());
-    if (entry?.[1] === undefined || entry[3] === undefined) continue;
+    const entry = REMOTE_SETTING_LINE.exec(line.trimEnd());
+    if (entry?.[1] === undefined || entry[2] === undefined || entry[3] === undefined) continue;
+    const setting = entry[2];
+    if (!isRemoteSetting(setting)) continue;
     let remote = remotes.get(entry[1]);
     if (remote === undefined) {
       remote = {
@@ -90,18 +99,29 @@ function readRemotes(configOutput: string): RemoteConfig[] {
       };
       remotes.set(entry[1], remote);
     }
-    if (entry[2] === "url") remote.urls.push(entry[3]);
-    else if (entry[2] === "gh-resolved") remote.ghResolved ??= entry[3];
-    else if (entry[2] === "glab-resolved-base") remote.glabResolvedBase ??= entry[3];
-    else remote.glabResolvedLegacy ??= entry[3];
+    switch (setting) {
+      case "url":
+        remote.urls.push(entry[3]);
+        break;
+      case "gh-resolved":
+        remote.ghResolved ??= entry[3];
+        break;
+      case "glab-resolved-base":
+        remote.glabResolvedBase ??= entry[3];
+        break;
+      case "glab-resolved":
+        remote.glabResolvedLegacy ??= entry[3];
+        break;
+    }
   }
   return [...remotes.values()];
 }
 
+// A remote counts when its URL names a location whose path an Issue Host accepts.
 function locationOf(remote: RemoteConfig): RemoteLocation | undefined {
   for (const url of remote.urls) {
     const parsed = parseRemoteUrl(url);
-    if (parsed !== undefined) return parsed;
+    if (parsed !== undefined && acceptsRepository(parsed.host, parsed.path)) return parsed;
   }
   return undefined;
 }
@@ -111,14 +131,12 @@ interface LocatedRemote {
   location: RemoteLocation;
 }
 
-// gh's value is `base` or `owner/repo` on the remote's host.
+// gh's value is `base`, or `owner/repo` on the remote's host. A value no Issue Host accepts as a
+// path (`base`) means the remote itself.
 function ghResolvedLocation({ remote, location }: LocatedRemote): RemoteLocation | undefined {
   if (remote.ghResolved === undefined) return undefined;
-  const path = normalizePath(remote.ghResolved);
-  return {
-    host: location.host,
-    path: parseOwnerRepo(path) === undefined ? location.path : path,
-  };
+  const named = { host: location.host, path: normalizePath(remote.ghResolved) };
+  return acceptsRepository(named.host, named.path) ? named : location;
 }
 
 // glab's value is `base`, `base:<path>` on the remote's host, or a `head` value that marks nothing.
@@ -134,12 +152,20 @@ function glabResolvedLocation({ remote, location }: LocatedRemote): RemoteLocati
 /**
  * Where a bare `#123` or `!123` resolves, chosen from `git config --get-regexp
  * '^remote\..*\.(url|gh-resolved|glab-resolved-base|glab-resolved)$'` output, the way `gh` and
- * `glab` choose their base repository: the remote `gh` resolved (`gh-resolved` is `base`, or
- * `owner/repo` on that remote's host); else the remote `glab` resolved (`glab-resolved-base` is
- * `base`, or `base:<path>` on that remote's host; the legacy `glab-resolved` is read only for a
- * remote without the newer key; `head` values mark nothing); else `upstream`, `github`, `origin`,
- * `gitlab`; else the first remote whose URL parses. glab itself ranks `gitlab` above `origin`, so a
- * GitLab-only checkout with both and no `upstream` picks `origin` here.
+ * `glab` choose their base repository. Only remotes that count are considered: the URL must name
+ * a host and a path an Issue Host accepts (a built-in host's own adapter must accept the path;
+ * for any other host, some adapter's path grammar must), so a local path, a `file://` URL, or a
+ * GitHub URL such as `https://github.com/a/b/c` is skipped as it always was. Among those: the
+ * remote `gh` resolved (`gh-resolved` is `base`, or `owner/repo` on that remote's host); else the
+ * remote `glab` resolved (`glab-resolved-base` is `base`, or `base:<path>` on that remote's host;
+ * the legacy `glab-resolved` is read only for a remote without the newer key; `head` values mark
+ * nothing); else `upstream`, `github`, `origin`, `gitlab`; else the first that counts. glab itself
+ * ranks `gitlab` above `origin`, so a GitLab-only checkout with both and no `upstream` picks
+ * `origin` here.
+ *
+ * The check is made without reading the CLIs' configured hosts, so one case is selected and then
+ * left unresolved by `lookupIssueRepository`: a host that is not built in, whose path GitLab's
+ * grammar accepts but its own Issue Host's does not (a GitHub Enterprise Server remote `a/b/c`).
  */
 export function selectIssueRepository(configOutput: string): RemoteLocation | undefined {
   const remotes = readRemotes(configOutput).flatMap((remote) => {

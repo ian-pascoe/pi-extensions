@@ -123,6 +123,47 @@ describe("selectIssueRepository", () => {
     ).toBe("acme/widgets");
   });
 
+  test.each([
+    "https://github.com/acme/widgets/extra",
+    "https://github.com/-acme/widgets",
+    "https://github.com/acme--x/widgets",
+    "https://github.com/acme/..",
+    "https://github.com/acme/wid gets",
+    "https://github.com/acme",
+    "C:\\repos\\widgets",
+  ])("a remote at %j does not count, so the next one is chosen, as before", (url) => {
+    const mirror = "remote.mirror.url https://github.com/acme/mirror.git";
+    expect(selectIssueRepository(config(`remote.upstream.url ${url}`))).toBeUndefined();
+    expect(
+      pathOf(`remote.upstream.url ${url}`, "remote.origin.url git@github.com:me/origin.git"),
+    ).toBe("me/origin");
+    expect(pathOf(`remote.origin.url ${url}`, mirror)).toBe("acme/mirror");
+    expect(pathOf(`remote.origin.url ${url}`, `remote.origin.gh-resolved base`, mirror)).toBe(
+      "acme/mirror",
+    );
+  });
+
+  test("a non-built-in host counts when some Issue Host's path grammar accepts the path", () => {
+    expect(pathOf("remote.origin.url https://git.example/a/b/c.git")).toBe("a/b/c");
+    expect(pathOf("remote.origin.url https://git.example/a.git")).toBeUndefined();
+    // GitLab's grammar accepts `a/b/c`, so the remote counts, and the lookup leaves it unresolved
+    // when the host turns out to be a GitHub Enterprise Server one.
+    expect(
+      pathOf(
+        "remote.upstream.url https://github.corp.example/a/b/c.git",
+        "remote.origin.url https://github.com/me/origin.git",
+      ),
+    ).toBe("a/b/c");
+  });
+
+  test("a gh-resolved value no Issue Host accepts means the remote itself", () => {
+    const remote = "remote.origin.url git@github.com:me/widgets.git";
+    expect(pathOf(remote, "remote.origin.gh-resolved base")).toBe("me/widgets");
+    expect(pathOf(remote, "remote.origin.gh-resolved a/b/c")).toBe("me/widgets");
+    expect(pathOf(remote, "remote.origin.gh-resolved -x/y")).toBe("me/widgets");
+    expect(pathOf(remote, "remote.origin.gh-resolved acme/core.git")).toBe("acme/core");
+  });
+
   test("uses the remote gh resolved, over every name", () => {
     expect(
       selectIssueRepository(
@@ -284,16 +325,30 @@ describe("lookupIssueRepository", () => {
     });
   });
 
-  test("a remote path its Issue Host does not accept is unresolved, and no other remote is chosen", async () => {
+  test("a remote path its Issue Host does not accept is skipped, as before; with none left it is unresolved", async () => {
     const mirror = "remote.mirror.url https://github.com/acme/mirror.git\n";
     for (const url of [
       "https://gitlab.com/widgets.git",
       "https://github.com/group/sub/widgets.git",
     ]) {
+      expect(await lookupIssueRepository(`remote.origin.url ${url}\n`, configuredOf())).toEqual({
+        kind: "unresolved",
+      });
       expect(
         await lookupIssueRepository(`remote.origin.url ${url}\n${mirror}`, configuredOf()),
-      ).toEqual({ kind: "unresolved" });
+      ).toEqual({
+        ...github,
+        repository: { host: "github.com", owner: "acme", repo: "mirror" },
+      });
     }
+  });
+
+  test("a non-built-in host whose path only GitLab's grammar accepts is selected, then unresolved", async () => {
+    const remotes =
+      "remote.upstream.url https://github.corp.example/a/b/c.git\nremote.origin.url https://github.com/me/origin.git\n";
+    expect(await lookupIssueRepository(remotes, configuredOf("github.corp.example"))).toEqual({
+      kind: "unresolved",
+    });
   });
 
   test("an ssh_host remote is found on the web host that glab maps it to", async () => {

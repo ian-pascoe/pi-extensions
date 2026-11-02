@@ -2,6 +2,7 @@ import { posix, win32 } from "node:path";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import { isMap, isScalar, parseDocument } from "yaml";
+import { listRecentThroughCli, readConfiguredHostsSafely } from "./host-cli.js";
 import type { HostEnvironment, IssueHost, IssueSummary } from "./issue-host.js";
 
 // GitLab's project path grammar (`lib/gitlab/path_regex.rb`): a segment starts with a letter, digit,
@@ -128,7 +129,7 @@ function summarizeMergeRequest(item: Static<typeof GitLabMergeRequest>): IssueSu
 
 // `glab api` sends the request unauthenticated when signed out, so a private project answers 404:
 // that, a 401, a missing `glab` (no output at all), and a sign-in hint all ask for the CLI.
-function needsGitLabCli(stdout: string, stderr: string): boolean {
+function needsGitLabCli({ stdout, stderr }: { stdout: string; stderr: string }): boolean {
   if (stdout.trim() === "" && stderr.trim() === "") return true;
   return (
     /glab auth login/i.test(stderr) ||
@@ -143,46 +144,34 @@ export const GITLAB: IssueHost = {
   qualifier: `${QSEG}(?:/${QSEG}){1,20}`,
   canonicalHost: canonicalGitLabHost,
   parseRepository: parseGitLabRepository,
-  async configuredHosts({ environment, readText }) {
-    try {
+  configuredHosts({ environment, readText }) {
+    return readConfiguredHostsSafely(async () => {
       for (const path of configFileCandidates(environment)) {
         const text = await readText(path);
         if (text !== undefined) return readHosts(text);
       }
-    } catch {
-      // No readable configuration, so nothing is configured.
-    }
-    return new Map();
+      return new Map();
+    });
   },
   issueUrl: (repository, number, sigil) =>
     `https://${repository.host}/${repository.owner}/${repository.repo}/-/${sigil === "!" ? "merge_requests" : "issues"}/${number}`,
-  async listRecent(repository, sigil, run, signal) {
+  listRecent(repository, sigil, run, signal) {
     const project = encodeURIComponent(`${repository.owner}/${repository.repo}`);
     const resource = sigil === "!" ? "merge_requests" : "issues";
     const path = `projects/${project}/${resource}?state=all&order_by=updated_at&sort=desc&per_page=100`;
-    try {
-      const result = await run("glab", ["api", "--hostname", repository.host, path], {
-        signal,
-        timeout: 20_000,
-      });
-      if (result.killed) return { ok: false, reason: "unavailable" };
-      if (result.code !== 0) {
-        const reason = needsGitLabCli(result.stdout, result.stderr) ? "needs-cli" : "unavailable";
-        return { ok: false, reason };
-      }
-      const parsed: unknown = JSON.parse(result.stdout);
-      if (!Array.isArray(parsed)) return { ok: false, reason: "unavailable" };
-      const issues: IssueSummary[] = [];
-      for (const item of parsed) {
-        if (sigil === "!") {
-          if (Value.Check(GitLabMergeRequest, item)) issues.push(summarizeMergeRequest(item));
-        } else if (Value.Check(GitLabIssue, item)) {
-          issues.push(summarizeIssue(item));
-        }
-      }
-      return { ok: true, issues };
-    } catch {
-      return { ok: false, reason: "unavailable" };
-    }
+    const request = {
+      cli: GITLAB.cli,
+      args: ["api", "--hostname", repository.host, path],
+      run,
+      signal,
+      needsCli: needsGitLabCli,
+    };
+    return sigil === "!"
+      ? listRecentThroughCli({
+          ...request,
+          schema: GitLabMergeRequest,
+          summarize: summarizeMergeRequest,
+        })
+      : listRecentThroughCli({ ...request, schema: GitLabIssue, summarize: summarizeIssue });
   },
 };

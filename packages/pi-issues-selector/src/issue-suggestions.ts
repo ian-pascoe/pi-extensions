@@ -1,5 +1,5 @@
 import { fuzzyFilter, type AutocompleteItem } from "@earendil-works/pi-tui";
-import type { IssueSummary } from "./issue-host.js";
+import type { IssueSummary, Sigil } from "./issue-host.js";
 
 export const MAX_ISSUE_SUGGESTIONS = 20;
 
@@ -20,7 +20,7 @@ function describe(issue: IssueSummary): string {
 export function suggestIssues(
   issues: readonly IssueSummary[],
   query: string,
-  sigil: string,
+  sigil: Sigil,
 ): AutocompleteItem[] {
   let matches: readonly IssueSummary[];
   if (query === "") {
