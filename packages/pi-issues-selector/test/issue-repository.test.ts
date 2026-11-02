@@ -351,6 +351,14 @@ describe("lookupIssueRepository", () => {
     });
   });
 
+  test("a gh-resolved value only GitLab's grammar accepts, on a non-built-in host, is used, then unresolved", async () => {
+    const remotes =
+      "remote.origin.url https://github.corp.example/me/widgets.git\nremote.origin.gh-resolved a/b/c\n";
+    expect(await lookupIssueRepository(remotes, configuredOf("github.corp.example"))).toEqual({
+      kind: "unresolved",
+    });
+  });
+
   test("an ssh_host remote is found on the web host that glab maps it to", async () => {
     const configured = async () =>
       new Map([

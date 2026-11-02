@@ -94,9 +94,13 @@ and `glab` do:
 A remote counts when its URL parses (`https://`, `git@host:`, `ssh://`) and the path
 is one an Issue Host accepts: on a built-in host, that host's own grammar (so
 `https://github.com/a/b/c`, a local path, or a `file://` URL is skipped, as it always
-was); on any other host, either service's grammar. One case follows from that: a
-GitHub Enterprise Server remote whose path only GitLab's grammar accepts (such as
-`a/b/c`) counts, is selected, and then leaves the Issue Repository unresolved.
+was); on any other host, either service's grammar. Two cases follow from that, both
+on a host that is not built in (a GitHub Enterprise Server host, say) and both for a
+path only GitLab's grammar accepts (such as `a/b/c`, `acme--x/widgets`, `_x/y`): a
+remote URL with such a path counts, is selected, and then leaves the Issue
+Repository unresolved; a `gh-resolved` value of that kind is used as the path, and
+the result is unresolved too, where a value no grammar accepts (`base`) means the
+remote itself.
 
 If no Issue Host serves the chosen remote's host name, or its Issue Host does not
 accept the path, the Issue Repository is unresolved and references stay literal;

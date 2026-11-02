@@ -132,7 +132,9 @@ interface LocatedRemote {
 }
 
 // gh's value is `base`, or `owner/repo` on the remote's host. A value no Issue Host accepts as a
-// path (`base`) means the remote itself.
+// path (`base`) means the remote itself. On a host that is not built in, any adapter's grammar
+// suffices, so a value only GitLab's accepts (GHES `a/b/c`) is used, and the lookup then leaves it
+// unresolved.
 function ghResolvedLocation({ remote, location }: LocatedRemote): RemoteLocation | undefined {
   if (remote.ghResolved === undefined) return undefined;
   const named = { host: location.host, path: normalizePath(remote.ghResolved) };
@@ -164,8 +166,9 @@ function glabResolvedLocation({ remote, location }: LocatedRemote): RemoteLocati
  * `origin` here.
  *
  * The check is made without reading the CLIs' configured hosts, so one case is selected and then
- * left unresolved by `lookupIssueRepository`: a host that is not built in, whose path GitLab's
- * grammar accepts but its own Issue Host's does not (a GitHub Enterprise Server remote `a/b/c`).
+ * left unresolved by `lookupIssueRepository`: a host that is not built in, with a path only
+ * GitLab's grammar accepts (a GitHub Enterprise Server remote `a/b/c`, `acme--x/widgets`,
+ * `_x/y`). The same holds for a `gh-resolved` value of that kind on such a host.
  */
 export function selectIssueRepository(configOutput: string): RemoteLocation | undefined {
   const remotes = readRemotes(configOutput).flatMap((remote) => {
