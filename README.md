@@ -24,6 +24,7 @@ independently or together from this Git repository.
 | [`@ian-pascoe/pi-context-management`](packages/pi-context-management) | Session Notes, History retrieval, and native Rollover.       | `pi install npm:@ian-pascoe/pi-context-management` |
 | [`@ian-pascoe/pi-skills-selector`](packages/pi-skills-selector)       | Native `$skill-name` completion and instruction links.       | `pi install npm:@ian-pascoe/pi-skills-selector`    |
 | [`@ian-pascoe/pi-mcp-selector`](packages/pi-mcp-selector)             | Native `@server` completion and MCP server links.            | `pi install npm:@ian-pascoe/pi-mcp-selector`       |
+| [`@ian-pascoe/pi-issues-selector`](packages/pi-issues-selector)       | Native `#123` completion and GitHub issue links.             | `pi install npm:@ian-pascoe/pi-issues-selector`    |
 | [`@ian-pascoe/pi-advisor`](packages/pi-advisor)                       | Optional background review and attributed corrective advice. | `pi install npm:@ian-pascoe/pi-advisor`            |
 | [`@ian-pascoe/pi-termctrl`](packages/pi-termctrl)                     | Interactive Terminals, Background jobs, and a `/ps` panel.   | `pi install npm:@ian-pascoe/pi-termctrl`           |
 | [`@ian-pascoe/pi-secret`](packages/pi-secret)                         | User-entered credentials kept from the model and transcript. | `pi install npm:@ian-pascoe/pi-secret`             |
@@ -80,6 +81,7 @@ packages/pi-todo/src/index.ts
 packages/pi-context-management/src/index.ts
 packages/pi-skills-selector/src/index.ts
 packages/pi-mcp-selector/src/index.ts
+packages/pi-issues-selector/src/index.ts
 packages/pi-advisor/src/index.ts
 packages/pi-termctrl/src/index.ts
 packages/pi-secret/src/index.ts
@@ -102,6 +104,7 @@ packages/pi-todo/skills/pi-todo/SKILL.md
 packages/pi-context-management/skills/pi-context-management/SKILL.md
 packages/pi-skills-selector/skills/pi-skills-selector/SKILL.md
 packages/pi-mcp-selector/skills/pi-mcp-selector/SKILL.md
+packages/pi-issues-selector/skills/pi-issues-selector/SKILL.md
 packages/pi-advisor/skills/pi-advisor/SKILL.md
 packages/pi-termctrl/skills/pi-termctrl/SKILL.md
 packages/pi-secret/skills/pi-secret/SKILL.md
@@ -135,6 +138,7 @@ pi install git:github.com/ian-pascoe/pi-extensions@<tag-or-commit>
 - Pi Termctrl Terminals need the `termctrl` binary that `@kitlangton/terminal-control`
   installs for macOS and GNU/Linux on arm64 or x64. Elsewhere only the `bash`
   replacement and Background jobs work.
+- Pi Issues Selector's `#` completion needs the GitHub CLI (`gh`) signed in to the repository's host; conversion needs nothing.
 - Pi Guardian is enabled by default and reviews the tool calls its Tool Policies send to review with the session's model unless configured; load it last so no later extension rewrites reviewed arguments.
 - Pi Advisor is disabled by default. Loaded Context Management requires all three private context-tool grants; incompatible tool exposure pauses review rather than expanding permissions.
 
@@ -177,6 +181,8 @@ bun run --filter @ian-pascoe/pi-skills-selector typecheck
 bun run --filter @ian-pascoe/pi-skills-selector test
 bun run --filter @ian-pascoe/pi-mcp-selector typecheck
 bun run --filter @ian-pascoe/pi-mcp-selector test
+bun run --filter @ian-pascoe/pi-issues-selector typecheck
+bun run --filter @ian-pascoe/pi-issues-selector test
 bun run --filter @ian-pascoe/pi-utils test
 bun run --filter @ian-pascoe/pi-advisor typecheck
 bun run --filter @ian-pascoe/pi-advisor test
