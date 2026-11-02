@@ -144,6 +144,17 @@
         "typebox": ">=1",
       },
     },
+    "packages/pi-mcp-selector": {
+      "name": "@ian-pascoe/pi-mcp-selector",
+      "version": "0.0.0",
+      "dependencies": {
+        "@ian-pascoe/pi-utils": "^0.11.0",
+      },
+      "peerDependencies": {
+        "@earendil-works/pi-coding-agent": ">=1.1.0",
+        "@earendil-works/pi-tui": ">=1.1.0",
+      },
+    },
     "packages/pi-minimal-subagents": {
       "name": "@ian-pascoe/pi-minimal-subagents",
       "version": "0.21.1",
@@ -377,6 +388,8 @@
     "@ian-pascoe/pi-guardian": ["@ian-pascoe/pi-guardian@workspace:packages/pi-guardian"],
 
     "@ian-pascoe/pi-lsp": ["@ian-pascoe/pi-lsp@workspace:packages/pi-lsp"],
+
+    "@ian-pascoe/pi-mcp-selector": ["@ian-pascoe/pi-mcp-selector@workspace:packages/pi-mcp-selector"],
 
     "@ian-pascoe/pi-minimal-subagents": ["@ian-pascoe/pi-minimal-subagents@workspace:packages/pi-minimal-subagents"],
 
