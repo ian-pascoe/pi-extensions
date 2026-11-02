@@ -19,6 +19,7 @@ glossary relevant to the work:
 | `@ian-pascoe/pi-todo`               | [`packages/pi-todo/GLOSSARY.md`](packages/pi-todo/GLOSSARY.md)                             | Minimal session work tracking                                 |
 | `@ian-pascoe/pi-context-management` | [`packages/pi-context-management/GLOSSARY.md`](packages/pi-context-management/GLOSSARY.md) | Session Notes, History, and Rollover                          |
 | `@ian-pascoe/pi-skills-selector`    | [`packages/pi-skills-selector/GLOSSARY.md`](packages/pi-skills-selector/GLOSSARY.md)       | Explicit Skill References in user input                       |
+| `@ian-pascoe/pi-mcp-selector`       | [`packages/pi-mcp-selector/GLOSSARY.md`](packages/pi-mcp-selector/GLOSSARY.md)             | Explicit MCP Server References in user input                  |
 | `@ian-pascoe/pi-guardian`           | [`packages/pi-guardian/GLOSSARY.md`](packages/pi-guardian/GLOSSARY.md)                     | Model-reviewed tool-call gating                               |
 | `@ian-pascoe/pi-secret`             | [`packages/pi-secret/GLOSSARY.md`](packages/pi-secret/GLOSSARY.md)                         | User-entered and provider-granted secrets kept from the model |
 | `@ian-pascoe/pi-utils`              | [`packages/pi-utils/GLOSSARY.md`](packages/pi-utils/GLOSSARY.md)                           | Shared UI conventions, Steer Yield, and Prose Spans           |

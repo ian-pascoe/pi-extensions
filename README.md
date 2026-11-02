@@ -23,6 +23,7 @@ independently or together from this Git repository.
 | [`@ian-pascoe/pi-todo`](packages/pi-todo)                             | Minimal session-native Todo List for agents.                 | `pi install npm:@ian-pascoe/pi-todo`               |
 | [`@ian-pascoe/pi-context-management`](packages/pi-context-management) | Session Notes, History retrieval, and native Rollover.       | `pi install npm:@ian-pascoe/pi-context-management` |
 | [`@ian-pascoe/pi-skills-selector`](packages/pi-skills-selector)       | Native `$skill-name` completion and instruction links.       | `pi install npm:@ian-pascoe/pi-skills-selector`    |
+| [`@ian-pascoe/pi-mcp-selector`](packages/pi-mcp-selector)             | Native `@server` completion and MCP server links.            | `pi install npm:@ian-pascoe/pi-mcp-selector`       |
 | [`@ian-pascoe/pi-advisor`](packages/pi-advisor)                       | Optional background review and attributed corrective advice. | `pi install npm:@ian-pascoe/pi-advisor`            |
 | [`@ian-pascoe/pi-termctrl`](packages/pi-termctrl)                     | Interactive Terminals, Background jobs, and a `/ps` panel.   | `pi install npm:@ian-pascoe/pi-termctrl`           |
 | [`@ian-pascoe/pi-secret`](packages/pi-secret)                         | User-entered credentials kept from the model and transcript. | `pi install npm:@ian-pascoe/pi-secret`             |
@@ -78,6 +79,7 @@ packages/pi-web-tools/src/index.ts
 packages/pi-todo/src/index.ts
 packages/pi-context-management/src/index.ts
 packages/pi-skills-selector/src/index.ts
+packages/pi-mcp-selector/src/index.ts
 packages/pi-advisor/src/index.ts
 packages/pi-termctrl/src/index.ts
 packages/pi-secret/src/index.ts
@@ -99,6 +101,7 @@ packages/pi-web-tools/skills/pi-web-tools/SKILL.md
 packages/pi-todo/skills/pi-todo/SKILL.md
 packages/pi-context-management/skills/pi-context-management/SKILL.md
 packages/pi-skills-selector/skills/pi-skills-selector/SKILL.md
+packages/pi-mcp-selector/skills/pi-mcp-selector/SKILL.md
 packages/pi-advisor/skills/pi-advisor/SKILL.md
 packages/pi-termctrl/skills/pi-termctrl/SKILL.md
 packages/pi-secret/skills/pi-secret/SKILL.md
@@ -127,6 +130,7 @@ pi install git:github.com/ian-pascoe/pi-extensions@<tag-or-commit>
   and hash-verifies it, and its files are not packed or installed with `@ian-pascoe/pi-dap`.
 - Pi Web Tools needs outbound network access. `EXA_API_KEY` and
   `PARALLEL_API_KEY` are optional provider credentials.
+- Pi MCP Selector lists servers from Pi's built-in MCP support (`mcp.json` or an extension's `registerMcpServer()`); a server appears once it is connected with a tool that is not hidden.
 - Pi Context Management's native-checkpoint adapter checks the private runtime members it needs and fails closed when they are missing.
 - Pi Termctrl Terminals need the `termctrl` binary that `@kitlangton/terminal-control`
   installs for macOS and GNU/Linux on arm64 or x64. Elsewhere only the `bash`
@@ -171,6 +175,8 @@ bun run --filter @ian-pascoe/pi-context-management typecheck
 bun run --filter @ian-pascoe/pi-context-management test
 bun run --filter @ian-pascoe/pi-skills-selector typecheck
 bun run --filter @ian-pascoe/pi-skills-selector test
+bun run --filter @ian-pascoe/pi-mcp-selector typecheck
+bun run --filter @ian-pascoe/pi-mcp-selector test
 bun run --filter @ian-pascoe/pi-utils test
 bun run --filter @ian-pascoe/pi-advisor typecheck
 bun run --filter @ian-pascoe/pi-advisor test
