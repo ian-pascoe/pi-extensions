@@ -1,3 +1,10 @@
 [tools]
 node = "22.19.0"
 bun = "1.4.4"
+
+[env]
+# oxlint's type-aware rules run on tsrslint (tsgolint ported to Rust on tsrs) instead of oxlint-tsgolint,
+# until oxc-project/tsrs#378 ships an official backend. oxlint has no setting for its backend; it reads
+# this variable first. Every oxlint run inherits it: the CLI, lint-staged, CI (mise-action) and the
+# oxlint language server Pi starts. See ADR 0011.
+OXLINT_TSGOLINT_PATH = "{{config_root}}/node_modules/.bin/tsrslint"

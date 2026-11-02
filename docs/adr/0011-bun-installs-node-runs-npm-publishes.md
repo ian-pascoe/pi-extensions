@@ -42,7 +42,7 @@ Pi DAP's Supported Adapter test runs against the vscode-js-debug release tarball
 
 ## Typechecker
 
-> **Amended** to record the typechecker (tsrs); see [#499](https://github.com/ian-pascoe/pi-extensions/issues/499) for the pending lint backend.
+> **Amended** to record the typechecker (tsrs), and again to move the type-aware lint rules to tsrslint ([#499](https://github.com/ian-pascoe/pi-extensions/issues/499)).
 
 `tsrs` replaces the `typescript` package as the only source of TypeScript diagnostics, for the `typecheck` and `typecheck:root` tasks and for the language server in `.pi/settings.json` (`bunx --no-install tsrs --lsp --stdio`). It is a Rust port of TypeScript 7 whose `tsrs` binary takes the same `-p` and `--noEmit` flags; the scripts use no other flags, and in particular not `--fast`, which its help text says "may differ from pinned TypeScript behavior". The `pi-utils` `build` script is `tsrs -p tsconfig.build.json`. The evidence is below. The speed and memory figures and the first parity check come from [the research](../research/bun-and-tsrs.md); the swap re-checked parity and the `dist` output and timed the typecheck tasks.
 
@@ -54,11 +54,20 @@ Pi DAP's Supported Adapter test runs against the vscode-js-debug release tarball
 
 The version is pinned exactly, with no caret: its string carries the TypeScript version it ports (`0.20.1-ts7.1.0-beta` ports 7.1.0-beta), so a range could silently change the checker's TypeScript version. Upgrading is a deliberate edit to that line.
 
-`.oxlintrc.json` sets `typeCheck: false` and keeps `typeAware: true`, so oxlint runs the type-aware rules only and `tsrs` is the sole TypeScript gate. The rules still run on `oxlint-tsgolint` 7.0.2005, which is built on TypeScript 7.0.2 while `tsrs` ports 7.1.0-beta, because oxlint 1.90.0 has no setting that selects another backend. They move to `tsrs-lint` once a `tsrs` release ships it (it is on `tsrs` `main` but not in 0.20.1); tracking issue: [#499](https://github.com/ian-pascoe/pi-extensions/issues/499).
+`.oxlintrc.json` sets `typeCheck: false` and keeps `typeAware: true`, so oxlint runs the type-aware rules only and `tsrs` is the sole TypeScript gate.
+
+The type-aware rules run on [tsrslint](https://github.com/maschwenk/tsrslint) (`@maschwenk/tsrslint`, pinned exactly at 0.1.6), a community Rust port of tsgolint 7.0.2005's 61 rules on tsrs, instead of `oxlint-tsgolint`. This is interim: it lasts until [oxc-project/tsrs#378](https://github.com/oxc-project/tsrs/issues/378) ships an official oxlint backend, when the rules move to it ([#499](https://github.com/ian-pascoe/pi-extensions/issues/499)). oxlint 1.90.0 has no setting that selects its backend. It reads the undocumented `OXLINT_TSGOLINT_PATH` before looking for `node_modules/.bin/tsgolint`. `mise.toml` sets that variable under `[env]` to `{{config_root}}/node_modules/.bin/tsrslint`, so the CLI, lint-staged, CI (mise-action exports `[env]` by default) and the oxlint language server Pi starts all inherit it. That path is the package's Node launcher. The launcher `execve`s the platform binary from Bun's isolated store, whose path carries the version. It adds about 35 ms per run. `oxlint-tsgolint` is removed, so a missing variable fails loudly in CI instead of silently falling back.
+
+- **Parity.** With all 61 type-aware rules enabled and `typeCheck: true`, tsgolint 7.0.2005 and tsrslint 0.1.6 reported the same 8,901 diagnostics on this repository: their (file, code, line, column, message) multisets are identical. 34 distinct codes fired.
+- **Speed and memory.** `oxlint` with the repository config, median of 3 on one 8-core Mac: tsgolint 10.3 s at 1,713 MiB process-tree peak RSS, tsrslint 3.6 s at 2,052 MiB (sampled every 0.1 s with `ps`). Peak memory is not lower here; [oxc-project/tsrs#855](https://github.com/oxc-project/tsrs/issues/855) reports that headless memory grows with the number of tsconfig projects.
+- **Platforms.** tsrslint ships binaries for macOS arm64 and Linux x64 and arm64 (glibc) only. Windows and Intel macOS cannot run the type-aware rules.
+- **Version drift.** tsrslint 0.1.6 embeds a tsrs that ports TypeScript 7.1-dev, while the `tsrs` typechecker is 0.20.1 (7.1.0-beta), so printed types in rule messages can still differ slightly from `tsrs` output.
 
 Rejected:
 
-- **Building `tsrs-lint` from source and pointing oxlint at it with `OXLINT_TSGOLINT_PATH`.** It needs a Rust toolchain on every contributor and CI machine, builds an unreleased `main`, and relies on an environment variable that oxlint does not document.
+- **Building `tsrs-lint` from oxc-project/tsrs `main`.** It needs a Rust toolchain on every contributor and CI machine and builds an unreleased commit; tsrslint ships prebuilt npm binaries with provenance.
+- **A wrapper script that sets the variable and runs oxlint.** Every oxlint entry point (scripts, lint-staged, the `.pi/settings.json` language server) would have to call it, whereas `[env]` reaches them all unchanged.
+- **Keeping `oxlint-tsgolint` as a fallback.** A run without mise's environment would silently lint on the old backend.
 - **Keeping `typeCheck: true` as a second checker.** It is redundant, since `tsrs` already matches `tsc`, and it would repeat every TypeScript error in the oxlint output and in the LSP, where oxlint is a second server alongside `tsrs`.
 
 ## Considered Options
@@ -74,4 +83,4 @@ Rejected:
 
 Contributors need Bun and Node 22.19 together, which `mise install` provides. A tool that finds no `node` fails loudly where Bun would otherwise run it. The first `bun install` downloads the fixture, and Pi DAP's tests need network access on a machine that has never fetched it. Releases must go through `bun run publish-packages`, and a post-release `npm view @ian-pascoe/pi-utils exports` confirms the registry metadata names `dist`. Pi Guardian's sensitive paths do not yet include `bunfig.toml`, whose `preload` option runs code; that is follow-up work.
 
-The typechecker was a separate follow-up, replacing `typescript` with `tsrs`, and landed as an amendment (Typechecker, above). Moving the type-aware lint rules to `tsrs-lint` is follow-up work, tracked in [#499](https://github.com/ian-pascoe/pi-extensions/issues/499).
+The typechecker was a separate follow-up, replacing `typescript` with `tsrs`, and landed as an amendment (Typechecker, above). The type-aware lint rules run on tsrslint in the interim, and move to the official tsrs backend when oxc-project/tsrs#378 lands, tracked in [#499](https://github.com/ian-pascoe/pi-extensions/issues/499). Running oxlint outside mise (without `OXLINT_TSGOLINT_PATH`) fails, because the repository installs no `tsgolint`, unless one is on `PATH`.
