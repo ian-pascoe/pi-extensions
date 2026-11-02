@@ -23,9 +23,10 @@ type CatalogueTool = Pick<ToolInfo, "exposure" | "namespace">;
 /** Hyphen and underscore name the same server, since Pi's namespace folds them together. */
 const nameKey = (name: string): string => name.replaceAll("-", "_");
 
-/** The first non-empty line, without Markdown ATX heading markers (`# Executor`, `## Executor ##`). */
+/** An ATX heading line; group 1 is its text without the opening or closing `#`s. */
 const ATX_HEADING = /^#{1,6}(?:\s+(.*?))?(?:\s+#+)?$/u;
 
+/** The first non-empty line, without Markdown ATX heading markers (`# Executor`, `## Executor ##`). */
 const firstLine = (text: string | undefined): string | undefined =>
   text
     ?.split("\n")
