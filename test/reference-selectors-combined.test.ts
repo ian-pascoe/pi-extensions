@@ -1,8 +1,8 @@
 /**
- * Pi Skills Selector (`$`), Pi MCP Selector (`+`), and Pi Issues Selector (`#`) each stack a
+ * Pi Skills Selector (`$`), Pi MCP Selector (`&`), and Pi Issues Selector (`#`) each stack a
  * completion provider over the one below and each rewrites the user's message in an `input`
  * handler. None depends on the others, so any load order is valid; this proves each order still
- * completes `/`, `@file`, `+server`, `$skill`, and `#123`, and converts a message that holds every
+ * completes `/`, `@file`, `&server`, `$skill`, and `#123`, and converts a message that holds every
  * kind of reference without one package damaging another's links.
  *
  * Why this lives at the repository root: see `formatter-lsp-combined-order.test.ts`. The harness
@@ -209,10 +209,10 @@ describe.each(orders.map((order) => [order.join(" → "), order] as const))(
         values: ["@notes.txt"],
         applied: "see @notes.txt ",
       });
-      // Servers have their own `+` trigger, so a file named like a server stays a plain file.
-      expect(await complete(provider, "ask +gi", (item) => item.value === "+github")).toEqual({
-        values: ["+github"],
-        applied: "ask +github ",
+      // Servers have their own `&` trigger, so a file named like a server stays a plain file.
+      expect(await complete(provider, "ask &gi", (item) => item.value === "&github")).toEqual({
+        values: ["&github"],
+        applied: "ask &github ",
       });
       expect(await complete(provider, "see @gi", (item) => item.value === "@github")).toEqual({
         values: ["@github"],
@@ -237,13 +237,15 @@ describe.each(orders.map((order) => [order.join(" → "), order] as const))(
       const provider = await new Host(order).provider();
       for (const line of [
         "mail a@gi",
-        "C++",
-        "a+gi",
+        "R&D",
+        "a&gi",
+        "a && b",
+        "+gi",
         "echo $zzzz",
         "issue#1",
         "`#1`",
         "`@gi`",
-        "`+gi`",
+        "`&gi`",
         "`$re`",
       ]) {
         const suggestions = await provider.getSuggestions([line], 0, line.length, { signal });
@@ -254,16 +256,25 @@ describe.each(orders.map((order) => [order.join(" → "), order] as const))(
 
     test("one message holding every kind of reference converts fully", async () => {
       const converted = await new Host(order).submit(
-        "Use $review with +github to fix #12 and acme/other#1, not `$review` or `#12`.",
+        "Use $review with &github to fix #12 and acme/other#1, not `$review` or `#12`.",
       );
       expect(converted).toBe(
-        'Use [$review](/skills/review/SKILL.md) with [+github](mcp://github "MCP server mcp__github") to fix [#12](https://github.com/acme/widgets/issues/12) and [acme/other#1](https://github.com/acme/other/issues/1), not `$review` or `#12`.',
+        'Use [$review](/skills/review/SKILL.md) with [&github](mcp://github "MCP server mcp__github") to fix [#12](https://github.com/acme/widgets/issues/12) and [acme/other#1](https://github.com/acme/other/issues/1), not `$review` or `#12`.',
       );
+    });
+
+    test("a server reference and an issue reference convert independently", async () => {
+      const host = new Host(order);
+      expect(await host.submit("&github and #12")).toBe(
+        '[&github](mcp://github "MCP server mcp__github") and [#12](https://github.com/acme/widgets/issues/12)',
+      );
+      // `&` excludes issue numbers: `&#123` is an entity shape, not a server or an issue.
+      expect(await host.submit("&#123 and R&D")).toBe("&#123 and R&D");
     });
 
     test("converting is idempotent across the selectors", async () => {
       const host = new Host(order);
-      const once = await host.submit("Use $review, +github, #12 and acme/other#1.");
+      const once = await host.submit("Use $review, &github, #12 and acme/other#1.");
       expect(await host.submit(once)).toBe(once);
     });
   },

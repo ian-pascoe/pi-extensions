@@ -57,5 +57,5 @@ A run of user-message Markdown that reads as plain text, outside code, existing 
 _Avoid_: Plain-text region, non-code text
 
 **Reference Sigil**:
-The character that opens a reference shorthand: `$` for a Skill, `+` for an MCP server, `#` for an issue. It opens completion and conversion only at a token boundary in a Prose Span.
+The character that opens a reference shorthand: `$` for a Skill, `&` for an MCP server, `#` for an issue. It opens completion and conversion only at a token boundary in a Prose Span.
 _Avoid_: Trigger character
