@@ -12,9 +12,10 @@ This is the release procedure. Migration implementation publishes nothing.
   otherwise leaves an in-range consumer unreleased. The Changesets config sets
   `___experimentalUnsafeOptions_WILL_CHANGE_IN_PATCH.updateInternalDependents`
   to `always` for this; recheck the option name when upgrading Changesets.
-- `@ian-pascoe/pi-skills-selector` and `@ian-pascoe/pi-mcp-selector` consume
-  `@ian-pascoe/pi-utils/prose-references` as a regular dependency, so each is
-  patch-bumped on every pi-utils release like any other consumer.
+- `@ian-pascoe/pi-skills-selector`, `@ian-pascoe/pi-mcp-selector`, and
+  `@ian-pascoe/pi-issues-selector` consume `@ian-pascoe/pi-utils/prose-references`
+  as a regular dependency, so each is patch-bumped on every pi-utils release like
+  any other consumer.
 - `pi-adaptive-thinking`, `pi-byterover`, `@ian-pascoe/pi-codemode`,
   `@ian-pascoe/pi-mcp`, and `@ian-pascoe/pi-git-status-widget` are retired. They remain on npm only as deprecated
   historical artifacts and must not return to release automation.
@@ -27,7 +28,8 @@ This is the release procedure. Migration implementation publishes nothing.
   `@ian-pascoe/pi-codemode`, `@ian-pascoe/pi-mcp`,
   and `@ian-pascoe/pi-utils` bootstrap manually at `0.1.0`;
   `@ian-pascoe/pi-todo`, `@ian-pascoe/pi-web-tools`, `@ian-pascoe/pi-termctrl`,
-  `@ian-pascoe/pi-command-deck`, and `@ian-pascoe/pi-mcp-selector` bootstrap manually at `0.0.0`. The manual
+  `@ian-pascoe/pi-command-deck`, `@ian-pascoe/pi-mcp-selector`, and
+  `@ian-pascoe/pi-issues-selector` bootstrap manually at `0.0.0`. The manual
   bootstrap publish needs no Changeset, but the implementation PR still adds a
   `minor` Changeset for the new package; its version PR releases `0.1.0`
   through the trusted-publishing workflow.
@@ -164,6 +166,22 @@ npm deprecate @ian-pascoe/pi-mcp-selector@0.0.0 "Name reservation only; it canno
 
 Skip the deprecation when the pi-utils release that adds `prose-references` is already
 published and the placeholder loads.
+
+## Pi Issues Selector bootstrap
+
+Bootstrap `@ian-pascoe/pi-issues-selector` the same way as Guardian: after the
+implementation PR merges, publish `@ian-pascoe/pi-issues-selector@0.0.0` from
+`packages/pi-issues-selector` with `npm publish --access public --provenance=false`
+after the release gates pass, and configure its trusted publisher as for Advisor.
+The placeholder cannot load, because it imports the `prose-references` export that
+the pending `@ian-pascoe/pi-utils` minor release adds (including the `qualifier`,
+`excludeBefore`, and asynchronous `suggest` options it uses), while its manifest range
+still names the current pi-utils version. Its `minor` Changeset releases the usable
+`0.1.0` in the version PR that releases pi-utils. Then deprecate the placeholder:
+
+```bash
+npm deprecate @ian-pascoe/pi-issues-selector@0.0.0 "Name reservation only; it cannot load. Install 0.1.0 or later."
+```
 
 ## Trusted publishing and guarded automation
 

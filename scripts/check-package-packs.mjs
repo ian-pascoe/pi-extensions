@@ -72,8 +72,8 @@ async function discoverWorkspaceManifests() {
   }
   manifests.sort((left, right) => left.manifest.name.localeCompare(right.manifest.name));
   assertPackCondition(
-    manifests.length === 18,
-    `expected 18 workspace manifests, found ${manifests.length}`,
+    manifests.length === 19,
+    `expected 19 workspace manifests, found ${manifests.length}`,
   );
   return manifests;
 }
@@ -393,5 +393,5 @@ try {
 }
 
 console.log(
-  "Validated eighteen package tarballs, seventeen source entrypoints, package skills, and the shared utility.",
+  "Validated nineteen package tarballs, eighteen source entrypoints, package skills, and the shared utility.",
 );
