@@ -139,7 +139,14 @@ function assertSigil(sigil: string): void {
 }
 
 // Sigils and excluded characters sit in character classes below, so escape them for that context.
-const classSigil = (characters: string): string => characters.replace(/[\\\]^-]/g, "\\$&");
+const escapeForClass = (characters: string): string => characters.replace(/[\\\]^-]/g, "\\$&");
+
+/**
+ * The body of a character class for what may not touch a token: letters, marks, digits, the
+ * sigil, `/`, `-`, `excludeBefore`, and any `extra` regular-expression class members.
+ */
+const boundaryClass = (sigil: string, excludeBefore: string, extra = ""): string =>
+  `\\p{L}\\p{M}\\p{N}${escapeForClass(sigil)}${escapeForClass(excludeBefore)}/\\-${extra}`;
 
 function matchesReferenceSource(
   text: string,
@@ -150,14 +157,11 @@ function matchesReferenceSource(
 ): boolean {
   const end = start + reference.length;
   const before = text.slice(0, start);
-  const sigilClass = classSigil(sigil);
   return (
     text.slice(start, end) === reference &&
-    !new RegExp(`[\\p{L}\\p{M}\\p{N}${sigilClass}${classSigil(excludeBefore)}/-]$`, "u").test(
-      before,
-    ) &&
+    !new RegExp(`[${boundaryClass(sigil, excludeBefore)}]$`, "u").test(before) &&
     !/(?<!\\)(?:\\\\)*\\_$/u.test(before) &&
-    !new RegExp(`^\\\\[_${sigilClass}/-]`, "u").test(text.slice(end))
+    !new RegExp(`^\\\\[_${escapeForClass(sigil)}/-]`, "u").test(text.slice(end))
   );
 }
 
@@ -196,10 +200,9 @@ export function replaceProseReferences(text: string, options: ProseReferenceRepl
   const { sigil, name, qualifier, resolve } = options;
   const excludeBefore = options.excludeBefore ?? "";
   assertSigil(sigil);
-  const sigilClass = classSigil(sigil);
   const qualifierPattern = qualifier === undefined ? "" : `(?:(?<qualifier>${qualifier}))?`;
   const referencePattern = new RegExp(
-    `(?<![\\p{L}\\p{M}\\p{N}_${sigilClass}${classSigil(excludeBefore)}/+-])${qualifierPattern}${escapeRegex(sigil)}(?<name>${name})(?![\\p{L}\\p{M}\\p{N}_${sigilClass}/+-]|\\.[\\p{L}\\p{M}\\p{N}_])`,
+    `(?<![${boundaryClass(sigil, excludeBefore, "_+")}])${qualifierPattern}${escapeRegex(sigil)}(?<name>${name})(?![${boundaryClass(sigil, "", "_+")}]|\\.[\\p{L}\\p{M}\\p{N}_])`,
     "gu",
   );
   let result = "";
@@ -243,9 +246,8 @@ export function findProseReferencePrefix(
   const { sigil, partialName } = grammar;
   const excludeBefore = grammar.excludeBefore ?? "";
   assertSigil(sigil);
-  const sigilClass = classSigil(sigil);
   const prefixPattern = new RegExp(
-    `(?<![\\p{L}\\p{M}\\p{N}_${sigilClass}${classSigil(excludeBefore)}/-])${escapeRegex(sigil)}(?:${partialName})$`,
+    `(?<![${boundaryClass(sigil, excludeBefore, "_")}])${escapeRegex(sigil)}(?:${partialName})$`,
     "u",
   );
   for (const span of proseSpans(text)) {
