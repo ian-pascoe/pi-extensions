@@ -74,8 +74,8 @@ does not matter, and neither does whether `codemode` is active.
   start with it first).
 - The popup appears only for an unquoted `&name` in prose, and only when a server
   matches. `&` is plain text in Markdown, so a lone `&` at the start of a line
-  opens the popup too. An HTML entity such as `&amp;` is complete as written, so
-  it never opens or converts to a server reference.
+  opens the popup too. While you type an HTML entity such as `&amp;` the popup
+  may list matching servers, and it closes at `;`; the entity never converts.
 
 Pi's editor opens the popup by itself only for `@`, `#`, and the characters the
 outermost autocomplete provider lists in `triggerCharacters`. If another extension

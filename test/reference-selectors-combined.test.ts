@@ -268,7 +268,7 @@ describe.each(orders.map((order) => [order.join(" → "), order] as const))(
       expect(await host.submit("&github and #12")).toBe(
         '[&github](mcp://github "MCP server mcp__github") and [#12](https://github.com/acme/widgets/issues/12)',
       );
-      // `&` excludes issue numbers: `&#123` is an entity shape, not a server or an issue.
+      // `&#123` is neither: pi-issues-selector excludes `&` before `#`, and `#` is not a server name character.
       expect(await host.submit("&#123 and R&D")).toBe("&#123 and R&D");
     });
 

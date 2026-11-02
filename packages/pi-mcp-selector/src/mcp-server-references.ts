@@ -85,7 +85,7 @@ const escapeRegex = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g
 /**
  * Converts `&server` shorthand for a catalogue server into `[&server](mcp://server "MCP server
  * mcp__server")` inside Prose Spans. Unknown names, code, links, and names that run into a path,
- * domain, or `name:text` stay literal.
+ * domain, `name:text`, or `;` (an HTML entity such as `&amp;`) stay literal.
  */
 export function transformMcpServerReferences(text: string, servers: readonly McpServer[]): string {
   const catalogue = new Map(servers.map((server) => [nameKey(server.name), server]));

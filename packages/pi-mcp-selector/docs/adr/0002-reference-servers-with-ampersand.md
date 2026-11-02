@@ -17,4 +17,4 @@ Sharing `@` failed in practice. `@ff-labs/pi-fff` (0.11.0) wraps the autocomplet
 
 - Breaking: `@github` no longer converts, and `@` no longer lists servers. A file named like a server is no longer rewritten to `@./name`.
 - Pi opens the popup by itself after `&` only while the outermost provider declares `&` in `triggerCharacters`. An extension that wraps ours without forwarding `triggerCharacters` (pi-fff 0.11.0 does not) hides it, so the user presses Tab after `&` to open the popup.
-- `&name;` never converts, so a server reference directly followed by a semicolon stays literal; add a space or other punctuation.
+- `&name;` never converts, so a server reference directly followed by a semicolon stays literal; add a space or other punctuation. Refusing every `;` is simpler and more predictable than matching the HTML5 named-entity list. The lookahead is a stopgap: Prose Spans from `@ian-pascoe/pi-utils/prose-references` include entity source as text, and if they stop doing so, the lookahead can go.
