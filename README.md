@@ -23,7 +23,7 @@ independently or together from this Git repository.
 | [`@ian-pascoe/pi-todo`](packages/pi-todo)                             | Minimal session-native Todo List for agents.                 | `pi install npm:@ian-pascoe/pi-todo`               |
 | [`@ian-pascoe/pi-context-management`](packages/pi-context-management) | Session Notes, History retrieval, and native Rollover.       | `pi install npm:@ian-pascoe/pi-context-management` |
 | [`@ian-pascoe/pi-skills-selector`](packages/pi-skills-selector)       | Native `$skill-name` completion and instruction links.       | `pi install npm:@ian-pascoe/pi-skills-selector`    |
-| [`@ian-pascoe/pi-mcp-selector`](packages/pi-mcp-selector)             | `+server` completion and MCP server links.                   | `pi install npm:@ian-pascoe/pi-mcp-selector`       |
+| [`@ian-pascoe/pi-mcp-selector`](packages/pi-mcp-selector)             | Native `+server` completion and MCP server links.            | `pi install npm:@ian-pascoe/pi-mcp-selector`       |
 | [`@ian-pascoe/pi-issues-selector`](packages/pi-issues-selector)       | Native `#123` completion and GitHub issue links.             | `pi install npm:@ian-pascoe/pi-issues-selector`    |
 | [`@ian-pascoe/pi-advisor`](packages/pi-advisor)                       | Optional background review and attributed corrective advice. | `pi install npm:@ian-pascoe/pi-advisor`            |
 | [`@ian-pascoe/pi-termctrl`](packages/pi-termctrl)                     | Interactive Terminals, Background jobs, and a `/ps` panel.   | `pi install npm:@ian-pascoe/pi-termctrl`           |

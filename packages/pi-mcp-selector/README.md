@@ -10,7 +10,7 @@ pi install npm:@ian-pascoe/pi-mcp-selector
 ```
 
 Requires Pi `>=1.1.0` and Node `>=22.19.0`. There are no settings or extra tools.
-Prose Span detection comes from
+Prose Span detection and the completion popup stack come from
 [`@ian-pascoe/pi-utils/prose-references`](../pi-utils/README.md#prose-references).
 
 ## Submission
@@ -47,7 +47,7 @@ is safe, so submitting converted text again changes nothing.
 ## The MCP Server Catalogue
 
 Both the popup and conversion read Pi's current tools, fresh on every popup and
-every submission. A server is in the catalogue when it is enabled, connected, and
+every submission. A server is in the Catalogue when it is enabled, connected, and
 has at least one tool that is not `hidden`, whether it comes from `mcp.json` or an
 extension's `registerMcpServer()`. Its exposure (`codemode`, `deferred`, `direct`)
 does not matter, and neither does whether `codemode` is active.
@@ -57,11 +57,11 @@ does not matter, and neither does whether `codemode` is active.
   absent and its `+name` stays literal, silently. In `pi -p`, the first prompt's
   reference usually stays literal while servers connect.
 - The popup describes each server as `MCP server · <description>`, using the
-  configured `description` or the first line of the server's instructions (a
-  leading Markdown heading marker such as `# ` is dropped), or just `MCP server`
+  configured `description` or the first line of the server's instructions
+  (without Markdown heading markers such as `# `), or just `MCP server`
   without either.
 
-## Popup trigger
+## Completion popup
 
 `+` has its own popup, like `$skill` and `#123` in the sibling selectors:
 
@@ -72,11 +72,11 @@ does not matter, and neither does whether `codemode` is active.
   matches. A lone `+` at the start of a line is a Markdown list marker, so type a
   name character first (`+g`).
 
-Pi's editor opens the popup by itself only for `@`, `#`, and the trigger
-characters the outermost autocomplete provider declares. If another extension
-wraps the provider without forwarding `triggerCharacters` (`@ff-labs/pi-fff`
-currently does not), press Tab after `+` to open it. See
-[ADR 0002](docs/adr/0002-plus-sigil.md) for why `+` and not `@`.
+Pi's editor opens the popup by itself only for `@`, `#`, and the characters the
+outermost autocomplete provider lists in `triggerCharacters`. If another extension
+wraps the provider without forwarding `triggerCharacters` (`@ff-labs/pi-fff` 0.11.0
+does not), press Tab after `+` to open it. See
+[ADR 0002](docs/adr/0002-reference-servers-with-plus.md) for why `+` and not `@`.
 
 ## Integration
 
@@ -95,8 +95,8 @@ too.
 - **No link:** check the exact case-sensitive name (`-` and `_` match either way),
   and whether the reference is escaped, in code, inside a link, or followed by `/`,
   `.name`, or `:text`.
-- **`+` opens nothing:** press Tab after `+` (see Popup trigger), and check the
-  server is in the catalogue.
+- **`+` opens nothing:** press Tab after `+` (see Completion popup), and check the
+  server is in the Catalogue.
 - **Pi older than 1.2.0:** servers are named after their namespace (`dev_radius`),
   not the configured name; `-` and `_` still match either way.
 - **The model did not use the server:** inspect the submitted user message first.

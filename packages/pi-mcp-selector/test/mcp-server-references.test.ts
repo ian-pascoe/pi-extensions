@@ -82,12 +82,16 @@ describe("MCP Server Catalogue", () => {
         tool("mcp__b", "codemode", { description: "### Foo" }),
         tool("mcp__c", "codemode", { instructions: "#\n## \n  ## Third  \nmore" }),
         tool("mcp__d", "codemode", { description: "#hashtag" }),
+        tool("mcp__e", "codemode", { instructions: "## Executor ##" }),
+        tool("mcp__f", "codemode", { description: "Use # and C#" }),
       ]),
     ).toEqual([
       { name: "a", namespace: "mcp__a", description: "Executor" },
       { name: "b", namespace: "mcp__b", description: "Foo" },
       { name: "c", namespace: "mcp__c", description: "Third" },
       { name: "d", namespace: "mcp__d", description: "#hashtag" },
+      { name: "e", namespace: "mcp__e", description: "Executor" },
+      { name: "f", namespace: "mcp__f", description: "Use # and C#" },
     ]);
   });
 
@@ -171,6 +175,8 @@ describe("MCP Server Reference conversion", () => {
     "+ item\n+ github\n+ git",
     "[see +github](https://example.com)",
     "+dev.radius",
+    "@github",
+    "Ask @github and @git",
   ])("leaves %j literal", (text) => {
     expect(transformMcpServerReferences(text, servers)).toBe(text);
   });

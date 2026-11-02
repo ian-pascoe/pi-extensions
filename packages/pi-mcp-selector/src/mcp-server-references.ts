@@ -21,18 +21,19 @@ const SERVER_NAME = /^[A-Za-z0-9_-]+$/u;
 type CatalogueTool = Pick<ToolInfo, "exposure" | "namespace">;
 
 /** Hyphen and underscore name the same server, since Pi's namespace folds them together. */
-export const nameKey = (name: string): string => name.replaceAll("-", "_");
+const nameKey = (name: string): string => name.replaceAll("-", "_");
 
-/** The first non-empty line, without a leading Markdown ATX heading marker (`# Executor`). */
+/** The first non-empty line, without Markdown ATX heading markers (`# Executor`, `## Executor ##`). */
+const ATX_HEADING = /^#{1,6}(?:\s+(.*?))?(?:\s+#+)?$/u;
+
 const firstLine = (text: string | undefined): string | undefined =>
   text
     ?.split("\n")
-    .map((line) =>
-      line
-        .trim()
-        .replace(/^#{1,6}(?:\s+|$)/u, "")
-        .trim(),
-    )
+    .map((line) => {
+      const trimmed = line.trim();
+      const heading = ATX_HEADING.exec(trimmed);
+      return heading === null ? trimmed : (heading[1] ?? "").trim();
+    })
     .find((line) => line !== "");
 
 /**

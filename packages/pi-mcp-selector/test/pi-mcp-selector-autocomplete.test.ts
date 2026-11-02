@@ -95,14 +95,6 @@ describe("Pi MCP Selector autocomplete", () => {
     ).toEqual(["MCP server · Does a", "MCP server · First line", "MCP server"]);
   });
 
-  test("describes a server without a Markdown heading marker", async () => {
-    const { provider } = await setup(new NativeProvider(), [
-      mcpTool({ name: "executor", instructions: "# Executor\nRuns code." }),
-    ]);
-    const result = await provider.getSuggestions(["Use +"], 0, 5, options());
-    expect(result?.items[0]?.description).toBe("MCP server · Executor");
-  });
-
   test("a lone + at the start of a line is a Markdown list marker, so the popup waits for a name", async () => {
     const { provider } = await setup();
     expect(await provider.getSuggestions(["+"], 0, 1, options())).toBeNull();
