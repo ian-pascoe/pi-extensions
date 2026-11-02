@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { findIssueHost, GITHUB } from "../src/github-host.js";
+import { findIssueHost, GITHUB, type IssueHost } from "../src/github-host.js";
+import type { HostEnvironment, ReadText } from "../src/github-host.js";
 import type { RunCommand } from "../src/issue-repository.js";
 
 const repository = { host: "github.com", owner: "acme", repo: "widgets" };
@@ -9,22 +10,55 @@ const reply =
   async () => ({ stdout, stderr, code, killed });
 
 describe("findIssueHost", () => {
+  const configuredOf =
+    (...hosts: string[]) =>
+    async () =>
+      new Map([[GITHUB, new Set(hosts)]]);
+  const never = async () => {
+    throw new Error("the configured hosts must not be read");
+  };
+
   test.each([
     ["github.com", "github.com"],
     ["GitHub.com", "github.com"],
     ["ssh.github.com", "github.com"],
     ["octo.ghe.com", "octo.ghe.com"],
     ["a.b.ghe.com", "a.b.ghe.com"],
-  ])("%s is served as %s", (host, canonical) => {
-    expect(findIssueHost(host)).toEqual({ adapter: GITHUB, host: canonical });
+  ])("%s is served as %s without reading the configured hosts", async (host, canonical) => {
+    expect(await findIssueHost(host, never)).toEqual({ adapter: GITHUB, host: canonical });
   });
 
   test.each(["gitlab.com", "ghe.com", "gh-work", "github.com.evil.example", "xghe.com", ""])(
     "%j is not served",
-    (host) => {
-      expect(findIssueHost(host)).toBeUndefined();
+    async (host) => {
+      expect(await findIssueHost(host, configuredOf("github.corp.example"))).toBeUndefined();
     },
   );
+
+  test("a configured host is served by the adapter that lists it, compared case-insensitively", async () => {
+    expect(await findIssueHost("github.corp.example", configuredOf("github.corp.example"))).toEqual(
+      {
+        adapter: GITHUB,
+        host: "github.corp.example",
+      },
+    );
+    expect(await findIssueHost("GitHub.Corp.Example", configuredOf("github.corp.example"))).toEqual(
+      {
+        adapter: GITHUB,
+        host: "github.corp.example",
+      },
+    );
+  });
+
+  test("a host that more than one adapter claims is not served", async () => {
+    const other: IssueHost = { ...GITHUB };
+    const both = async () =>
+      new Map([
+        [GITHUB, new Set(["shared.example"])],
+        [other, new Set(["shared.example"])],
+      ]);
+    expect(await findIssueHost("shared.example", both)).toBeUndefined();
+  });
 });
 
 describe("GitHub issue URLs", () => {
@@ -137,5 +171,156 @@ describe("GitHub recent issues", () => {
       ok: false,
       reason: "unavailable",
     });
+  });
+});
+
+describe("GitHub configured hosts", () => {
+  const environment = (
+    env: Record<string, string | undefined>,
+    platform = "darwin",
+  ): HostEnvironment => ({
+    env,
+    platform,
+    homedir: platform === "win32" ? "C:\\Users\\me" : "/home/me",
+  });
+  const reads = (files: Record<string, string>) => {
+    const paths: string[] = [];
+    return {
+      paths,
+      readText: (async (path) => {
+        paths.push(path);
+        return files[path];
+      }) satisfies ReadText,
+    };
+  };
+  const hostsOf = async (
+    env: Record<string, string | undefined>,
+    files: Record<string, string> = {},
+    platform = "darwin",
+  ): Promise<string[]> =>
+    [...(await GITHUB.configuredHosts(environment(env, platform), reads(files).readText))].sort();
+
+  test.each([
+    [
+      "GH_CONFIG_DIR wins over everything",
+      { GH_CONFIG_DIR: "/cfg", XDG_CONFIG_HOME: "/xdg", APPDATA: "C:\\App" },
+      "linux",
+      "/cfg/hosts.yml",
+    ],
+    [
+      "XDG_CONFIG_HOME/gh next",
+      { XDG_CONFIG_HOME: "/xdg", APPDATA: "C:\\App" },
+      "linux",
+      "/xdg/gh/hosts.yml",
+    ],
+    [
+      "APPDATA/GitHub CLI on Windows",
+      { APPDATA: "C:\\App" },
+      "win32",
+      "C:\\App\\GitHub CLI\\hosts.yml",
+    ],
+    [
+      "XDG_CONFIG_HOME beats APPDATA on Windows",
+      { XDG_CONFIG_HOME: "D:\\xdg", APPDATA: "C:\\App" },
+      "win32",
+      "D:\\xdg\\gh\\hosts.yml",
+    ],
+    ["GH_CONFIG_DIR on Windows", { GH_CONFIG_DIR: "D:\\gh" }, "win32", "D:\\gh\\hosts.yml"],
+    [
+      "APPDATA is ignored off Windows",
+      { APPDATA: "/app" },
+      "darwin",
+      "/home/me/.config/gh/hosts.yml",
+    ],
+    ["the home fallback", {}, "linux", "/home/me/.config/gh/hosts.yml"],
+    ["the home fallback on macOS", {}, "darwin", "/home/me/.config/gh/hosts.yml"],
+    ["the home fallback on Windows", {}, "win32", "C:\\Users\\me\\.config\\gh\\hosts.yml"],
+    [
+      "empty values count as unset",
+      { GH_CONFIG_DIR: "", XDG_CONFIG_HOME: "", APPDATA: "" },
+      "win32",
+      "C:\\Users\\me\\.config\\gh\\hosts.yml",
+    ],
+    [
+      "undefined values count as unset",
+      { GH_CONFIG_DIR: undefined, XDG_CONFIG_HOME: "/xdg" },
+      "linux",
+      "/xdg/gh/hosts.yml",
+    ],
+  ])("reads %s", async (_name, env, platform, expected) => {
+    const { readText, paths } = reads({});
+    await GITHUB.configuredHosts(environment(env, platform), readText);
+    expect(paths).toEqual([expected]);
+  });
+
+  test("lists the top-level keys of hosts.yml, lower-cased", async () => {
+    const file = "/home/me/.config/gh/hosts.yml";
+    expect(
+      await hostsOf(
+        {},
+        {
+          [file]:
+            "github.com:\n  user: me\nGitHub.Corp.Example:\n  user: me\n  git_protocol: ssh\n",
+        },
+      ),
+    ).toEqual(["github.com", "github.corp.example"]);
+  });
+
+  test("recognises a keyring-style hosts.yml, which holds no token", async () => {
+    const file = "/home/me/.config/gh/hosts.yml";
+    const keyring = [
+      "github.corp.example:",
+      "    git_protocol: https",
+      "    users:",
+      "        me:",
+      "    user: me",
+      "",
+    ].join("\n");
+    expect(await hostsOf({}, { [file]: keyring })).toEqual(["github.corp.example"]);
+  });
+
+  test("never reads values: a nested key is not a host", async () => {
+    const file = "/home/me/.config/gh/hosts.yml";
+    expect(
+      await hostsOf({}, { [file]: "github.corp.example:\n  users:\n    other.example:\n" }),
+    ).toEqual(["github.corp.example"]);
+  });
+
+  test("a missing, empty, malformed, or non-mapping file yields no hosts, without throwing", async () => {
+    const file = "/home/me/.config/gh/hosts.yml";
+    expect(await hostsOf({})).toEqual([]);
+    for (const text of [
+      "",
+      "# only a comment\n",
+      "a: [unclosed\n  b: : :\n",
+      "- a\n- b\n",
+      "just text",
+    ]) {
+      expect(await hostsOf({}, { [file]: text })).toEqual([]);
+    }
+    const failing: ReadText = async () => {
+      throw new Error("EACCES");
+    };
+    expect(await GITHUB.configuredHosts(environment({}), failing)).toEqual(new Set());
+  });
+
+  test("a non-empty GH_HOST adds its host, with or without hosts.yml", async () => {
+    expect(await hostsOf({ GH_HOST: "GitHub.Corp.Example" })).toEqual(["github.corp.example"]);
+    const file = "/home/me/.config/gh/hosts.yml";
+    expect(await hostsOf({ GH_HOST: "b.example" }, { [file]: "a.example:\n  user: me\n" })).toEqual(
+      ["a.example", "b.example"],
+    );
+    expect(await hostsOf({ GH_HOST: "" })).toEqual([]);
+  });
+
+  test("tokens add nothing beyond the built-in github.com", async () => {
+    expect(
+      await hostsOf({
+        GH_TOKEN: "x",
+        GITHUB_TOKEN: "x",
+        GH_ENTERPRISE_TOKEN: "x",
+        GITHUB_ENTERPRISE_TOKEN: "x",
+      }),
+    ).toEqual([]);
   });
 });

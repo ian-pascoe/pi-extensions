@@ -9,7 +9,10 @@ import type {
   SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import { CombinedAutocompleteProvider, type AutocompleteProvider } from "@earendil-works/pi-tui";
-import { describe, expect, test } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import issuesSelectorExtension from "../src/index.js";
 
 type Handler = (
@@ -22,6 +25,21 @@ interface Call {
   args: string[];
   options: ExecOptions | undefined;
 }
+
+// gh's configuration is read from the real environment, so each test gets an empty config directory
+// and no GH_HOST, and a test that signs in to a host writes its hosts.yml there.
+let ghConfigDir = "";
+beforeEach(async () => {
+  ghConfigDir = await mkdtemp(join(tmpdir(), "pi-issues-gh-config-"));
+  vi.stubEnv("GH_CONFIG_DIR", ghConfigDir);
+  vi.stubEnv("GH_HOST", "");
+});
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  await rm(ghConfigDir, { recursive: true, force: true });
+});
+const signInTo = (host: string) =>
+  writeFile(join(ghConfigDir, "hosts.yml"), `${host}:\n    git_protocol: https\n    user: me\n`);
 
 const ACME = "remote.origin.url git@github.com:acme/widgets.git\n";
 interface IssueExtras {
@@ -225,6 +243,37 @@ describe("Pi Issues Selector popup", () => {
     expect(harness.ghCalls).toHaveLength(0);
   });
 
+  test("lists a GitHub Enterprise Server repository through gh on its host", async () => {
+    await signInTo("github.corp.example");
+    const harness = new IssuesSelectorHarness();
+    harness.remotes = "remote.origin.url https://github.corp.example/acme/widgets.git\n";
+    const provider = await harness.provider();
+    expect((await suggest(provider, "see #3"))?.items[0]?.value).toBe("#3");
+    expect(harness.ghCalls.map((call) => call.args)).toEqual([
+      [
+        "api",
+        "--hostname",
+        "github.corp.example",
+        "repos/acme/widgets/issues?state=all&sort=updated&per_page=100",
+      ],
+    ]);
+  });
+
+  test("lists a host named by GH_HOST without any hosts.yml", async () => {
+    vi.stubEnv("GH_HOST", "github.corp.example");
+    const harness = new IssuesSelectorHarness();
+    harness.remotes = "remote.origin.url git@github.corp.example:acme/widgets.git\n";
+    expect(await suggest(await harness.provider(), "see #")).not.toBeNull();
+    expect(harness.ghCalls[0]?.args.slice(1, 3)).toEqual(["--hostname", "github.corp.example"]);
+  });
+
+  test("shows nothing for a host gh is not signed in to", async () => {
+    const harness = new IssuesSelectorHarness();
+    harness.remotes = "remote.origin.url https://github.corp.example/acme/widgets.git\n";
+    expect(await suggest(await harness.provider(), "see #")).toBeNull();
+    expect(harness.ghCalls).toHaveLength(0);
+  });
+
   test("returns nothing for a cancelled request without waiting for gh", async () => {
     const harness = new IssuesSelectorHarness();
     let release: () => void = () => undefined;
@@ -407,6 +456,25 @@ describe("Pi Issues Selector input", () => {
     });
     harness.remotes = "remote.origin.url git@gitlab.com:acme/widgets.git\n";
     expect(await submit(harness, "See #1 and acme/other#2")).toEqual({ action: "continue" });
+  });
+
+  test("converts on a GitHub Enterprise Server host gh is signed in to, as soon as it is", async () => {
+    const harness = new IssuesSelectorHarness();
+    harness.remotes = "remote.origin.url https://github.corp.example/acme/widgets.git\n";
+    expect(await submit(harness, "Fix #12")).toEqual({ action: "continue" });
+    await signInTo("github.corp.example");
+    expect(await submit(harness, "Fix #12")).toEqual({
+      action: "transform",
+      text: "Fix [#12](https://github.corp.example/acme/widgets/issues/12)",
+    });
+  });
+
+  test("a malformed hosts.yml is silent: references stay literal and nothing is shown", async () => {
+    await writeFile(join(ghConfigDir, "hosts.yml"), "a: [unclosed\n  : : :\n");
+    const harness = new IssuesSelectorHarness();
+    harness.remotes = "remote.origin.url https://github.corp.example/acme/widgets.git\n";
+    expect(await submit(harness, "Fix #12")).toEqual({ action: "continue" });
+    expect(harness.notices).toEqual([]);
   });
 
   test("treats a failing git like a missing repository", async () => {
