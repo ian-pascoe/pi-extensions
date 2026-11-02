@@ -75,6 +75,22 @@ describe("MCP Server Catalogue", () => {
     ]);
   });
 
+  test("strips a leading Markdown heading marker from the description", () => {
+    expect(
+      getMcpServerCatalogue([
+        tool("mcp__a", "codemode", { instructions: "# Executor\nRuns code." }),
+        tool("mcp__b", "codemode", { description: "### Foo" }),
+        tool("mcp__c", "codemode", { instructions: "#\n## \n  ## Third  \nmore" }),
+        tool("mcp__d", "codemode", { description: "#hashtag" }),
+      ]),
+    ).toEqual([
+      { name: "a", namespace: "mcp__a", description: "Executor" },
+      { name: "b", namespace: "mcp__b", description: "Foo" },
+      { name: "c", namespace: "mcp__c", description: "Third" },
+      { name: "d", namespace: "mcp__d", description: "#hashtag" },
+    ]);
+  });
+
   test("skips namespaces whose names cannot be written as a reference", () => {
     expect(getMcpServerCatalogue([tool("mcp__", "direct"), tool("mcp__a.b", "direct")])).toEqual(
       [],
@@ -106,74 +122,83 @@ describe("MCP server matching", () => {
 
 describe("MCP Server Reference conversion", () => {
   test("converts known names to links naming the server and its Pi namespace", () => {
-    expect(transformMcpServerReferences("Use @github and @git.", servers)).toBe(
-      `Use ${link("@github", "github", "mcp__github")} and ${link("@git", "git", "mcp__git")}.`,
+    expect(transformMcpServerReferences("Use +github and +git.", servers)).toBe(
+      `Use ${link("+github", "github", "mcp__github")} and ${link("+git", "git", "mcp__git")}.`,
     );
   });
 
   test("treats hyphen and underscore as one character, keeping the typed text", () => {
-    expect(transformMcpServerReferences("@dev_radius @dev-radius", servers)).toBe(
-      `${link("@dev_radius", "dev-radius", "mcp__dev_radius")} ${link("@dev-radius", "dev-radius", "mcp__dev_radius")}`,
+    expect(transformMcpServerReferences("+dev_radius +dev-radius", servers)).toBe(
+      `${link("+dev_radius", "dev-radius", "mcp__dev_radius")} ${link("+dev-radius", "dev-radius", "mcp__dev_radius")}`,
     );
   });
 
   test.each([
-    ["Ask @github's tools", "'s"],
-    ["Ask @github.", "."],
-    ["Ask (@github)", ")"],
-    ["Ask @github, please", ","],
-    ["Ask @github: list issues", ": "],
-    ["Ask @github:", ":"],
-    ["Ask\n@github\nnow", "\nnow"],
+    ["Ask +github's tools", "'s"],
+    ["Ask +github.", "."],
+    ["Ask (+github)", ")"],
+    ["Ask +github, please", ","],
+    ["Ask +github: list issues", ": "],
+    ["Ask +github:", ":"],
+    ["Ask\n+github\nnow", "\nnow"],
   ])("converts %j", (text) => {
     expect(transformMcpServerReferences(text, servers)).toContain("](mcp://github ");
   });
 
   test.each([
-    "foo@github",
-    "@@github",
-    "@github.com",
-    "@github/x",
-    "@github:res",
-    "@gith",
-    "@githubs",
-    "@github_x",
-    "@github-x",
-    "@Github",
-    "@GITHUB",
-    "\\@github",
-    "`@github`",
-    "```\n@github\n```",
-    "[@github](https://example.com)",
+    "foo+github",
+    "++github",
+    "+github.com",
+    "+github/x",
+    "+github:res",
+    "+gith",
+    "+githubs",
+    "+github_x",
+    "+github-x",
+    "+Github",
+    "+GITHUB",
+    "\\+github",
+    "`+github`",
+    "```\n+github\n```",
+    "[+github](https://example.com)",
     "[see](mcp://github)",
-    "<https://example.com/@github>",
-    "<div>\n@github\n</div>",
-    "+@github",
-    "@./github",
-    "@dev.radius",
+    "<https://example.com/+github>",
+    "<div>\n+github\n</div>",
+    "+./github",
+    "C++",
+    "C++ and a+b",
+    "+1",
+    "+ item\n+ github\n+ git",
+    "[see +github](https://example.com)",
+    "+dev.radius",
   ])("leaves %j literal", (text) => {
     expect(transformMcpServerReferences(text, servers)).toBe(text);
   });
 
+  test("leaves a reference already inside its own link unchanged", () => {
+    const text = `Use ${link("+github", "github", "mcp__github")} and C++ with +1.`;
+    expect(transformMcpServerReferences(text, servers)).toBe(text);
+  });
+
   test("is idempotent: its own links are not prose", () => {
-    const once = transformMcpServerReferences("Use @github and @dev_radius.", servers);
+    const once = transformMcpServerReferences("Use +github and +dev_radius.", servers);
     expect(transformMcpServerReferences(once, servers)).toBe(once);
   });
 
   test("keeps the longest name when one server name starts another", () => {
-    expect(transformMcpServerReferences("@github @git", servers)).toBe(
-      `${link("@github", "github", "mcp__github")} ${link("@git", "git", "mcp__git")}`,
+    expect(transformMcpServerReferences("+github +git", servers)).toBe(
+      `${link("+github", "github", "mcp__github")} ${link("+git", "git", "mcp__git")}`,
     );
   });
 
   test("converts inside lists, quotes, headings, and emphasis", () => {
-    const text = "- @github\n> @git\n# About @github\n*@git* and **@github**";
+    const text = "- +github\n> +git\n# About +github\n*+git* and **+github**";
     const converted = transformMcpServerReferences(text, servers);
     expect(converted.match(/mcp:\/\//g)).toHaveLength(5);
-    expect(converted.startsWith(`- ${link("@github", "github", "mcp__github")}\n`)).toBe(true);
+    expect(converted.startsWith(`- ${link("+github", "github", "mcp__github")}\n`)).toBe(true);
   });
 
   test("returns the text unchanged for an empty catalogue", () => {
-    expect(transformMcpServerReferences("@github", [])).toBe("@github");
+    expect(transformMcpServerReferences("+github", [])).toBe("+github");
   });
 });

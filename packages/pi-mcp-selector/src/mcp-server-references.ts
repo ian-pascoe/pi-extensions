@@ -10,7 +10,7 @@ export interface McpServer {
   description?: string;
 }
 
-export const MCP_SERVER_SIGIL = "@";
+export const MCP_SERVER_SIGIL = "+";
 
 /** Characters a partially typed server name may hold; Pi allows letters, digits, `_`, and `-`. */
 export const MCP_SERVER_PARTIAL_NAME = "[A-Za-z0-9_-]*";
@@ -23,10 +23,16 @@ type CatalogueTool = Pick<ToolInfo, "exposure" | "namespace">;
 /** Hyphen and underscore name the same server, since Pi's namespace folds them together. */
 export const nameKey = (name: string): string => name.replaceAll("-", "_");
 
+/** The first non-empty line, without a leading Markdown ATX heading marker (`# Executor`). */
 const firstLine = (text: string | undefined): string | undefined =>
   text
     ?.split("\n")
-    .map((line) => line.trim())
+    .map((line) =>
+      line
+        .trim()
+        .replace(/^#{1,6}(?:\s+|$)/u, "")
+        .trim(),
+    )
     .find((line) => line !== "");
 
 /**
@@ -75,7 +81,7 @@ export function matchMcpServers(servers: readonly McpServer[], query: string): M
 const escapeRegex = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
- * Converts `@server` shorthand for a catalogue server into `[@server](mcp://server "MCP server
+ * Converts `+server` shorthand for a catalogue server into `[+server](mcp://server "MCP server
  * mcp__server")` inside Prose Spans. Unknown names, code, links, and names that run into a path,
  * domain, or `name:text` stay literal.
  */
@@ -88,7 +94,7 @@ export function transformMcpServerReferences(text: string, servers: readonly Mcp
   if (names.length === 0) return text;
   return replaceProseReferences(text, {
     sigil: MCP_SERVER_SIGIL,
-    // A colon opens a reference only before a space (`@server: list`); `@server:resource` is a URI.
+    // A colon opens a reference only before a space (`+server: list`); `+server:resource` is a URI.
     name: `(?:${names.join("|")})(?!:\\S)`,
     resolve: (typed) => {
       const server = catalogue.get(nameKey(typed));
