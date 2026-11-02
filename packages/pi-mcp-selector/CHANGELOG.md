@@ -1,0 +1,13 @@
+# @ian-pascoe/pi-mcp-selector
+
+## 0.1.0
+
+### Minor Changes
+
+- 31473aa: Add Pi MCP Selector: type `@` to list your MCP servers above Pi's native file results, and a reference such as `@github` becomes `[@github](mcp://github "MCP server mcp__github")` on submission. A reference only points the model at the server; it loads, connects, and exposes nothing, so the cached prompt prefix is unchanged. The catalogue is every enabled, connected server with a tool that is not hidden. Unknown, partial, path-like, and code references stay literal.
+
+### Patch Changes
+
+- Updated dependencies [d3041cf]
+- Updated dependencies [2552e08]
+  - @ian-pascoe/pi-utils@0.12.0

@@ -1,5 +1,14 @@
 # @ian-pascoe/pi-skills-selector
 
+## 0.3.1
+
+### Patch Changes
+
+- 2552e08: Share Prose Span detection and the completion popup with `@ian-pascoe/pi-utils/prose-references`, which is now a dependency; behaviour is unchanged. The README no longer claims direct RPC `steer` and `follow_up` skip conversion: Pi runs input hooks for them too.
+- Updated dependencies [d3041cf]
+- Updated dependencies [2552e08]
+  - @ian-pascoe/pi-utils@0.12.0
+
 ## 0.3.0
 
 ### Minor Changes

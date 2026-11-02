@@ -1,5 +1,13 @@
 # @ian-pascoe/pi-termctrl
 
+## 0.9.3
+
+### Patch Changes
+
+- Updated dependencies [d3041cf]
+- Updated dependencies [2552e08]
+  - @ian-pascoe/pi-utils@0.12.0
+
 ## 0.9.2
 
 ### Patch Changes

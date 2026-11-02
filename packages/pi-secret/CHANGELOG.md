@@ -1,5 +1,13 @@
 # @ian-pascoe/pi-secret
 
+## 0.4.1
+
+### Patch Changes
+
+- Updated dependencies [d3041cf]
+- Updated dependencies [2552e08]
+  - @ian-pascoe/pi-utils@0.12.0
+
 ## 0.4.0
 
 ### Minor Changes
