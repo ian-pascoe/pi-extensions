@@ -73,8 +73,8 @@ so on a GitHub checkout `!3` stays literal. `!=` and `!3x` are never references.
   code, link text, existing Markdown links, and HTML blocks stay literal.
 
   **A message that starts with `!` runs as a bash command in Pi** (its bash mode),
-  so a merge request reference at the very start never reaches the model as a
-  reference: start with other text (`Review !3`).
+  so an Issue Reference written with `!` at the very start never reaches the model
+  as a reference: start with other text (`Review !3`).
 
 ### Issue Repository
 
@@ -89,7 +89,14 @@ and `glab` do:
    `glab-resolved` is read only for a remote without `glab-resolved-base`, and
    `head` values mark nothing;
 3. else `upstream`, `github`, `origin`, `gitlab`;
-4. else the first remote whose URL parses (`https://`, `git@host:`, `ssh://`).
+4. else the first remote that counts.
+
+A remote counts when its URL parses (`https://`, `git@host:`, `ssh://`) and the path
+is one an Issue Host accepts: on a built-in host, that host's own grammar (so
+`https://github.com/a/b/c`, a local path, or a `file://` URL is skipped, as it always
+was); on any other host, either service's grammar. One case follows from that: a
+GitHub Enterprise Server remote whose path only GitLab's grammar accepts (such as
+`a/b/c`) counts, is selected, and then leaves the Issue Repository unresolved.
 
 If no Issue Host serves the chosen remote's host name, or its Issue Host does not
 accept the path, the Issue Repository is unresolved and references stay literal;
@@ -135,7 +142,8 @@ remote on any other recognised host still wins.
 `GLAB_CONFIG_DIR` (and then nowhere else); else the first of these with a
 `config.yml`: the legacy `~/.config/glab-cli`, then `<base>/glab-cli` where
 `<base>` is a non-empty `$XDG_CONFIG_HOME`, else `~/Library/Application Support`
-on macOS, `%LOCALAPPDATA%` on Windows, `~/.config` elsewhere.
+on macOS, `%LOCALAPPDATA%` on Windows (`~\AppData\Local` when that is unset or
+empty), `~/.config` elsewhere.
 
 Limits:
 
