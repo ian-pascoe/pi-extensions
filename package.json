@@ -34,7 +34,7 @@
     "@earendil-works/pi-agent-core": "^1.4.0",
     "@earendil-works/pi-ai": "^1.4.0",
     "@earendil-works/pi-coding-agent": "1.4.0",
-    "@earendil-works/pi-tui": "^1.4.0",
+    "@earendil-works/pi-tui": "^1.5.0",
     "@maschwenk/tsrslint": "0.1.6",
     "@oxlint/plugins": "^1.90.0",
     "@types/node": "^26.6.5",
