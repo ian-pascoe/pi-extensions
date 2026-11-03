@@ -12,7 +12,7 @@ import {
 import { KeybindingsManager, setKeybindings } from "@earendil-works/pi-tui";
 import { raiseQueuedSteer, settleQueuedSteers } from "@ian-pascoe/pi-utils/queued-steer";
 import { expectToolOutputMatches } from "@ian-pascoe/pi-utils/tool-testing";
-import { taggedTheme } from "@ian-pascoe/pi-utils/ui-testing";
+import { keybindingHints, taggedTheme } from "@ian-pascoe/pi-utils/ui-testing";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { MinimalSubagentsModelRole } from "../src/minimal-subagents-config.js";
 import { CoordinatorToolOutputSchemas } from "../src/minimal-subagents-render-contract.js";
@@ -774,6 +774,7 @@ describe("minimal subagents tool row footers", () => {
     overrides: Partial<RenderContext> & { args: RenderContext["args"] },
   ): RenderContext {
     return {
+      ...keybindingHints,
       toolCallId: "call",
       invalidate: vi.fn(),
       lastComponent: undefined,

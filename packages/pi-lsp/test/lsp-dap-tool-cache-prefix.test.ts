@@ -535,10 +535,11 @@ test("keeps the shared guideline once when only a subset of direct tools is acti
   await fixture.session.prompt("Start");
   const prompt = fixture.turns[0]?.systemPrompt ?? "";
   expect(prompt.split(LSP_TOOL_GUIDELINE)).toHaveLength(2);
+  // Since Pi 1.5, tools that stay active keep their order and newly activated ones are appended.
   expect(fixture.turns[0]?.tools.map(({ name }) => name)).toEqual([
-    "read",
     "lsp_diagnostics",
     "lsp_hover",
+    "read",
   ]);
 });
 

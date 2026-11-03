@@ -187,5 +187,10 @@ it("spends the seed budget on capped evidence", async () => {
   expect(seed.tokens).toBeLessThanOrEqual(12_000);
   const kept = results(seed.evidence.messages);
   expect(kept.length).toBeGreaterThan(8);
-  for (const result of kept) expect(result.content[0]?.text).toContain("this tool result");
+  // The fit may shorten the oldest kept turn to spend the remaining budget, which replaces its cap
+  // marker with the Context Seed's. Where that cut falls depends on the session-file path inside
+  // each cap marker, so only the oldest result may carry either marker.
+  const [oldest, ...newer] = kept;
+  expect(oldest?.content[0]?.text).toMatch(/omitted from (?:this tool result|the Context Seed)/);
+  for (const result of newer) expect(result.content[0]?.text).toContain("this tool result");
 });

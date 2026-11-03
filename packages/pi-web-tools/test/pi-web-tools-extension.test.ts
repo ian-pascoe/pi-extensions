@@ -1,6 +1,7 @@
 import { toToolContext } from "./tool-context.js";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
+import { keybindingHints } from "@ian-pascoe/pi-utils/ui-testing";
 import { Value } from "typebox/value";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import type { WebFetchParameters } from "../src/web-fetch.js";
@@ -17,6 +18,7 @@ type WebToolParameters = WebSearchParameters | WebFetchParameters;
 
 function renderContext(parameters: WebToolParameters, expanded: boolean, isError = false) {
   return {
+    ...keybindingHints,
     args: parameters,
     toolCallId: "web-tool-call",
     invalidate: () => undefined,

@@ -103,6 +103,7 @@ class IssuesSelectorHarness {
     stderr: "",
     code: 0,
     killed: false,
+    truncated: false,
   };
   /** The `glab` reply for the issues listing and for the merge requests listing. */
   glab: ExecResult = {
@@ -110,12 +111,14 @@ class IssuesSelectorHarness {
     stderr: "",
     code: 0,
     killed: false,
+    truncated: false,
   };
   glabMergeRequests: ExecResult = {
     stdout: JSON.stringify(gitLabMergeRequests),
     stderr: "",
     code: 0,
     killed: false,
+    truncated: false,
   };
   /** Set to hold a `gh` or `glab` call until the test releases it. */
   ghGate: Promise<void> | undefined;
@@ -134,8 +137,8 @@ class IssuesSelectorHarness {
         this.calls.push({ command, args, options });
         if (command === "git") {
           return this.remotes === ""
-            ? { stdout: "", stderr: "", code: 1, killed: false }
-            : { stdout: this.remotes, stderr: "", code: 0, killed: false };
+            ? { stdout: "", stderr: "", code: 1, killed: false, truncated: false }
+            : { stdout: this.remotes, stderr: "", code: 0, killed: false, truncated: false };
         }
         await this.ghGate;
         if (command === "glab") {
@@ -422,6 +425,7 @@ describe("Pi Issues Selector notices", () => {
       stderr: "gh: To get started, run: gh auth login",
       code: 4,
       killed: false,
+      truncated: false,
     };
   };
 
@@ -486,7 +490,7 @@ describe("Pi Issues Selector notices", () => {
     ["a missing repository", "gh: Not Found (HTTP 404)"],
   ])("stays silent for %s", async (_name, stderr) => {
     const harness = new IssuesSelectorHarness();
-    harness.gh = { stdout: "", stderr, code: 1, killed: false };
+    harness.gh = { stdout: "", stderr, code: 1, killed: false, truncated: false };
     expect(await suggest(await harness.provider(), "see #")).toBeNull();
     expect(harness.notices).toEqual([]);
   });
@@ -837,6 +841,7 @@ describe("Pi Issues Selector GitLab notices", () => {
       stderr: "glab: 404 Project Not Found",
       code: 1,
       killed: false,
+      truncated: false,
     };
     harness.glabMergeRequests = harness.glab;
   };
@@ -875,7 +880,7 @@ describe("Pi Issues Selector GitLab notices", () => {
   ])("stays silent for %s", async (_name, stderr) => {
     const harness = new IssuesSelectorHarness();
     harness.remotes = GITLAB_PROJECT;
-    harness.glab = { stdout: "", stderr, code: 1, killed: false };
+    harness.glab = { stdout: "", stderr, code: 1, killed: false, truncated: false };
     expect(await suggest(await harness.provider(), "see #")).toBeNull();
     expect(harness.notices).toEqual([]);
   });
@@ -883,7 +888,7 @@ describe("Pi Issues Selector GitLab notices", () => {
   test("a missing glab, which prints nothing, asks for the GitLab CLI", async () => {
     const harness = new IssuesSelectorHarness();
     harness.remotes = GITLAB_PROJECT;
-    harness.glab = { stdout: "", stderr: "", code: 1, killed: false };
+    harness.glab = { stdout: "", stderr: "", code: 1, killed: false, truncated: false };
     await suggest(await harness.provider(), "see #");
     expect(harness.notices).toHaveLength(1);
   });

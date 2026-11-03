@@ -4,6 +4,7 @@ import {
   escapeTaggedTheme,
   expectClickToggles,
   expectLinesFitWidth,
+  keybindingHints,
   readableTags,
 } from "@ian-pascoe/pi-utils/ui-testing";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
@@ -101,7 +102,11 @@ describe("Exit notifications", () => {
 
   test("collapses to a bold label and one Status Mark row per exit, with the Expand Hint", () => {
     const collapsed = rendered(
-      renderExitNotification(messageFor(notices), { expanded: false, outputPad: 1 }, theme),
+      renderExitNotification(
+        messageFor(notices),
+        { ...keybindingHints, expanded: false, outputPad: 1 },
+        theme,
+      ),
     );
     expect(collapsed).toEqual([
       "",
@@ -123,7 +128,11 @@ describe("Exit notifications", () => {
       output: "",
     };
     const collapsed = rendered(
-      renderExitNotification(messageFor([clean], 0), { expanded: false, outputPad: 0 }, theme),
+      renderExitNotification(
+        messageFor([clean], 0),
+        { ...keybindingHints, expanded: false, outputPad: 0 },
+        theme,
+      ),
     );
     expect(collapsed[1]).toBe(
       "<customMessageLabel><b>[termctrl]</b></customMessageLabel> <customMessageText>exit</customMessageText>",
@@ -141,7 +150,11 @@ describe("Exit notifications", () => {
       output: "",
     }));
     const collapsed = rendered(
-      renderExitNotification(messageFor(many, 0), { expanded: false, outputPad: 0 }, theme),
+      renderExitNotification(
+        messageFor(many, 0),
+        { ...keybindingHints, expanded: false, outputPad: 0 },
+        theme,
+      ),
     );
     expect(collapsed.filter((line) => line.includes("■"))).toHaveLength(10);
     expect(collapsed).toContain(
@@ -151,7 +164,11 @@ describe("Exit notifications", () => {
 
   test("expanded shows the full text with no extra hint", () => {
     const expanded = rendered(
-      renderExitNotification(messageFor(notices), { expanded: true, outputPad: 1 }, theme),
+      renderExitNotification(
+        messageFor(notices),
+        { ...keybindingHints, expanded: true, outputPad: 1 },
+        theme,
+      ),
     );
     expect(expanded).toContain(
       "<customMessageText>Last lines of final screen:</customMessageText>",
@@ -166,7 +183,7 @@ describe("Exit notifications", () => {
       content: Array.from({ length: 14 }, (_, index) => `line ${index + 1}`).join("\n"),
     };
     const collapsed = rendered(
-      renderExitNotification(message, { expanded: false, outputPad: 1 }, theme),
+      renderExitNotification(message, { ...keybindingHints, expanded: false, outputPad: 1 }, theme),
     );
     expect(collapsed).toContain("<customMessageText>line 10</customMessageText>");
     expect(collapsed).not.toContain("<customMessageText>line 11</customMessageText>");
@@ -180,7 +197,12 @@ describe("Exit notifications", () => {
     });
     const renderer = fixture.session.extensionRunner?.getMessageRenderer(EXIT_NOTIFICATION_TYPE);
     if (!renderer) throw new Error("Missing the Exit notification renderer");
-    expectClickToggles(renderer, messageFor(notices), { expanded: false, outputPad: 1 }, theme);
+    expectClickToggles(
+      renderer,
+      messageFor(notices),
+      { ...keybindingHints, expanded: false, outputPad: 1 },
+      theme,
+    );
   });
 });
 

@@ -1,4 +1,4 @@
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "@ian-pascoe/pi-utils/string-enum";
 import { Type } from "typebox";
 import { THINKING_LEVELS } from "./minimal-subagents-capabilities.js";
 

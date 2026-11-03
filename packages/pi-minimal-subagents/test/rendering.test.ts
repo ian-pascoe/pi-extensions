@@ -4,6 +4,7 @@ import { KeybindingsManager, setKeybindings, type TUI } from "@earendil-works/pi
 import {
   escapeTaggedTheme as taggedTheme,
   expectLinesFitWidth,
+  keybindingHints,
   readableTags,
   type LineFitOptions,
 } from "@ian-pascoe/pi-utils/ui-testing";
@@ -543,7 +544,7 @@ describe("minimal subagents custom messages", () => {
   it("uses the custom-message box with a `[subagents] result · route · status` label line", () => {
     const rendered = renderMinimalSubagentsResult(
       { content: "**Done**: updated `a.ts`", details },
-      { expanded: false, outputPad: 1 },
+      { ...keybindingHints, expanded: false, outputPad: 1 },
       taggedTheme,
     );
     const lines = plainLines(rendered);
@@ -563,7 +564,7 @@ describe("minimal subagents custom messages", () => {
 
     const message = renderMinimalSubagentsMessage(
       { content: "ping", details: { ...details, status: undefined } },
-      { expanded: false, outputPad: 0 },
+      { ...keybindingHints, expanded: false, outputPad: 0 },
       taggedTheme,
     );
     expect(text(message)).toContain(
@@ -576,7 +577,7 @@ describe("minimal subagents custom messages", () => {
     const content = numberedLines(14);
     const preview = renderMinimalSubagentsResult(
       { content, details },
-      { expanded: false, outputPad: 1 },
+      { ...keybindingHints, expanded: false, outputPad: 1 },
       taggedTheme,
     );
     const previewText = text(preview);
@@ -587,7 +588,7 @@ describe("minimal subagents custom messages", () => {
 
     const full = renderMinimalSubagentsResult(
       { content, details },
-      { expanded: true, outputPad: 1 },
+      { ...keybindingHints, expanded: true, outputPad: 1 },
       taggedTheme,
     );
     expect(text(full)).toContain("line 14");
@@ -932,7 +933,7 @@ describe("minimal subagents rendering", () => {
           usage,
         },
       },
-      { expanded: true, outputPad: 0 },
+      { ...keybindingHints, expanded: true, outputPad: 0 },
       plainTheme,
     );
     expect(renderLines(component)).toContain("typed text content");
@@ -943,7 +944,7 @@ describe("minimal subagents rendering", () => {
         content: "legacy coordinator message",
         details: { agent_id: "legacy-child", turn_id: "legacy-turn", status: "queued" },
       },
-      { expanded: true, outputPad: 0 },
+      { ...keybindingHints, expanded: true, outputPad: 0 },
       plainTheme,
     );
     expect(renderLines(legacyComponent)).toContain("legacy-child");

@@ -8,11 +8,12 @@ import {
 import { KeybindingsManager, setKeybindings, type Component } from "@earendil-works/pi-tui";
 import {
   escapeTaggedTheme,
+  expectClickToggles,
   expectLinesFitWidth,
+  keybindingHints,
   readableTags,
 } from "@ian-pascoe/pi-utils/ui-testing";
 import { beforeAll, expect, test } from "vitest";
-import { expectClickToggles } from "@ian-pascoe/pi-utils/ui-testing";
 import contextManagement from "../src/context-management-extension.js";
 import type { ContextToolDetails } from "../src/context-tool-rendering.js";
 import { createSdkHarness } from "./sdk-harness.js";
@@ -43,6 +44,7 @@ function renderContext(
   overrides: Partial<RenderContext> = {},
 ): RenderContext {
   return {
+    ...keybindingHints,
     args,
     expanded: false,
     toolCallId: "context-render-test",
@@ -455,7 +457,11 @@ test.each([
     if (!renderer) throw new Error(`Missing message renderer: ${customType}`);
     const content = Array.from({ length: 14 }, (_, index) => `Instruction ${index + 1}`).join("\n");
     const message = { role: "custom" as const, customType, content, display: true, timestamp: 0 };
-    const collapsed = renderer(message, { expanded: false, outputPad: 1 }, theme);
+    const collapsed = renderer(
+      message,
+      { ...keybindingHints, expanded: false, outputPad: 1 },
+      theme,
+    );
     if (!collapsed) throw new Error("Renderer returned nothing");
     const rows = lines(collapsed);
     const text = textOf(rows);
@@ -466,11 +472,16 @@ test.each([
     expect(text).not.toContain("Instruction 11");
     expect(text).toContain("<muted>... (4 more lines,</muted> <dim>ctrl+o</dim>");
     expect(rows.every((row) => row.includes("<bg:customMessageBg>"))).toBe(true);
-    const expanded = renderer(message, { expanded: true, outputPad: 1 }, theme);
+    const expanded = renderer(message, { ...keybindingHints, expanded: true, outputPad: 1 }, theme);
     if (!expanded) throw new Error("Renderer returned nothing");
     const full = textOf(lines(expanded));
     expect(full).toContain("Instruction 14");
     expect(full).not.toContain("to expand");
-    expectClickToggles(renderer, { ...message }, { expanded: false, outputPad: 1 }, theme);
+    expectClickToggles(
+      renderer,
+      { ...message },
+      { ...keybindingHints, expanded: false, outputPad: 1 },
+      theme,
+    );
   },
 );

@@ -14,7 +14,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
 import { expandEntryOnClick, expandMessageOnClick } from "../src/ui.js";
-import { expectClickToggles } from "../src/ui-testing.js";
+import { expectClickToggles, keybindingHints } from "../src/ui-testing.js";
 
 beforeAll(() => initTheme("dark"));
 
@@ -22,8 +22,8 @@ type Message = ConstructorParameters<typeof CustomMessageComponent>[0];
 
 // SAFETY: the renderers under test never call the theme, and Pi exports no Theme instance.
 const theme = {} as Theme;
-const collapsed = { expanded: false, outputPad: 1 };
-const expandedOptions = { expanded: true, outputPad: 1 };
+const collapsed = { ...keybindingHints, expanded: false, outputPad: 1 };
+const expandedOptions = { ...keybindingHints, expanded: true, outputPad: 1 };
 
 /** A fresh message; Pi passes the renderer the same object each time it rebuilds that message. */
 const message = (): Message => ({
@@ -125,7 +125,11 @@ describe("expandEntryOnClick", () => {
       parentId: null,
       timestamp: "",
     };
-    const component = expandEntryOnClick(view)(entry, { expanded: false }, theme);
+    const component = expandEntryOnClick(view)(
+      entry,
+      { ...keybindingHints, expanded: false },
+      theme,
+    );
     expect(lines(component)).toEqual(["short"]);
     click(component);
     expect(lines(component)).toEqual(["full", "body"]);

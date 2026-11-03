@@ -59,7 +59,7 @@ describe("minimal subagents usage", () => {
         cacheWrite: 0.011296,
         total: 0.01312,
       });
-      for (const value of Object.values(cost)) {
+      for (const value of [cost.input, cost.output, cost.cacheRead, cost.cacheWrite, cost.total]) {
         expect(decimals(value)).toBeLessThanOrEqual(MINIMAL_SUBAGENTS_COST_DECIMALS);
       }
     });
