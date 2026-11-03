@@ -464,6 +464,7 @@ describe("resolveIssueRepository", () => {
       stderr: result.stderr,
       code: result.status ?? 1,
       killed: false,
+      truncated: false,
     };
   };
 
@@ -609,7 +610,7 @@ describe("resolveIssueRepository", () => {
     await resolveIssueRepository(
       async (command, args, options) => {
         calls.push([command, args, options?.cwd]);
-        return { stdout: "", stderr: "", code: 1, killed: false };
+        return { stdout: "", stderr: "", code: 1, killed: false, truncated: false };
       },
       "/work/project",
       hosts,

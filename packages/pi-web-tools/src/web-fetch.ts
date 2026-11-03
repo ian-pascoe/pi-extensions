@@ -1,4 +1,4 @@
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "@ian-pascoe/pi-utils/string-enum";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Parser } from "htmlparser2";
 import TurndownService from "turndown";

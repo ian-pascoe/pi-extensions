@@ -9,7 +9,7 @@ import {
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import type { Context } from "@earendil-works/pi-ai";
 import { createSdkHarness, reply, toolCall } from "../../pi-context-management/test/sdk-harness.js";
-import { expectClickToggles } from "@ian-pascoe/pi-utils/ui-testing";
+import { expectClickToggles, keybindingHints } from "@ian-pascoe/pi-utils/ui-testing";
 import advisor from "../src/index.js";
 import { fixture, response } from "./fixtures/advisor-runtime.js";
 import { createMenuTui, menuDriver } from "./fixtures/menu-ui.js";
@@ -57,13 +57,22 @@ describe("Advisor status entries", () => {
     const entry = lastStatus(session);
     if (entry?.type !== "custom") throw new Error("Expected an Advisor status entry");
     const renderer = session.extensionRunner?.getEntryRenderer("pi-advisor-status");
-    const rendered = renderer?.(entry, { expanded: false }, themeFromRunner(session));
+    const rendered = renderer?.(
+      entry,
+      { ...keybindingHints, expanded: false },
+      themeFromRunner(session),
+    );
     const text = stripVTControlCharacters(rendered?.render(120).join("\n") ?? "");
     expect(text).toContain("✓ enabled → true [session]");
     expect(text).toContain("[advisor] ● on");
     expect(text).not.toContain('"settings"');
     if (!renderer) throw new Error("Expected the Advisor status renderer");
-    expectClickToggles(renderer, entry, { expanded: false }, themeFromRunner(session));
+    expectClickToggles(
+      renderer,
+      entry,
+      { ...keybindingHints, expanded: false },
+      themeFromRunner(session),
+    );
   });
 
   it("toggle a Child Agent entry on click", async () => {
@@ -78,7 +87,12 @@ describe("Advisor status entries", () => {
       parentId: null,
       timestamp: "",
     };
-    expectClickToggles(renderer, entry, { expanded: false }, themeFromRunner(session));
+    expectClickToggles(
+      renderer,
+      entry,
+      { ...keybindingHints, expanded: false },
+      themeFromRunner(session),
+    );
   });
 });
 
@@ -206,7 +220,7 @@ describe("Interventions", () => {
         details: entry.details,
         timestamp: 0,
       },
-      { expanded: false, outputPad: 0 },
+      { ...keybindingHints, expanded: false, outputPad: 0 },
       themeFromRunner(session),
     );
     const text = stripVTControlCharacters(rendered?.render(120).join("\n") ?? "");
@@ -224,7 +238,7 @@ describe("Interventions", () => {
         details: entry.details,
         timestamp: 0,
       },
-      { expanded: false, outputPad: 0 },
+      { ...keybindingHints, expanded: false, outputPad: 0 },
       themeFromRunner(session),
     );
   });

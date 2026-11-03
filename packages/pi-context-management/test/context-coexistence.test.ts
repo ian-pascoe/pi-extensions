@@ -121,7 +121,7 @@ it("projects real Todo mutations as one snapshot after every sibling result with
 });
 
 it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
-  "quarantines a failed Todo write but upstream disk reopen loses selected acknowledged history",
+  "quarantines a failed Todo write while disk reopen keeps the acknowledged history",
   async () => {
     const todoPath = fileURLToPath(new URL("../../pi-todo/src/index.ts", import.meta.url));
     const f = await createSdkHarness([], { additionalExtensionPaths: [todoPath] });
@@ -159,11 +159,13 @@ it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
         .getBranch()
         .some((entry) => entry.type === "custom" && entry.customType === "pi-todo-state"),
     ).toBe(true);
-    expect(
-      SessionManager.open(file)
-        .getBranch()
-        .some((entry) => entry.type === "custom" && entry.customType === "pi-todo-state"),
-    ).toBe(false);
+    // Pi 1.5 rolls back an entry whose write failed, so disk keeps the acknowledged state on the
+    // branch and never the unacknowledged one.
+    const todoStates = (entries: readonly { type: string; customType?: string; id: string }[]) =>
+      entries
+        .filter((entry) => entry.type === "custom" && entry.customType === "pi-todo-state")
+        .map((entry) => entry.id);
+    expect(todoStates(SessionManager.open(file).getBranch())).toEqual([acknowledged.id]);
     f.manager.appendCustomEntry = append;
     await f.session.prompt("Do not send poisoned state");
     expect(f.requests).toHaveLength(3);
@@ -179,34 +181,36 @@ it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     const reopenedManager = SessionManager.open(file);
     const persisted = reopenedManager.getEntries();
     const branch = reopenedManager.getBranch();
-    // Existing host limitation: the error result references the unwritten state entry.
-    // Earlier acknowledged history survives on disk but is disconnected from this leaf.
-    expect(persisted.some((entry) => entry.id === acknowledged.id)).toBe(true);
-    expect(branch.some((entry) => entry.id === acknowledged.id)).toBe(false);
-    expect(branch[0]).toMatchObject({ type: "message", message: { role: "toolResult" } });
-    expect(branch[0]!.parentId).not.toBeNull();
-    expect(persisted.some((entry) => entry.id === branch[0]!.parentId)).toBe(false);
+    // The error result's parent is the last written entry, so the acknowledged history stays on
+    // the reopened branch and every entry's parent is on disk.
+    expect(todoStates(branch)).toEqual([acknowledged.id]);
+    expect(branch[0]!.parentId).toBeNull();
+    const persistedIds = new Set(persisted.map((entry) => entry.id));
+    expect(
+      persisted.every((entry) => entry.parentId === null || persistedIds.has(entry.parentId)),
+    ).toBe(true);
     const reopened = await createSdkHarness([], {
       manager: reopenedManager,
       additionalExtensionPaths: [todoPath],
     });
-    reopened.responses.push(reply("Acknowledged history is missing."));
+    reopened.responses.push(reply("Acknowledged history restored."));
     await reopened.session.prompt("Continue from the persisted session");
     expect(reopened.requests).toHaveLength(1);
-    expect(
-      reopened.requests[0]!.messages.some(
-        (message) =>
-          message.role === "user" &&
-          JSON.stringify(message.content).includes("Todo List state from the pi-todo extension"),
-      ),
-    ).toBe(false);
+    const snapshots = reopened.requests[0]!.messages.filter(
+      (message) =>
+        message.role === "user" &&
+        JSON.stringify(message.content).includes("Todo List state from the pi-todo extension"),
+    );
+    expect(snapshots).toHaveLength(1);
+    expect(JSON.stringify(snapshots[0])).toContain("Acknowledged Task A");
+    expect(JSON.stringify(snapshots[0])).not.toContain("Unacknowledged Task");
     expect(f.providerRequests).toEqual([]);
     expect(reopened.providerRequests).toEqual([]);
   },
 );
 
 it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
-  "native append failures disconnect persisted history without Todo or its context projection",
+  "native append failures keep persisted history connected without Todo or its context projection",
   async () => {
     const nativeWriter: ExtensionFactory = (pi) => {
       pi.registerTool({
@@ -245,11 +249,13 @@ it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     const reopened = SessionManager.open(file);
     const persisted = reopened.getEntries();
     const branch = reopened.getBranch();
-    expect(persisted.some((entry) => entry.id === acknowledged)).toBe(true);
-    expect(branch.some((entry) => entry.id === acknowledged)).toBe(false);
-    expect(branch[0]).toMatchObject({ type: "message", message: { role: "toolResult" } });
-    expect(branch[0]!.parentId).not.toBeNull();
-    expect(persisted.some((entry) => entry.id === branch[0]!.parentId)).toBe(false);
+    // Pi 1.5 rolls back an entry whose write failed, so later entries attach to the last written one.
+    expect(branch.some((entry) => entry.id === acknowledged)).toBe(true);
+    expect(branch[0]!.parentId).toBeNull();
+    const persistedIds = new Set(persisted.map((entry) => entry.id));
+    expect(
+      persisted.every((entry) => entry.parentId === null || persistedIds.has(entry.parentId)),
+    ).toBe(true);
     expect(f.providerRequests).toEqual([]);
   },
 );

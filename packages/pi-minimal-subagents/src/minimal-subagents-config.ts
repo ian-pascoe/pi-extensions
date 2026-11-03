@@ -211,7 +211,8 @@ function readMinimalSubagentsSettings(
           continue;
         }
         try {
-          if (new Minimatch(pattern).makeRe() !== false) {
+          // A comment, or a pattern no expansion of which parses, has an empty match set.
+          if (new Minimatch(pattern).set.length > 0) {
             patterns.push(pattern);
             continue;
           }

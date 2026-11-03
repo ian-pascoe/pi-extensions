@@ -90,6 +90,8 @@ Independent review and a separate coordinator run reproduced this on installed P
 
 `context-coexistence.test.ts` starts with acknowledged state and characterizes the missing-parent chain and lost selected history. A separate native `pi.appendEntry` tool, without Todo or its context projection, reproduces the same disk failure and disconnected history. This is existing host behavior, not a cache-prefix regression. The Todo safeguards prevent the failed mutation from advancing local acknowledged state or being projected in the faulted loaded session, including after `/reload`.
 
+**Resolved upstream in Pi 1.5** ([#11460](https://github.com/earendil-works/pi/issues/11460)): a failed append is rolled back from memory, so the error result attaches to the last written entry and reopening keeps Task A on the selected branch. `context-coexistence.test.ts` now pins that connected history, and a reopened session projects Task A's acknowledged state, never the failed mutation.
+
 The user explicitly dropped recovery for now and prohibited upstream fixes. No recovery command, checkpoint carryover, branch repair, or automatic reopen guarantee is part of this change. Retain ordinary failure safeguards and this characterization; recovery is deferred, not a release blocker for the cache-prefix scope.
 
 ## Compatibility and STOP conditions

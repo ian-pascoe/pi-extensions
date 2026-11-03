@@ -1,4 +1,4 @@
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "@ian-pascoe/pi-utils/string-enum";
 import { type Static, Type } from "typebox";
 
 /** Agent-visible Todo List operations. */

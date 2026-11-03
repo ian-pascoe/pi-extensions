@@ -43,7 +43,8 @@
     "./ui-testing": "./src/ui-testing.ts",
     "./secret-registry": "./src/secret-registry.ts",
     "./queued-steer": "./src/queued-steer.ts",
-    "./prose-references": "./src/prose-references.ts"
+    "./prose-references": "./src/prose-references.ts",
+    "./string-enum": "./src/string-enum.ts"
   },
   "publishConfig": {
     "main": "./dist/index.js",
@@ -112,6 +113,10 @@
       "./prose-references": {
         "types": "./dist/prose-references.d.ts",
         "import": "./dist/prose-references.js"
+      },
+      "./string-enum": {
+        "types": "./dist/string-enum.d.ts",
+        "import": "./dist/string-enum.js"
       }
     },
     "access": "public",

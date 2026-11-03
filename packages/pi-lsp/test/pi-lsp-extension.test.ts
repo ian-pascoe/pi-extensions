@@ -13,7 +13,7 @@ import {
   type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { expectClickToggles } from "@ian-pascoe/pi-utils/ui-testing";
+import { expectClickToggles, keybindingHints } from "@ian-pascoe/pi-utils/ui-testing";
 import { failureDiagnosticOutcome, normalizedDiagnosticOutcome } from "../src/pi-lsp-extension.js";
 import { appendPostEditDiagnostics } from "../src/lsp-post-edit-diagnostics.js";
 import { POST_EDIT_DIAGNOSTICS_ENTRY_TYPE } from "../src/lsp-post-edit-diagnostics-rendering.js";
@@ -889,7 +889,12 @@ describe("Pi LSP extension lifecycle", () => {
     const entry = entries[0];
     if (!renderer || entry?.type !== "custom") throw new Error("Expected a diagnostics entry");
     initTheme("dark");
-    expectClickToggles(renderer, entry, { expanded: false }, harness.runner.getUIContext().theme);
+    expectClickToggles(
+      renderer,
+      entry,
+      { ...keybindingHints, expanded: false },
+      harness.runner.getUIContext().theme,
+    );
     await shutdownExtension(harness);
   });
 

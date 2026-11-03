@@ -1,5 +1,16 @@
+import type { KeybindingHints } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, type Component, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { UiTheme } from "./ui.js";
+
+/**
+ * Stand-in for the `keyText`/`keyHint` Pi injects into tool render contexts and message and entry
+ * renderer options since Pi 1.5. It names the keybinding id instead of the user's keys, so a render
+ * test shows which binding a hint refers to: `keyText("app.tools.expand")` is `app.tools.expand`.
+ */
+export const keybindingHints: KeybindingHints = {
+  keyText: (keybinding) => keybinding,
+  keyHint: (keybinding, description) => `${keybinding} ${description}`,
+};
 
 /**
  * A theme that wraps each styled piece in its token name (`<accent>…</accent>`, `<b>…</b>`), so

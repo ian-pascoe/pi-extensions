@@ -37,7 +37,7 @@ import {
 import { Type } from "typebox";
 import { hasQueuedSteer, settleQueuedSteers } from "@ian-pascoe/pi-utils/queued-steer";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { expectClickToggles } from "@ian-pascoe/pi-utils/ui-testing";
+import { expectClickToggles, keybindingHints } from "@ian-pascoe/pi-utils/ui-testing";
 import { COORDINATOR_TOOL_NAMES } from "../src/minimal-subagents-capabilities.js";
 import {
   availableToolNames,
@@ -632,7 +632,7 @@ describe("minimal subagents extension lifecycle", () => {
       expectClickToggles(
         renderer,
         { role: "custom", customType, content: "ping", display: true, details, timestamp: 0 },
-        { expanded: false, outputPad: 1 },
+        { ...keybindingHints, expanded: false, outputPad: 1 },
         harness.runner.getUIContext().theme,
       );
     }

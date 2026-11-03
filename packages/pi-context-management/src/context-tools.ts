@@ -1,4 +1,5 @@
-import { StringEnum, type JsonValue } from "@earendil-works/pi-ai";
+import type { JsonValue } from "@earendil-works/pi-ai";
+import { StringEnum } from "@ian-pascoe/pi-utils/string-enum";
 import {
   defineTool,
   type ExtensionAPI,

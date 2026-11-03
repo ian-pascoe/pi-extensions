@@ -114,7 +114,7 @@ const messagePaint =
 export function renderAdvisorIntervention(
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Journaled custom-message details are validated by the finding schema below.
   details: unknown,
-  options: MessageRenderOptions,
+  options: Pick<MessageRenderOptions, "expanded" | "outputPad">,
   theme: AdvisorRenderTheme,
   agentId?: string,
 ): Component | undefined {

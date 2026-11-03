@@ -7,7 +7,7 @@ const repository = { host: "gitlab.com", owner: "group/sub", repo: "project" };
 const signal = new AbortController().signal;
 const reply =
   (stdout: string, code = 0, stderr = "", killed = false): RunCommand =>
-  async () => ({ stdout, stderr, code, killed });
+  async () => ({ stdout, stderr, code, killed, truncated: false });
 
 describe("GitLab repository paths", () => {
   const segment = (length: number): string => "a".repeat(length);
@@ -114,7 +114,7 @@ describe("GitLab recent issues and merge requests", () => {
       "#",
       async (command, args, options) => {
         calls.push([command, args, options?.signal === signal, options?.timeout !== undefined]);
-        return { stdout: "[]", stderr: "", code: 0, killed: false };
+        return { stdout: "[]", stderr: "", code: 0, killed: false, truncated: false };
       },
       signal,
     );
@@ -140,7 +140,7 @@ describe("GitLab recent issues and merge requests", () => {
       "!",
       async (_command, args) => {
         calls.push(args);
-        return { stdout: "[]", stderr: "", code: 0, killed: false };
+        return { stdout: "[]", stderr: "", code: 0, killed: false, truncated: false };
       },
       signal,
     );

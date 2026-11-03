@@ -278,10 +278,10 @@ describe("Web Tools through Pi codemode", () => {
     expect(value).toEqual({
       outcomes: {
         type: expect.stringMatching(
-          /Validation failed for tool "web_search"[\s\S]*- type: schema is false[\s\S]*must not have additional properties/,
+          /Validation failed for tool "web_search":\n  - type: unknown field\n/,
         ),
         livecrawl: expect.stringMatching(
-          /Validation failed for tool "web_search"[\s\S]*- livecrawl: schema is false[\s\S]*must not have additional properties/,
+          /Validation failed for tool "web_search":\n  - livecrawl: unknown field\n/,
         ),
       },
       content: `${SEARCH_TEXT.slice(0, 10)}\n\n[Search results cut at 10 characters]`,

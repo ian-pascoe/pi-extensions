@@ -7,7 +7,7 @@ const repository = { host: "github.com", owner: "acme", repo: "widgets" };
 const signal = new AbortController().signal;
 const reply =
   (stdout: string, code = 0, stderr = "", killed = false): RunCommand =>
-  async () => ({ stdout, stderr, code, killed });
+  async () => ({ stdout, stderr, code, killed, truncated: false });
 
 describe("GitHub issue URLs", () => {
   test("always use the /issues/ path, which GitHub redirects to /pull/ for pull requests", () => {
@@ -62,7 +62,7 @@ describe("GitHub recent issues", () => {
       "#",
       async (command, args, options) => {
         calls.push([command, args, options?.signal === signal, options?.timeout !== undefined]);
-        return { stdout: "[]", stderr: "", code: 0, killed: false };
+        return { stdout: "[]", stderr: "", code: 0, killed: false, truncated: false };
       },
       signal,
     );
