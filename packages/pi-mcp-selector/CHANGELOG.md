@@ -1,5 +1,12 @@
 # @ian-pascoe/pi-mcp-selector
 
+## 0.2.1
+
+### Patch Changes
+
+- Updated dependencies [1a9d7cc]
+  - @ian-pascoe/pi-utils@0.13.0
+
 ## 0.2.0
 
 ### Minor Changes

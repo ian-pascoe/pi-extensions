@@ -1,5 +1,12 @@
 # @ian-pascoe/pi-skills-selector
 
+## 0.3.2
+
+### Patch Changes
+
+- Updated dependencies [1a9d7cc]
+  - @ian-pascoe/pi-utils@0.13.0
+
 ## 0.3.1
 
 ### Patch Changes
