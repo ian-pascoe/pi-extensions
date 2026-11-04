@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-advisor",
-  "version": "0.8.7",
+  "version": "0.8.8",
   "private": false,
   "description": "Background review and attributed corrective advice for Pi agent sessions.",
   "keywords": [
@@ -36,7 +36,7 @@
     "typecheck": "tsrs --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@ian-pascoe/pi-utils": "^0.12.0"
+    "@ian-pascoe/pi-utils": "^0.13.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": ">=1.1.0",

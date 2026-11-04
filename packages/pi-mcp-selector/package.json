@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-mcp-selector",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": false,
   "description": "Native MCP Server Reference autocomplete and link conversion for Pi user input.",
   "keywords": [
@@ -37,7 +37,7 @@
     "typecheck": "tsrs --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@ian-pascoe/pi-utils": "^0.12.0"
+    "@ian-pascoe/pi-utils": "^0.13.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=1.1.0",

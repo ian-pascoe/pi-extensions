@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-command-deck",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "private": false,
   "description": "Pi extension that replaces the prompt editor and footer with a compact Vim command deck.",
   "keywords": [
@@ -37,7 +37,7 @@
     "typecheck": "tsrs --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@ian-pascoe/pi-utils": "^0.12.0"
+    "@ian-pascoe/pi-utils": "^0.13.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=1.1.0",
