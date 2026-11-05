@@ -271,7 +271,7 @@ so earlier history and the prompt-cache prefix stay byte-identical.
   wraps the autocomplete provider, press Tab.
 - **No link:** check the exact case-sensitive name and whether the bare id is
   shared by several providers. Also check whether the reference is escaped, in
-  code, or followed by `:text`. Reload after changing `modelRoles` or
+  code, or followed by `:text`, `@text`, or `~text`. Reload after changing `modelRoles` or
   `enabledModels`.
 - **The Root Agent used another model:** inspect the submitted user message
   first. A correct link verifies conversion; using it is the Root Agent's
