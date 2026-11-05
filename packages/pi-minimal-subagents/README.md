@@ -212,7 +212,8 @@ this precedence:
 These stay literal:
 
 - unknown or ambiguous names, and `%Large` for a role named `large`
-- names followed by `:text` (`%large:high`), `/`, `-`, or `.word`
+- names followed by `:text` (`%large:high`), `@text`, `~text`, `/`, `-`, or
+  `.word`
 - `50%`, `a%20b`, `%PATH%`, `\%large`, code, existing links, and HTML
 
 Sentence punctuation does not block a reference: `(%large)`, `%large's`,
@@ -244,7 +245,8 @@ silently. Links already sent stay as they are.
 `%` after a token boundary, or alone at the start of a line, lists roles first,
 then models, each with names that start with the query first and then
 alphabetical. The filter is case-insensitive. It matches role names, model
-`provider/id`s, and model display names. Selecting a model inserts its full
+`provider/id`s, and model display names. The popup closes at a space, so type
+one word of a display name. Selecting a model inserts its full
 `%provider/id`. Descriptions read `Subagent role · provider/model:thinking ·
 hint` and `Subagent model · Display Name`.
 
@@ -264,8 +266,9 @@ so earlier history and the prompt-cache prefix stay byte-identical.
 ### Troubleshooting
 
 - **No popup:** type `%` after a space, and check that `/subagents status`
-  reports Subagent Access enabled with all Coordinator Tools active. If another extension wraps the autocomplete provider,
-  press Tab.
+  reports Subagent Access enabled and `subagent` active, or that another
+  extension exposes it through `codemode` or `deferred`. If another extension
+  wraps the autocomplete provider, press Tab.
 - **No link:** check the exact case-sensitive name and whether the bare id is
   shared by several providers. Also check whether the reference is escaped, in
   code, or followed by `:text`. Reload after changing `modelRoles` or

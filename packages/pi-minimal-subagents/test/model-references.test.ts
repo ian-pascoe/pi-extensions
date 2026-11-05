@@ -147,6 +147,8 @@ describe("Subagent Model References", () => {
       ["%large: review this", `${large}: review this`],
       ["Use %large.", `Use ${large}.`],
       ["%large:high", "%large:high"],
+      ["%large@x", "%large@x"],
+      ["%large~foo", "%large~foo"],
       ["%large/x", "%large/x"],
       ["%large-ish", "%large-ish"],
       ["%large.json", "%large.json"],
@@ -242,6 +244,13 @@ describe("Subagent Model References", () => {
       "amazon-bedrock/amazon.nova-2-lite-v1:0",
     ]);
     expect(unsafe.roles.map((role) => role.name)).toEqual(["fast"]);
+    // A bare id shared with a left-out model is still ambiguous.
+    const shared = buildSubagentModelCatalogue({
+      eligibleModelIds: ["anthropic/claude-opus-5-5", "my proxy/claude-opus-5-5"],
+      models: [],
+      modelRoles: [],
+    });
+    expect(transformSubagentModelReferences("%claude-opus-5-5", shared)).toBe("%claude-opus-5-5");
     expect(transformSubagentModelReferences("%my model", unsafe)).toBe("%my model");
     expect(transformSubagentModelReferences("Use %amazon.nova-2-lite-v1:0 now", unsafe)).toBe(
       `Use ${modelLink("amazon.nova-2-lite-v1:0", "amazon-bedrock/amazon.nova-2-lite-v1:0")} now`,

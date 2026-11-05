@@ -156,18 +156,27 @@ export function availableToolNames(pi: Pick<ExtensionAPI, "getAllTools">): strin
   );
 }
 
+/** Every reachable tool name: active tools plus tools scripts can call without declaring them. */
+function reachableToolNamesIncludingCoordinator(
+  pi: Pick<ExtensionAPI, "getActiveTools" | "getAllTools">,
+): string[] {
+  const active = new Set(pi.getActiveTools());
+  const scriptCallable = pi
+    .getAllTools()
+    .filter((tool) => tool.exposure === "codemode" || tool.exposure === "deferred")
+    .map((tool) => tool.name);
+  return [...new Set([...active, ...scriptCallable])];
+}
+
 /** Reachable Tools: active tools plus tools scripts can call without declaring them. */
 export function reachableToolNames(
   pi: Pick<ExtensionAPI, "getActiveTools" | "getAllTools">,
 ): string[] {
-  const active = new Set(pi.getActiveTools());
+  const reachable = new Set(reachableToolNamesIncludingCoordinator(pi));
   return excludeCoordinatorTools(
     pi
       .getAllTools()
-      .filter(
-        (tool) =>
-          active.has(tool.name) || tool.exposure === "codemode" || tool.exposure === "deferred",
-      )
+      .filter((tool) => reachable.has(tool.name))
       .map((tool) => tool.name),
   );
 }
@@ -986,16 +995,9 @@ export class MinimalSubagentsLifecycleController {
   private currentSubagentModelCatalogue(): SubagentModelCatalogue | undefined {
     const catalogue = this.accessSession?.subagentModelCatalogue;
     if (catalogue === undefined) return undefined;
-    const reachable =
-      this.pi.getActiveTools().includes("subagent") ||
-      this.pi
-        .getAllTools()
-        .some(
-          (tool) =>
-            tool.name === "subagent" &&
-            (tool.exposure === "codemode" || tool.exposure === "deferred"),
-        );
-    return reachable ? catalogue : undefined;
+    return reachableToolNamesIncludingCoordinator(this.pi).includes("subagent")
+      ? catalogue
+      : undefined;
   }
 
   private currentSubagentStatusAccess(): MinimalSubagentsStatusAccess {

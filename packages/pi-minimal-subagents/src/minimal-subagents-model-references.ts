@@ -7,13 +7,16 @@ import {
 
 export const SUBAGENT_MODEL_SIGIL = "%";
 
+/** Characters a model or role name may hold: none needs escaping in a link or its title. */
+const NAME_CHARACTER = "[A-Za-z0-9._:/~@+-]";
+
 /** Characters a partially typed model or role name may hold. */
-export const SUBAGENT_MODEL_PARTIAL_NAME = "[A-Za-z0-9._:/~@+-]*";
+export const SUBAGENT_MODEL_PARTIAL_NAME = `${NAME_CHARACTER}*`;
 
 /** One Eligible Model, named `provider/id`, with Pi's display name when known. */
 export interface SubagentModel {
   model: string;
-  name?: string;
+  displayName?: string;
 }
 
 /**
@@ -41,16 +44,19 @@ type SubagentModelTarget = { kind: "model"; model: string } | { kind: "role"; ro
  * A model a link can carry verbatim: no escaping in its destination or title, and an ending the
  * Prose Span grammar treats as the end of the token.
  */
-const SAFE_MODEL = /^[A-Za-z0-9._:/~@+-]*[A-Za-z0-9]$/u;
+const SAFE_MODEL = new RegExp(`^${NAME_CHARACTER}*[A-Za-z0-9]$`, "u");
 /** A role name that can also be typed: it starts and ends with a letter or digit. */
-const TYPEABLE_ROLE = /^[A-Za-z0-9](?:[A-Za-z0-9._:/~@+-]*[A-Za-z0-9])?$/u;
+const TYPEABLE_ROLE = new RegExp(`^[A-Za-z0-9](?:${NAME_CHARACTER}*[A-Za-z0-9])?$`, "u");
+
+/** The id of a `provider/id` model without its provider; the id itself may contain `/`. */
+const bareId = (model: string): string => model.slice(model.indexOf("/") + 1);
 
 export function buildSubagentModelCatalogue(input: {
   eligibleModelIds: readonly string[];
   models: readonly { provider: string; id: string; name?: string }[];
   modelRoles: readonly SubagentModelRole[];
 }): SubagentModelCatalogue {
-  const names = new Map<string, string>(
+  const displayNames = new Map<string, string>(
     input.models.flatMap(({ provider, id, name }) =>
       name === undefined ? [] : [[`${provider}/${id}`, name] as const],
     ),
@@ -58,8 +64,8 @@ export function buildSubagentModelCatalogue(input: {
   const models = input.eligibleModelIds
     .filter((model) => SAFE_MODEL.test(model))
     .map((model): SubagentModel => {
-      const name = names.get(model);
-      return name === undefined ? { model } : { model, name };
+      const displayName = displayNames.get(model);
+      return displayName === undefined ? { model } : { model, displayName };
     });
   // Precedence: a full `provider/id`, then a Model Role, then a bare id one Eligible Model has.
   const targets = new Map<string, SubagentModelTarget>(
@@ -69,14 +75,16 @@ export function buildSubagentModelCatalogue(input: {
     (role) => TYPEABLE_ROLE.test(role.name) && !targets.has(role.name),
   );
   for (const role of roles) targets.set(role.name, { kind: "role", role: role.name });
+  // Count every Eligible Model, including left-out ones, so a shared bare id stays ambiguous.
   const bareIds = new Map<string, string[]>();
-  for (const { model } of models) {
-    const bareId = model.slice(model.indexOf("/") + 1);
-    bareIds.set(bareId, [...(bareIds.get(bareId) ?? []), model]);
+  for (const model of input.eligibleModelIds) {
+    bareIds.set(bareId(model), [...(bareIds.get(bareId(model)) ?? []), model]);
   }
-  for (const [bareId, [model, ...others]] of bareIds) {
-    if (model === undefined || others.length > 0 || targets.has(bareId)) continue;
-    targets.set(bareId, { kind: "model", model });
+  for (const [id, [model, ...others]] of bareIds) {
+    if (model === undefined || others.length > 0 || targets.has(id) || !SAFE_MODEL.test(model)) {
+      continue;
+    }
+    targets.set(id, { kind: "model", model });
   }
   return { models, roles, targets };
 }
@@ -133,9 +141,12 @@ export function suggestSubagentModelReferences(
     ...ranked(
       catalogue.models,
       ({ model }) => model,
-      ({ model, name }) => [model, model.slice(model.indexOf("/") + 1), ...(name ? [name] : [])],
-    ).map(({ model, name }) =>
-      item(model, name === undefined ? "Subagent model" : `Subagent model \u00b7 ${name}`),
+      ({ model, displayName }) => [model, bareId(model), ...(displayName ? [displayName] : [])],
+    ).map(({ model, displayName }) =>
+      item(
+        model,
+        displayName === undefined ? "Subagent model" : `Subagent model \u00b7 ${displayName}`,
+      ),
     ),
   ];
 }
@@ -190,7 +201,8 @@ export function transformSubagentModelReferences(
   if (names.length === 0) return text;
   return replaceProseReferences(text, {
     sigil: SUBAGENT_MODEL_SIGIL,
-    name: `(?:${names.join("|")})(?!:\\S)`,
+    // `%large:high`, `%large@x`, and `%large~x` name something longer, so they stay literal.
+    name: `(?:${names.join("|")})(?![:@~]\\S)`,
     resolve: (typed) => {
       const target = catalogue.targets.get(typed);
       if (target === undefined) return undefined;
