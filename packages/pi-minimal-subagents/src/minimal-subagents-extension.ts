@@ -57,6 +57,11 @@ import {
   replayRegistryEntries,
   type RegistryReplayDiagnostic,
 } from "./minimal-subagents-registry.js";
+import {
+  buildSubagentModelCatalogue,
+  registerSubagentModelReferences,
+  type SubagentModelCatalogue,
+} from "./minimal-subagents-model-references.js";
 import { createCoordinatorToolSchemas } from "./minimal-subagents-tool-schemas.js";
 import {
   findDeliveryEvidence,
@@ -151,18 +156,27 @@ export function availableToolNames(pi: Pick<ExtensionAPI, "getAllTools">): strin
   );
 }
 
+/** Every reachable tool name: active tools plus tools scripts can call without declaring them. */
+function reachableToolNamesIncludingCoordinator(
+  pi: Pick<ExtensionAPI, "getActiveTools" | "getAllTools">,
+): string[] {
+  const active = new Set(pi.getActiveTools());
+  const scriptCallable = pi
+    .getAllTools()
+    .filter((tool) => tool.exposure === "codemode" || tool.exposure === "deferred")
+    .map((tool) => tool.name);
+  return [...new Set([...active, ...scriptCallable])];
+}
+
 /** Reachable Tools: active tools plus tools scripts can call without declaring them. */
 export function reachableToolNames(
   pi: Pick<ExtensionAPI, "getActiveTools" | "getAllTools">,
 ): string[] {
-  const active = new Set(pi.getActiveTools());
+  const reachable = new Set(reachableToolNamesIncludingCoordinator(pi));
   return excludeCoordinatorTools(
     pi
       .getAllTools()
-      .filter(
-        (tool) =>
-          active.has(tool.name) || tool.exposure === "codemode" || tool.exposure === "deferred",
-      )
+      .filter((tool) => reachable.has(tool.name))
       .map((tool) => tool.name),
   );
 }
@@ -412,6 +426,7 @@ async function waitForRootSessionIdle(context: ExtensionContext): Promise<void> 
 interface ActiveSubagentAccessSession {
   readonly agentDir: string;
   readonly eligibleModelIds: readonly string[];
+  readonly subagentModelCatalogue: SubagentModelCatalogue;
   readonly context: ExtensionContext;
   settings: ResolvedSubagentAccessSettings;
   branchOverride: SubagentAccessOverride;
@@ -550,8 +565,9 @@ export class MinimalSubagentsLifecycleController {
   ) {}
 
   /**
-   * Register stable tools, renderers, and the six static Pi lifecycle event handlers. `turn_end` is
-   * registered only while a result waits in the root's steer queue (`watchRootTurnEnds`).
+   * Register stable tools, renderers, the six static Pi lifecycle event handlers, and Subagent
+   * Model References. `turn_end` is registered only while a result waits in the root's steer queue
+   * (`watchRootTurnEnds`).
    */
   register(): void {
     trackQueuedSteers(this.pi);
@@ -586,6 +602,7 @@ export class MinimalSubagentsLifecycleController {
     this.pi.on("message_end", (event, context) => this.reconcileMessageDelivery(event, context));
     this.pi.on("agent_start", () => this.deliverDiscardedRootResults());
     this.pi.on("session_shutdown", (event, context) => this.shutdownSession(event, context));
+    registerSubagentModelReferences(this.pi, () => this.currentSubagentModelCatalogue());
   }
 
   private async startSession(event: SessionStartEvent, context: ExtensionContext): Promise<void> {
@@ -776,6 +793,11 @@ export class MinimalSubagentsLifecycleController {
     this.accessSession = {
       agentDir,
       eligibleModelIds,
+      subagentModelCatalogue: buildSubagentModelCatalogue({
+        eligibleModelIds,
+        models,
+        modelRoles: minimalSubagentsConfig.modelRoles,
+      }),
       context,
       settings: minimalSubagentsConfig.subagentAccess,
       branchOverride,
@@ -967,6 +989,15 @@ export class MinimalSubagentsLifecycleController {
       accessSession.branchOverride,
       this.pi.getActiveTools(),
     );
+  }
+
+  /** The Subagent Model Catalogue, offered only while the Root Agent can reach `subagent`. */
+  private currentSubagentModelCatalogue(): SubagentModelCatalogue | undefined {
+    const catalogue = this.accessSession?.subagentModelCatalogue;
+    if (catalogue === undefined) return undefined;
+    return reachableToolNamesIncludingCoordinator(this.pi).includes("subagent")
+      ? catalogue
+      : undefined;
   }
 
   private currentSubagentStatusAccess(): MinimalSubagentsStatusAccess {

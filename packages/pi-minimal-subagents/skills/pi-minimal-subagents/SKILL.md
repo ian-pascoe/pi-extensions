@@ -1,13 +1,13 @@
 ---
 name: pi-minimal-subagents
-description: Configure or diagnose Pi Minimal Subagents for Subagent Access, missing Coordinator Tools, spawn, capability, delivery, wait, restore, reload, or fork failures.
+description: Configure or diagnose Pi Minimal Subagents for Subagent Access, missing Coordinator Tools, Subagent Model References, spawn, capability, delivery, wait, restore, reload, or fork failures.
 license: MIT
 disable-model-invocation: true
 ---
 
 # Pi Minimal Subagents
 
-1. Read the relevant access, spawn, capability, delivery, or recovery section of [`../../README.md`](../../README.md).
+1. Read the relevant access, model reference, spawn, capability, delivery, or recovery section of [`../../README.md`](../../README.md).
 2. For Subagent Access or missing Root Agent Coordinator Tools, run `/subagents status` first and record the effective source plus actual active-tool count.
 3. From the direct parent, use `subagent_status` with `verbose: true` to capture the Child Agent's Launch Contract, effective tools, Runtime Profile, dependencies, result, and Recent Activity.
 4. Classify the fault as Subagent Access, launch resolution, adjacency, ordinary-tool ceiling, delivery state, or Registry recovery.
