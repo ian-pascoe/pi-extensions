@@ -221,7 +221,8 @@ A name may end in `:level`, one of the thinking levels its model supports
 (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, as Pi reports for
 that model; a role uses its model's levels). The whole text is read as a name
 first, so an id that itself ends in `:text`, such as `amazon.nova-2-lite-v1:0`,
-keeps it.
+keeps it. Such an id that several providers share stays literal rather than
+being read as a shorter name plus a level.
 
 These stay literal:
 
@@ -271,7 +272,8 @@ Typing `:` straight after a name that converts lists its supported levels, in
 Pi's order: `%claude-opus-5-5:` offers `%claude-opus-5-5:off` through
 `%claude-opus-5-5:max`, and `%large:h` narrows to `%large:high`. The name
 before the colon is case-sensitive. A level is not offered where `name:level`
-is itself an eligible model id; that id is listed instead.
+is itself a model id or role name; that name is listed instead when it
+converts.
 
 Pi's editor opens the popup by itself only for characters the outermost
 autocomplete provider lists in `triggerCharacters`. If another extension wraps

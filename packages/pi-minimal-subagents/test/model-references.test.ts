@@ -346,7 +346,7 @@ describe("Subagent Model References with a thinking level", () => {
       {
         value: "%large:high",
         label: "%large:high",
-        description: "Subagent role \u00b7 anthropic/claude-opus-5-5 \u00b7 thinking high",
+        description: "Subagent role \u00b7 anthropic/claude-opus-5-5:high",
       },
     ]);
   });
@@ -357,6 +357,21 @@ describe("Subagent Model References with a thinking level", () => {
     expect(
       suggestSubagentModelReferences(levels, "local/m:h").map((item) => item.description),
     ).toEqual(["Subagent model"]);
+  });
+
+  test("never reads an ambiguous id that ends in a colon suffix as another name with a level", () => {
+    const ambiguous = buildSubagentModelCatalogue({
+      eligibleModelIds: ["one/m", "one/m:high", "two/m:high"],
+      models: [{ provider: "one", id: "m", thinkingLevels: ALL }],
+      modelRoles: [],
+    });
+    expect(transformSubagentModelReferences("%m:high", ambiguous)).toBe("%m:high");
+    expect(transformSubagentModelReferences("%m:low", ambiguous)).toBe(
+      levelLink("m:low", "one/m", "low"),
+    );
+    expect(suggestSubagentModelReferences(ambiguous, "m:").map((item) => item.value)).not.toContain(
+      "%m:high",
+    );
   });
 
   test("leaves converted links with a level unchanged when submitted again", () => {
