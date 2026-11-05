@@ -4,6 +4,8 @@ Subagent Model References use `%` (`%claude-opus-5-5`, `%large`). Pi already use
 
 A submitted reference becomes `[%name](model://provider/id "Subagent model: model=provider/id")` or `[%name](model-role://name "Subagent model role: role=name")`. The title names the `subagent` argument, so the Root Agent does not read the reference as "switch your own model". Names that would need escaping in a link are left out of the Subagent Model Catalogue rather than encoded, because the Root Agent copies the id verbatim into the tool call.
 
+A name may end in `:level`, one of the thinking levels Pi reports its model supports, which adds `thinking_level=<level>` to the title. The suffix follows the `modelRoles` notation (`provider/model:high`) and resolves the same way: the whole text is tried as a name first, so a real id ending in `:text` keeps it. Only supported levels convert, so a link never names a level the spawn would silently clamp; any other `:text` after a name stays literal. Typing `:` after a name lists its levels in the popup, rather than listing every model at every level up front, which would multiply a large catalogue several times over.
+
 ## Considered Options
 
 - `@`: rejected. It is Pi's file-mention sigil, and pi-mcp-selector's ADR-0002 showed that sharing its popup breaks when another extension wraps the provider.

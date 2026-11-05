@@ -145,13 +145,13 @@ function expectByteIdenticalPrefix(earlier: ProviderRequest, later: ProviderRequ
 test("a turn with Subagent Model References keeps tools, system prompt, and history byte-identical", async () => {
   const { session, requests } = await startSession();
   await session.prompt("Hello there");
-  await session.prompt(`Plan with %large, then review with %${MODEL}.`);
+  await session.prompt(`Plan with %large, then review with %${MODEL}:low.`);
   await session.prompt("Anything else?");
   expect(requests).toHaveLength(3);
 
   expect(userTexts(requests[1]!)).toEqual([
     "Hello there",
-    `Plan with [%large](model-role://large "Subagent model role: role=large"), then review with [%${MODEL}](model://${MODEL} "Subagent model: model=${MODEL}").`,
+    `Plan with [%large](model-role://large "Subagent model role: role=large"), then review with [%${MODEL}:low](model://${MODEL} "Subagent model: model=${MODEL}, thinking_level=low").`,
   ]);
   expect(requests[2]!.messages.length).toBeGreaterThan(requests[1]!.messages.length);
   for (let index = 1; index < requests.length; index++) {
@@ -161,8 +161,8 @@ test("a turn with Subagent Model References keeps tools, system prompt, and hist
 
 test("literal text sends the user message untouched", async () => {
   const { session, requests } = await startSession();
-  await session.prompt("Use `%large`, 50% of the time, and %large:high");
+  await session.prompt("Use `%large`, 50% of the time, and %large:ultra");
   await session.prompt("Again");
-  expect(userTexts(requests[1]!)[0]).toBe("Use `%large`, 50% of the time, and %large:high");
+  expect(userTexts(requests[1]!)[0]).toBe("Use `%large`, 50% of the time, and %large:ultra");
   expectByteIdenticalPrefix(requests[0]!, requests[1]!);
 }, 30_000);

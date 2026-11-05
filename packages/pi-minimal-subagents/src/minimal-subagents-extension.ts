@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import {
   buildSessionContext,
   CustomEditor,
@@ -795,7 +796,12 @@ export class MinimalSubagentsLifecycleController {
       eligibleModelIds,
       subagentModelCatalogue: buildSubagentModelCatalogue({
         eligibleModelIds,
-        models,
+        models: models.map((model) => ({
+          provider: model.provider,
+          id: model.id,
+          name: model.name,
+          thinkingLevels: getSupportedThinkingLevels(model),
+        })),
         modelRoles: minimalSubagentsConfig.modelRoles,
       }),
       context,

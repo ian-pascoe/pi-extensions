@@ -260,3 +260,107 @@ describe("Subagent Model References", () => {
     );
   });
 });
+
+describe("Subagent Model References with a thinking level", () => {
+  const ALL = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+  const levels = buildSubagentModelCatalogue({
+    eligibleModelIds: [
+      "anthropic/claude-opus-5-5",
+      "openai/gpt-4o",
+      "amazon-bedrock/amazon.nova-2-lite-v1:0",
+      "local/m",
+      "local/m:high",
+    ],
+    models: [
+      { provider: "anthropic", id: "claude-opus-5-5", thinkingLevels: ALL },
+      { provider: "openai", id: "gpt-4o", thinkingLevels: ["off"] },
+      { provider: "local", id: "m", thinkingLevels: ALL },
+    ],
+    modelRoles: [{ name: "large", model: "anthropic/claude-opus-5-5", thinkingLevel: "high" }],
+  });
+  const levelLink = (typed: string, model: string, level: string): string =>
+    `[%${typed}](model://${model} "Subagent model: model=${model}, thinking_level=${level}")`;
+
+  test("converts a supported level after a full id, a bare id, or a role", () => {
+    expect(transformSubagentModelReferences("Use %anthropic/claude-opus-5-5:high.", levels)).toBe(
+      `Use ${levelLink("anthropic/claude-opus-5-5:high", "anthropic/claude-opus-5-5", "high")}.`,
+    );
+    expect(transformSubagentModelReferences("Use %claude-opus-5-5:max, %gpt-4o:off", levels)).toBe(
+      `Use ${levelLink("claude-opus-5-5:max", "anthropic/claude-opus-5-5", "max")}, ${levelLink("gpt-4o:off", "openai/gpt-4o", "off")}`,
+    );
+    expect(transformSubagentModelReferences("Plan with %large:low: go", levels)).toBe(
+      'Plan with [%large:low](model-role://large "Subagent model role: role=large, thinking_level=low"): go',
+    );
+  });
+
+  test("leaves an unsupported or unknown level literal", () => {
+    for (const text of [
+      "%gpt-4o:high",
+      "%large:ultra",
+      "%large:High",
+      "%amazon.nova-2-lite-v1:0:low",
+    ]) {
+      expect(transformSubagentModelReferences(text, levels), text).toBe(text);
+    }
+  });
+
+  test("reads an id that already ends in a colon suffix as that id first", () => {
+    expect(transformSubagentModelReferences("%local/m:high", levels)).toBe(
+      modelLink("local/m:high", "local/m:high"),
+    );
+    expect(transformSubagentModelReferences("%local/m:low", levels)).toBe(
+      levelLink("local/m:low", "local/m", "low"),
+    );
+    expect(transformSubagentModelReferences("%amazon.nova-2-lite-v1:0", levels)).toBe(
+      modelLink("amazon.nova-2-lite-v1:0", "amazon-bedrock/amazon.nova-2-lite-v1:0"),
+    );
+  });
+
+  test("describes each entry with the thinking levels it supports", () => {
+    const describe = (query: string) =>
+      suggestSubagentModelReferences(levels, query).map(({ value, description }) => [
+        value,
+        description,
+      ]);
+    expect(describe("large")).toEqual([
+      [
+        "%large",
+        "Subagent role \u00b7 anthropic/claude-opus-5-5:high \u00b7 off/minimal/low/medium/high/xhigh/max",
+      ],
+    ]);
+    expect(describe("gpt")).toEqual([["%openai/gpt-4o", "Subagent model \u00b7 off"]]);
+    expect(describe("nova")).toEqual([
+      ["%amazon-bedrock/amazon.nova-2-lite-v1:0", "Subagent model"],
+    ]);
+  });
+
+  test("lists a name's supported levels after a colon, in Pi's order", () => {
+    const values = (query: string) =>
+      suggestSubagentModelReferences(levels, query).map((item) => item.value);
+    expect(values("claude-opus-5-5:")).toEqual(ALL.map((level) => `%claude-opus-5-5:${level}`));
+    expect(values("large:m")).toEqual(["%large:minimal", "%large:medium", "%large:max"]);
+    expect(values("gpt-4o:")).toEqual(["%gpt-4o:off"]);
+    expect(values("gpt-4o:h")).toEqual([]);
+    expect(values("Large:")).toEqual([]);
+    expect(suggestSubagentModelReferences(levels, "large:hi")).toEqual([
+      {
+        value: "%large:high",
+        label: "%large:high",
+        description: "Subagent role \u00b7 anthropic/claude-opus-5-5 \u00b7 thinking high",
+      },
+    ]);
+  });
+
+  test("offers an id that already ends in a colon suffix instead of a level that spells it", () => {
+    const values = suggestSubagentModelReferences(levels, "local/m:h").map((item) => item.value);
+    expect(values).toEqual(["%local/m:high"]);
+    expect(
+      suggestSubagentModelReferences(levels, "local/m:h").map((item) => item.description),
+    ).toEqual(["Subagent model"]);
+  });
+
+  test("leaves converted links with a level unchanged when submitted again", () => {
+    const once = transformSubagentModelReferences("%large:low and %gpt-4o:off", levels);
+    expect(transformSubagentModelReferences(once, levels)).toBe(once);
+  });
+});

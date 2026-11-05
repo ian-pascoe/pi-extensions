@@ -179,8 +179,8 @@ consolidated startup warning and keeps every valid role.
 
 ## Subagent model references
 
-Point the Root Agent at a model for its subagents with `%name` anywhere in a
-user message. Type `%` to open a completion popup of model roles and eligible
+Point the Root Agent at a model for its subagents with `%name`, or
+`%name:level` for a thinking level, anywhere in a user message. Type `%` to open a completion popup of model roles and eligible
 models, like `$skill`, `&server`, and `#123` in the sibling selectors. A
 reference only points. It doesn't launch a Child Agent or change the Root Agent's
 own model, and the Root Agent decides whether to pass it to `subagent`.
@@ -194,8 +194,16 @@ Plan with %design, then review with %claude-opus-5-5.
 → Plan with [%design](model-role://design "Subagent model role: role=design"), then review with [%claude-opus-5-5](model://anthropic/claude-opus-5-5 "Subagent model: model=anthropic/claude-opus-5-5").
 ```
 
-The label keeps what you typed. The title names the `subagent` argument and its
-value. A role link leaves out the role's model, which the `subagent` prompt
+With a thinking level:
+
+```text
+Plan with %design:low, then review with %claude-opus-5-5:high.
+→ Plan with [%design:low](model-role://design "Subagent model role: role=design, thinking_level=low"), then review with [%claude-opus-5-5:high](model://anthropic/claude-opus-5-5 "Subagent model: model=anthropic/claude-opus-5-5, thinking_level=high").
+```
+
+The label keeps what you typed. The title names the `subagent` arguments and
+their values. A level after a role overrides the role's own thinking level, as
+an explicit `thinking_level` does. A role link leaves out the role's model, which the `subagent` prompt
 guidelines already list. The submitted transcript stores the links rather than
 a separate raw message. Submitting converted text again changes nothing.
 
@@ -209,11 +217,19 @@ this precedence:
 3. a bare model id that exactly one eligible model has. `%claude-opus-5-5`
    converts only if no other provider offers `claude-opus-5-5`.
 
+A name may end in `:level`, one of the thinking levels its model supports
+(`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, as Pi reports for
+that model; a role uses its model's levels). The whole text is read as a name
+first, so an id that itself ends in `:text`, such as `amazon.nova-2-lite-v1:0`,
+keeps it.
+
 These stay literal:
 
 - unknown or ambiguous names, and `%Large` for a role named `large`
-- names followed by `:text` (`%large:high`), `@text`, `~text`, `/`, `-`, or
-  `.word`
+- a level the model doesn't support (`%gpt-4o:high` for a model without
+  reasoning), or one in another case (`%large:High`)
+- names followed by any other `:text` (`%large:ultra`), `@text`, `~text`, `/`,
+  `-`, or `.word`
 - `50%`, `a%20b`, `%PATH%`, `\%large`, code, existing links, and HTML
 
 Sentence punctuation does not block a reference: `(%large)`, `%large's`,
@@ -247,8 +263,15 @@ then models, each with names that start with the query first and then
 alphabetical. The filter is case-insensitive. It matches role names, model
 `provider/id`s, and model display names. The popup closes at a space, so type
 one word of a display name. Selecting a model inserts its full
-`%provider/id`. Descriptions read `Subagent role · provider/model:thinking ·
-hint` and `Subagent model · Display Name`.
+`%provider/id`. Descriptions list the thinking levels each entry supports:
+`Subagent role · provider/model:thinking · off/…/high · hint` and
+`Subagent model · Display Name · off/…/high`.
+
+Typing `:` straight after a name that converts lists its supported levels, in
+Pi's order: `%claude-opus-5-5:` offers `%claude-opus-5-5:off` through
+`%claude-opus-5-5:max`, and `%large:h` narrows to `%large:high`. The name
+before the colon is case-sensitive. A level is not offered where `name:level`
+is itself an eligible model id; that id is listed instead.
 
 Pi's editor opens the popup by itself only for characters the outermost
 autocomplete provider lists in `triggerCharacters`. If another extension wraps
@@ -270,8 +293,9 @@ so earlier history and the prompt-cache prefix stay byte-identical.
   extension exposes it through `codemode` or `deferred`. If another extension
   wraps the autocomplete provider, press Tab.
 - **No link:** check the exact case-sensitive name and whether the bare id is
-  shared by several providers. Also check whether the reference is escaped, in
-  code, or followed by `:text`, `@text`, or `~text`. Reload after changing `modelRoles` or
+  shared by several providers. A `:level` must be one the model supports; type
+  `%name:` to list them. Also check whether the reference is escaped, in code,
+  or followed by other `:text`, `@text`, or `~text`. Reload after changing `modelRoles` or
   `enabledModels`.
 - **The Root Agent used another model:** inspect the submitted user message
   first. A correct link verifies conversion; using it is the Root Agent's
