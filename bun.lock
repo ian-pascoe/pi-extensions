@@ -170,7 +170,7 @@
     },
     "packages/pi-minimal-subagents": {
       "name": "@ian-pascoe/pi-minimal-subagents",
-      "version": "0.21.3",
+      "version": "0.22.0",
       "dependencies": {
         "@ian-pascoe/pi-utils": "^0.13.0",
         "minimatch": "^11.0.4",
