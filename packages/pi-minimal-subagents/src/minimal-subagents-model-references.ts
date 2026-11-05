@@ -13,10 +13,14 @@ const NAME_CHARACTER = "[A-Za-z0-9._:/~@+-]";
 /** Characters a partially typed model or role name may hold. */
 export const SUBAGENT_MODEL_PARTIAL_NAME = `${NAME_CHARACTER}*`;
 
-/** One Eligible Model, named `provider/id`, with Pi's display name when known. */
+/**
+ * One Eligible Model, named `provider/id`, with Pi's display name when known and the thinking
+ * levels it supports, in Pi's order.
+ */
 export interface SubagentModel {
   model: string;
   displayName?: string;
+  thinkingLevels: readonly string[];
 }
 
 /**
@@ -30,15 +34,32 @@ export interface SubagentModelRole {
   hint?: string;
 }
 
+/** A model Pi knows, as the catalogue reads it. */
+export interface SubagentModelInput {
+  provider: string;
+  id: string;
+  name?: string;
+  /** The thinking levels the model supports, in Pi's order; none when unknown. */
+  thinkingLevels?: readonly string[];
+}
+
 /** Subagent Model Catalogue: the Eligible Models and Model Roles a reference can name. */
 export interface SubagentModelCatalogue {
   models: readonly SubagentModel[];
   roles: readonly SubagentModelRole[];
   /** Each name that converts, mapped to what it points at. */
   targets: ReadonlyMap<string, SubagentModelTarget>;
+  /**
+   * Every name an Eligible Model or Model Role goes by, including ambiguous and left-out ones, so
+   * no such name is read as a shorter name plus a `:level`.
+   */
+  names: ReadonlySet<string>;
 }
 
-type SubagentModelTarget = { kind: "model"; model: string } | { kind: "role"; role: string };
+/** What a name points at, with the thinking levels a `:level` suffix may name. */
+type SubagentModelTarget = ({ kind: "model"; model: string } | { kind: "role"; role: string }) & {
+  thinkingLevels: readonly string[];
+};
 
 /**
  * A model a link can carry verbatim: no escaping in its destination or title, and an ending the
@@ -51,30 +72,37 @@ const TYPEABLE_ROLE = new RegExp(`^[A-Za-z0-9](?:${NAME_CHARACTER}*[A-Za-z0-9])?
 /** The id of a `provider/id` model without its provider; the id itself may contain `/`. */
 const bareId = (model: string): string => model.slice(model.indexOf("/") + 1);
 
+/** The name before a final `:level` and the level, or undefined without a colon. */
+function splitLevel(typed: string): { base: string; level: string } | undefined {
+  const colon = typed.lastIndexOf(":");
+  return colon < 0 ? undefined : { base: typed.slice(0, colon), level: typed.slice(colon + 1) };
+}
+
 export function buildSubagentModelCatalogue(input: {
   eligibleModelIds: readonly string[];
-  models: readonly { provider: string; id: string; name?: string }[];
+  models: readonly SubagentModelInput[];
   modelRoles: readonly SubagentModelRole[];
 }): SubagentModelCatalogue {
-  const displayNames = new Map<string, string>(
-    input.models.flatMap(({ provider, id, name }) =>
-      name === undefined ? [] : [[`${provider}/${id}`, name] as const],
-    ),
-  );
+  const known = new Map(input.models.map((model) => [`${model.provider}/${model.id}`, model]));
   const models = input.eligibleModelIds
     .filter((model) => SAFE_MODEL.test(model))
     .map((model): SubagentModel => {
-      const displayName = displayNames.get(model);
-      return displayName === undefined ? { model } : { model, displayName };
+      const { name: displayName, thinkingLevels = [] } = known.get(model) ?? {};
+      return displayName === undefined
+        ? { model, thinkingLevels }
+        : { model, displayName, thinkingLevels };
     });
+  const levelsOf = (model: string) => known.get(model)?.thinkingLevels ?? [];
   // Precedence: a full `provider/id`, then a Model Role, then a bare id one Eligible Model has.
   const targets = new Map<string, SubagentModelTarget>(
-    models.map(({ model }) => [model, { kind: "model", model }]),
+    models.map(({ model, thinkingLevels }) => [model, { kind: "model", model, thinkingLevels }]),
   );
   const roles = input.modelRoles.filter(
     (role) => TYPEABLE_ROLE.test(role.name) && !targets.has(role.name),
   );
-  for (const role of roles) targets.set(role.name, { kind: "role", role: role.name });
+  for (const role of roles) {
+    targets.set(role.name, { kind: "role", role: role.name, thinkingLevels: levelsOf(role.model) });
+  }
   // Count every Eligible Model, including left-out ones, so a shared bare id stays ambiguous.
   const bareIds = new Map<string, string[]>();
   for (const model of input.eligibleModelIds) {
@@ -84,15 +112,20 @@ export function buildSubagentModelCatalogue(input: {
     if (model === undefined || others.length > 0 || targets.has(id) || !SAFE_MODEL.test(model)) {
       continue;
     }
-    targets.set(id, { kind: "model", model });
+    targets.set(id, { kind: "model", model, thinkingLevels: levelsOf(model) });
   }
-  return { models, roles, targets };
+  const names = new Set([
+    ...input.eligibleModelIds.flatMap((model) => [model, bareId(model)]),
+    ...input.modelRoles.map((role) => role.name),
+  ]);
+  return { models, roles, targets, names };
 }
 
 /**
- * Completion items for `query`: Model Roles by name, then Eligible Models by `provider/id` or
- * display name, case-insensitively. Within each group, names that start with the query come
- * first, then alphabetical order. Models insert their full `provider/id`.
+ * Completion items for `query`: after `name:`, the thinking levels `name` supports; then Model
+ * Roles by name, then Eligible Models by `provider/id` or display name, case-insensitively. Within
+ * each group, names that start with the query come first, then alphabetical order. Models insert
+ * their full `provider/id`, and each entry's description lists its thinking levels.
  */
 export function suggestSubagentModelReferences(
   catalogue: SubagentModelCatalogue,
@@ -123,32 +156,75 @@ export function suggestSubagentModelReferences(
     const value = `${SUBAGENT_MODEL_SIGIL}${name}`;
     return { value, label: value, description };
   };
+  const describeLevels = (name: string): string[] => {
+    const levels = catalogue.targets.get(name)?.thinkingLevels ?? [];
+    return levels.length === 0 ? [] : [levels.join("/")];
+  };
+  const displayNames = new Map(
+    catalogue.models.flatMap(({ model, displayName }) =>
+      displayName === undefined ? [] : [[model, displayName] as const],
+    ),
+  );
+  const describeModel = (model: string, levels: readonly string[] = []): string => {
+    const displayName = displayNames.get(model);
+    return ["Subagent model", ...(displayName === undefined ? [] : [displayName]), ...levels].join(
+      " \u00b7 ",
+    );
+  };
+  // A role reads `provider/model:thinking`, with the typed level in place of the role's own.
+  const describeRole = (
+    role: SubagentModelRole,
+    thinkingLevel = role.thinkingLevel,
+    levels: readonly string[] = [],
+  ): string =>
+    [
+      "Subagent role",
+      thinkingLevel === undefined ? role.model : `${role.model}:${thinkingLevel}`,
+      ...levels,
+      ...(role.hint === undefined ? [] : [role.hint]),
+    ].join(" \u00b7 ");
+  const roles = new Map(catalogue.roles.map((role) => [role.name, role]));
   return [
+    ...suggestThinkingLevels(catalogue, query).map(({ name, target, thinkingLevel }) => {
+      const role = target.kind === "role" ? roles.get(target.role) : undefined;
+      return item(
+        name,
+        role !== undefined
+          ? describeRole(role, thinkingLevel)
+          : describeModel(target.kind === "model" ? target.model : name),
+      );
+    }),
     ...ranked(
       catalogue.roles,
       (role) => role.name,
       (role) => [role.name],
     ).map((role) =>
-      item(
-        role.name,
-        [
-          "Subagent role",
-          role.thinkingLevel === undefined ? role.model : `${role.model}:${role.thinkingLevel}`,
-          ...(role.hint === undefined ? [] : [role.hint]),
-        ].join(" \u00b7 "),
-      ),
+      item(role.name, describeRole(role, role.thinkingLevel, describeLevels(role.name))),
     ),
     ...ranked(
       catalogue.models,
       ({ model }) => model,
       ({ model, displayName }) => [model, bareId(model), ...(displayName ? [displayName] : [])],
-    ).map(({ model, displayName }) =>
-      item(
-        model,
-        displayName === undefined ? "Subagent model" : `Subagent model \u00b7 ${displayName}`,
-      ),
-    ),
+    ).map(({ model }) => item(model, describeModel(model, describeLevels(model)))),
   ];
+}
+
+/**
+ * After `name:`, the thinking levels `name` supports that start with what follows the colon, in
+ * Pi's order. A level is skipped when `name:level` is itself a model or role name, which never
+ * reads as `name` with a level.
+ */
+function suggestThinkingLevels(
+  catalogue: SubagentModelCatalogue,
+  query: string,
+): { name: string; target: SubagentModelTarget; thinkingLevel: string }[] {
+  const split = splitLevel(query);
+  const target = split === undefined ? undefined : catalogue.targets.get(split.base);
+  if (split === undefined || target === undefined) return [];
+  const wanted = split.level.toLowerCase();
+  return target.thinkingLevels
+    .filter((level) => level.startsWith(wanted) && !catalogue.names.has(`${split.base}:${level}`))
+    .map((thinkingLevel) => ({ name: `${split.base}:${thinkingLevel}`, target, thinkingLevel }));
 }
 
 /**
@@ -188,8 +264,27 @@ export function registerSubagentModelReferences(
 const escapeRegex = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
- * Converts `%name` shorthand for a catalogue entry into a link that names the `subagent` argument,
- * inside Prose Spans. Unknown names, code, links, and names followed by `:text` stay literal.
+ * The catalogue entry and thinking level a typed name points at. The whole name is tried first,
+ * against every model and role name, so an id that itself ends in `:text` keeps it, and stays
+ * literal when ambiguous; otherwise a final `:level` must be one its model supports.
+ */
+function resolveTyped(
+  catalogue: SubagentModelCatalogue,
+  typed: string,
+): { target: SubagentModelTarget; thinkingLevel?: string } | undefined {
+  const exact = catalogue.targets.get(typed);
+  if (exact !== undefined) return { target: exact };
+  const split = catalogue.names.has(typed) ? undefined : splitLevel(typed);
+  const target = split === undefined ? undefined : catalogue.targets.get(split.base);
+  return split !== undefined && target?.thinkingLevels.includes(split.level)
+    ? { target, thinkingLevel: split.level }
+    : undefined;
+}
+
+/**
+ * Converts `%name` and `%name:level` shorthand for a catalogue entry into a link that names the
+ * `subagent` arguments, inside Prose Spans. Unknown names and levels, code, links, and names
+ * followed by other `:text` stay literal.
  */
 export function transformSubagentModelReferences(
   text: string,
@@ -199,17 +294,23 @@ export function transformSubagentModelReferences(
     .sort((left, right) => right.length - left.length)
     .map(escapeRegex);
   if (names.length === 0) return text;
+  const levels = [...new Set([...catalogue.targets.values()].flatMap((t) => t.thinkingLevels))]
+    .sort((left, right) => right.length - left.length)
+    .map(escapeRegex);
+  const level = levels.length === 0 ? "" : `(?::(?:${levels.join("|")}))?`;
   return replaceProseReferences(text, {
     sigil: SUBAGENT_MODEL_SIGIL,
-    // `%large:high`, `%large@x`, and `%large~x` name something longer, so they stay literal.
-    name: `(?:${names.join("|")})(?![:@~]\\S)`,
+    // `%large:ultra`, `%large@x`, and `%large~x` name something longer, so they stay literal.
+    name: `(?:${names.join("|")})${level}(?![:@~]\\S)`,
     resolve: (typed) => {
-      const target = catalogue.targets.get(typed);
-      if (target === undefined) return undefined;
+      const resolved = resolveTyped(catalogue, typed);
+      if (resolved === undefined) return undefined;
+      const { target, thinkingLevel } = resolved;
       const label = `${SUBAGENT_MODEL_SIGIL}${typed}`;
+      const thinking = thinkingLevel === undefined ? "" : `, thinking_level=${thinkingLevel}`;
       return target.kind === "model"
-        ? `[${label}](model://${target.model} "Subagent model: model=${target.model}")`
-        : `[${label}](model-role://${target.role} "Subagent model role: role=${target.role}")`;
+        ? `[${label}](model://${target.model} "Subagent model: model=${target.model}${thinking}")`
+        : `[${label}](model-role://${target.role} "Subagent model role: role=${target.role}${thinking}")`;
     },
   });
 }

@@ -640,6 +640,12 @@ describe("minimal subagents extension lifecycle", () => {
         text: `Plan with ${roleLink} and ${modelLink}`,
       });
       expect(await input("Review with %reviewer")).toEqual({ action: "continue" });
+      // The test model reasons without an extended level map, so it supports `off` to `high`.
+      expect(await input("Plan with %large:low")).toEqual({
+        action: "transform",
+        text: 'Plan with [%large:low](model-role://large "Subagent model role: role=large, thinking_level=low")',
+      });
+      expect(await input("Plan with %large:xhigh")).toEqual({ action: "continue" });
 
       harness.setActiveTools(["read"]);
       expect(await input("Plan with %large")).toEqual({ action: "continue" });
