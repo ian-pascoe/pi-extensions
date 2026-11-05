@@ -1,8 +1,9 @@
 /**
- * Pi Skills Selector (`$`), Pi MCP Selector (`&`), and Pi Issues Selector (`#`, and `!` on GitLab) each stack a
- * completion provider over the one below and each rewrites the user's message in an `input`
- * handler. None depends on the others, so any load order is valid; this proves each order still
- * completes `/`, `@file`, `&server`, `$skill`, `#123`, and on a GitLab remote `!7`, and converts a message that holds every
+ * Pi Skills Selector (`$`), Pi MCP Selector (`&`), Pi Issues Selector (`#`, and `!` on GitLab), and
+ * Minimal Subagents' Subagent Model References (`%`) each stack a completion provider over the one
+ * below and each rewrites the user's message in an `input` handler. None depends on the others, so
+ * any load order is valid; this proves each order still completes `/`, `@file`, `&server`,
+ * `$skill`, `#123`, `%role`, and on a GitLab remote `!7`, and converts a message that holds every
  * kind of reference without one package damaging another's links.
  *
  * Why this lives at the repository root: see `formatter-lsp-combined-order.test.ts`. The harness
@@ -29,6 +30,10 @@ import type {
 import { describe, expect, test } from "vitest";
 import issuesSelector from "../packages/pi-issues-selector/src/index.js";
 import mcpSelector from "../packages/pi-mcp-selector/src/index.js";
+import {
+  buildSubagentModelCatalogue,
+  registerSubagentModelReferences,
+} from "../packages/pi-minimal-subagents/src/minimal-subagents-model-references.js";
 import skillsSelector from "../packages/pi-skills-selector/src/index.js";
 
 type Handler = (
@@ -36,10 +41,18 @@ type Handler = (
   context: ExtensionContext,
 ) => InputEventResult | void | Promise<InputEventResult | void>;
 
+/** A Subagent Model Catalogue whose `%28x` would convert in prose, as a skill link encodes `(`. */
+const SUBAGENT_MODELS = buildSubagentModelCatalogue({
+  eligibleModelIds: ["anthropic/claude-opus-5-5", "local/28x"],
+  models: [],
+  modelRoles: [{ name: "large", model: "anthropic/claude-opus-5-5" }],
+});
+
 const SELECTORS = {
   skills: skillsSelector,
   mcp: mcpSelector,
   issues: issuesSelector,
+  subagentModels: (pi) => registerSubagentModelReferences(pi, () => SUBAGENT_MODELS),
 } satisfies Record<string, ExtensionFactory>;
 type SelectorName = keyof typeof SELECTORS;
 
@@ -52,15 +65,15 @@ function permutations<T>(items: readonly T[]): T[][] {
     ]),
   );
 }
-const names: SelectorName[] = ["skills", "mcp", "issues"];
+const names: SelectorName[] = ["skills", "mcp", "issues", "subagentModels"];
 const orders = permutations(names);
 
-const skillCommand = (name: string): SlashCommandInfo => ({
+const skillCommand = (name: string, path = `/skills/${name}/SKILL.md`): SlashCommandInfo => ({
   name: `skill:${name}`,
   description: `Instructions for ${name}`,
   source: "skill",
   sourceInfo: {
-    path: `/skills/${name}/SKILL.md`,
+    path,
     source: "local",
     scope: "user",
     origin: "top-level",
@@ -140,7 +153,11 @@ class Host {
         on: (event: string, handler: Handler) => {
           (event === "input" ? this.handlers : this.sessionStarts).push(handler);
         },
-        getCommands: () => [skillCommand("review"), skillCommand("ponytail")],
+        getCommands: () => [
+          skillCommand("review"),
+          skillCommand("ponytail"),
+          skillCommand("odd", "/skills/(x)/SKILL.md"),
+        ],
         getAllTools: () => [mcpTool("github", "Search code and issues")],
         exec: async (command: string, args: string[]) => {
           if (command === "git") {
@@ -246,6 +263,10 @@ describe.each(orders.map((order) => [order.join(" → "), order] as const))(
           applied: "fix #123 ",
         },
       );
+      expect(await complete(provider, "plan with %la", (item) => item.value === "%large")).toEqual({
+        values: ["%large", "%anthropic/claude-opus-5-5"],
+        applied: "plan with %large ",
+      });
     });
 
     test("no selector takes the others' prefixes", async () => {
@@ -262,6 +283,8 @@ describe.each(orders.map((order) => [order.join(" → "), order] as const))(
         "`@gi`",
         "`&gi`",
         "`$re`",
+        "50%la",
+        "`%la`",
       ]) {
         const suggestions = await provider.getSuggestions([line], 0, line.length, { signal });
         // A mid-word sigil or code is no token, so no selector (and not the native files) answers.
@@ -271,10 +294,17 @@ describe.each(orders.map((order) => [order.join(" → "), order] as const))(
 
     test("one message holding every kind of reference converts fully", async () => {
       const converted = await new Host(order).submit(
-        "Use $review with &github to fix #12 and acme/other#1, not `$review` or `#12`.",
+        "Use $review with &github and %large to fix #12 and acme/other#1, not `$review`, `#12` or 50%.",
       );
       expect(converted).toBe(
-        'Use [$review](/skills/review/SKILL.md) with [&github](mcp://github "MCP server mcp__github") to fix [#12](https://github.com/acme/widgets/issues/12) and [acme/other#1](https://github.com/acme/other/issues/1), not `$review` or `#12`.',
+        'Use [$review](/skills/review/SKILL.md) with [&github](mcp://github "MCP server mcp__github") and [%large](model-role://large "Subagent model role: role=large") to fix [#12](https://github.com/acme/widgets/issues/12) and [acme/other#1](https://github.com/acme/other/issues/1), not `$review`, `#12` or 50%.',
+      );
+    });
+
+    test("a model reference leaves another selector's percent-encoded link alone", async () => {
+      const host = new Host(order);
+      expect(await host.submit("Follow $odd, then %28x")).toBe(
+        'Follow [$odd](/skills/%28x%29/SKILL.md), then [%28x](model://local/28x "Subagent model: model=local/28x")',
       );
     });
 
@@ -289,7 +319,7 @@ describe.each(orders.map((order) => [order.join(" → "), order] as const))(
 
     test("converting is idempotent across the selectors", async () => {
       const host = new Host(order);
-      const once = await host.submit("Use $review, &github, #12 and acme/other#1.");
+      const once = await host.submit("Use $review, &github, %large, #12 and acme/other#1.");
       expect(await host.submit(once)).toBe(once);
     });
 

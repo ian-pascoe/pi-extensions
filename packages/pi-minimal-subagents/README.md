@@ -177,6 +177,103 @@ roles by setting `modelRoles` to `null`.
 Invalid or unavailable entries are omitted. The extension emits one
 consolidated startup warning and keeps every valid role.
 
+## Subagent model references
+
+Point the Root Agent at a model for its subagents with `%name` anywhere in a
+user message. Type `%` to open a completion popup of model roles and eligible
+models, like `$skill`, `&server`, and `#123` in the sibling selectors. A
+reference only points. It doesn't launch a Child Agent or change the Root Agent's
+own model, and the Root Agent decides whether to pass it to `subagent`.
+
+### Submission
+
+Typed, pasted, and selected references are equivalent. On submission:
+
+```text
+Plan with %design, then review with %claude-opus-5-5.
+→ Plan with [%design](model-role://design "Subagent model role: role=design"), then review with [%claude-opus-5-5](model://anthropic/claude-opus-5-5 "Subagent model: model=anthropic/claude-opus-5-5").
+```
+
+The label keeps what you typed. The title names the `subagent` argument and its
+value. A role link leaves out the role's model, which the `subagent` prompt
+guidelines already list. The submitted transcript stores the links rather than
+a separate raw message. Submitting converted text again changes nothing.
+
+### Names
+
+A reference converts when its exact, case-sensitive name is one of these, in
+this precedence:
+
+1. an eligible model's full `provider/id`;
+2. a configured model role;
+3. a bare model id that exactly one eligible model has. `%claude-opus-5-5`
+   converts only if no other provider offers `claude-opus-5-5`.
+
+These stay literal:
+
+- unknown or ambiguous names, and `%Large` for a role named `large`
+- names followed by `:text` (`%large:high`), `/`, `-`, or `.word`
+- `50%`, `a%20b`, `%PATH%`, `\%large`, code, existing links, and HTML
+
+Sentence punctuation does not block a reference: `(%large)`, `%large's`,
+`%large.`, and `%large: review this` all convert.
+
+### The catalogue
+
+The models are exactly the `subagent` tool's `model` enum: authenticated models
+within the effective `enabledModels` scope. The roles are the valid configured
+`modelRoles`. Both are read when the session starts and change only on reload,
+like the enum. The root's current model is not listed unless it is eligible;
+omit `model` to inherit it.
+
+Some entries are left out:
+
+- a model whose id contains characters other than letters, digits, and
+  `. _ : / ~ @ + -`, or that doesn't end in a letter or digit
+- a role whose name doesn't start and end with a letter or digit or contains
+  such characters (`UI design`). It still works through the `role` argument.
+- a role named like an eligible model's full id
+
+References are offered and converted only while the Root Agent can reach
+`subagent`: it is active, or callable through `codemode` or `deferred` exposure.
+After `/subagents disable`, `%large` stays literal and the popup is hidden,
+silently. Links already sent stay as they are.
+
+### Completion popup
+
+`%` after a token boundary, or alone at the start of a line, lists roles first,
+then models, each with names that start with the query first and then
+alphabetical. The filter is case-insensitive. It matches role names, model
+`provider/id`s, and model display names. Selecting a model inserts its full
+`%provider/id`. Descriptions read `Subagent role · provider/model:thinking ·
+hint` and `Subagent model · Display Name`.
+
+Pi's editor opens the popup by itself only for characters the outermost
+autocomplete provider lists in `triggerCharacters`. If another extension wraps
+the provider without forwarding them, press Tab after `%`. See
+[ADR 0008](docs/adr/0008-reference-subagent-models-with-percent.md) for why `%`.
+
+### Integration
+
+The popup runs in the interactive terminal only. Conversion applies to
+interactive, RPC (`prompt`, `steer`, and `follow_up`), and print input,
+including the first `pi -p` prompt, and it keeps attachments. Input from other
+extensions is unchanged. The tool definitions and system prompt are unchanged,
+so earlier history and the prompt-cache prefix stay byte-identical.
+
+### Troubleshooting
+
+- **No popup:** type `%` after a space, and check that `/subagents status`
+  reports Subagent Access enabled with all Coordinator Tools active. If another extension wraps the autocomplete provider,
+  press Tab.
+- **No link:** check the exact case-sensitive name and whether the bare id is
+  shared by several providers. Also check whether the reference is escaped, in
+  code, or followed by `:text`. Reload after changing `modelRoles` or
+  `enabledModels`.
+- **The Root Agent used another model:** inspect the submitted user message
+  first. A correct link verifies conversion; using it is the Root Agent's
+  choice.
+
 ## Maximum delegation depth
 
 `minimalSubagents.maxSubagentDepth` is a positive safe integer. It counts

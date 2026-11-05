@@ -608,6 +608,54 @@ describe("minimal subagents extension lifecycle", () => {
     }
   });
 
+  it("converts Subagent Model References from the session-start catalogue while subagent is reachable", async () => {
+    const cwd = await createTemporaryDirectory("minimal-subagents-model-references-");
+    const settingsPath = join(cwd, ".pi", "settings.json");
+    await mkdir(join(cwd, ".pi"));
+    const writeRoles = (modelRoles: Record<string, string>) =>
+      writeFile(settingsPath, JSON.stringify({ minimalSubagents: { modelRoles } }));
+    await writeRoles({ large: "lifecycle-test/model:high" });
+    const sessionManager = await createPersistedSession(cwd, cwd);
+    const deferredSubagent: ToolInfo = {
+      name: "subagent",
+      description: "Spawn",
+      parameters: Type.Object({}),
+      exposure: "deferred",
+      sourceInfo: { path: "<test>", source: "test", scope: "temporary", origin: "top-level" },
+    };
+    const rootTools: ToolInfo[] = [];
+    const harness = await createExtensionHarness(sessionManager, undefined, undefined, rootTools);
+    const input = (text: string) => harness.runner.emitInput(text, undefined, "interactive");
+    const roleLink = '[%large](model-role://large "Subagent model role: role=large")';
+    const modelLink =
+      '[%lifecycle-test/model](model://lifecycle-test/model "Subagent model: model=lifecycle-test/model")';
+    try {
+      expect(await input("Plan with %large")).toEqual({ action: "continue" });
+      await harness.runner.emit(sessionStartEvent());
+      await writeRoles({ reviewer: "lifecycle-test/model" });
+      expect(harness.getActiveTools()).toContain("subagent");
+
+      expect(await input("Plan with %large and %lifecycle-test/model")).toEqual({
+        action: "transform",
+        text: `Plan with ${roleLink} and ${modelLink}`,
+      });
+      expect(await input("Review with %reviewer")).toEqual({ action: "continue" });
+
+      harness.setActiveTools(["read"]);
+      expect(await input("Plan with %large")).toEqual({ action: "continue" });
+
+      rootTools.push(deferredSubagent);
+      expect(await input("Plan with %large")).toEqual({
+        action: "transform",
+        text: `Plan with ${roleLink}`,
+      });
+      expect(harness.extensionErrors).toEqual([]);
+    } finally {
+      await emitSessionShutdown(harness, "quit");
+    }
+    expect(await input("Plan with %large")).toEqual({ action: "continue" });
+  });
+
   it("registers both renderers and all six real coordinator tools, then hands off only a confirmed fork", async () => {
     const cwd = await createTemporaryDirectory("minimal-subagents-lifecycle-cwd-");
     const sessionDirectory = await createTemporaryDirectory(
