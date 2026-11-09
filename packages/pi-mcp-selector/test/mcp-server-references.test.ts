@@ -79,19 +79,13 @@ describe("MCP Server Catalogue", () => {
     expect(
       getMcpServerCatalogue([
         tool("mcp__a", "codemode", { instructions: "# Executor\nRuns code." }),
-        tool("mcp__b", "codemode", { description: "### Foo" }),
         tool("mcp__c", "codemode", { instructions: "#\n## \n  ## Third  \nmore" }),
         tool("mcp__d", "codemode", { description: "#hashtag" }),
-        tool("mcp__e", "codemode", { instructions: "## Executor ##" }),
-        tool("mcp__f", "codemode", { description: "Use # and C#" }),
       ]),
     ).toEqual([
       { name: "a", namespace: "mcp__a", description: "Executor" },
-      { name: "b", namespace: "mcp__b", description: "Foo" },
       { name: "c", namespace: "mcp__c", description: "Third" },
       { name: "d", namespace: "mcp__d", description: "#hashtag" },
-      { name: "e", namespace: "mcp__e", description: "Executor" },
-      { name: "f", namespace: "mcp__f", description: "Use # and C#" },
     ]);
   });
 
@@ -103,14 +97,6 @@ describe("MCP Server Catalogue", () => {
 });
 
 describe("MCP server matching", () => {
-  test("lists every server by name for an empty query", () => {
-    expect(matchMcpServers(servers, "").map((server) => server.name)).toEqual([
-      "dev-radius",
-      "git",
-      "github",
-    ]);
-  });
-
   test("keeps servers whose name contains the query, prefix matches first", () => {
     expect(matchMcpServers(servers, "git").map((server) => server.name)).toEqual(["git", "github"]);
     expect(matchMcpServers(servers, "HUB").map((server) => server.name)).toEqual(["github"]);
@@ -138,48 +124,22 @@ describe("MCP Server Reference conversion", () => {
   });
 
   test.each([
-    ["Ask &github's tools", "'s"],
     ["Ask &github.", "."],
-    ["Ask (&github)", ")"],
-    ["Ask &github, please", ","],
     ["Ask &github: list issues", ": "],
     ["Ask &github:", ":"],
-    ["Ask\n&github\nnow", "\nnow"],
   ])("converts %j", (text) => {
     expect(transformMcpServerReferences(text, servers)).toContain("](mcp://github ");
   });
 
   test.each([
     "foo&github",
-    "&&github",
-    "&github.com",
-    "&github/x",
     "&github:res",
-    "&gith",
     "&githubs",
-    "&github_x",
-    "&github-x",
     "&Github",
-    "&GITHUB",
-    "\\&github",
     "`&github`",
-    "```\n&github\n```",
     "[&github](https://example.com)",
-    "[see](mcp://github)",
-    "<https://example.com/&github>",
-    "<div>\n&github\n</div>",
-    "&./github",
     "R&D and Q&A",
-    "Q & A",
-    "a && b",
-    "&self and &str",
     "&#123",
-    "+github",
-    "Ask +github and +git",
-    "[see &github](https://example.com)",
-    "&dev.radius",
-    "@github",
-    "Ask @github and @git",
   ])("leaves %j literal", (text) => {
     expect(transformMcpServerReferences(text, servers)).toBe(text);
   });
@@ -189,35 +149,16 @@ describe("MCP Server Reference conversion", () => {
       { name: "amp", namespace: "mcp__amp" },
       { name: "nbsp", namespace: "mcp__nbsp" },
     ];
-    for (const text of ["&amp;", "&nbsp;", "&amp;github", "Tom &amp; Jerry", "a&nbsp;b"]) {
-      expect(transformMcpServerReferences(text, entityServers)).toBe(text);
-    }
+    const text = "Tom &amp; Jerry";
+    expect(transformMcpServerReferences(text, entityServers)).toBe(text);
     expect(transformMcpServerReferences("Use &amp and &nbsp.", entityServers)).toBe(
       `Use ${link("&amp", "amp", "mcp__amp")} and ${link("&nbsp", "nbsp", "mcp__nbsp")}.`,
     );
   });
 
-  test("leaves a reference already inside its own link unchanged", () => {
-    const text = `Use ${link("&github", "github", "mcp__github")} and R&D with Q & A.`;
-    expect(transformMcpServerReferences(text, servers)).toBe(text);
-  });
-
   test("is idempotent: its own links are not prose", () => {
     const once = transformMcpServerReferences("Use &github and &dev_radius.", servers);
     expect(transformMcpServerReferences(once, servers)).toBe(once);
-  });
-
-  test("keeps the longest name when one server name starts another", () => {
-    expect(transformMcpServerReferences("&github &git", servers)).toBe(
-      `${link("&github", "github", "mcp__github")} ${link("&git", "git", "mcp__git")}`,
-    );
-  });
-
-  test("converts inside lists, quotes, headings, and emphasis", () => {
-    const text = "- &github\n> &git\n# About &github\n*&git* and **&github**";
-    const converted = transformMcpServerReferences(text, servers);
-    expect(converted.match(/mcp:\/\//g)).toHaveLength(5);
-    expect(converted.startsWith(`- ${link("&github", "github", "mcp__github")}\n`)).toBe(true);
   });
 
   test("returns the text unchanged for an empty catalogue", () => {

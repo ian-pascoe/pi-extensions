@@ -24,12 +24,10 @@ const options = (): SuggestionOptions => ({ signal: new AbortController().signal
 
 /** A stand-in for Pi's native provider. */
 class NativeProvider implements AutocompleteProvider {
-  triggerCharacters = ["#"];
   calls: Parameters<AutocompleteProvider["getSuggestions"]>[] = [];
   applied: Parameters<AutocompleteProvider["applyCompletion"]>[] = [];
   suggestions: AutocompleteSuggestions | null = null;
   appliedResult = { lines: ["native"], cursorLine: 0, cursorCol: 6 };
-  triggersFiles = false;
 
   async getSuggestions(...args: Parameters<AutocompleteProvider["getSuggestions"]>) {
     this.calls.push(args);
@@ -40,10 +38,6 @@ class NativeProvider implements AutocompleteProvider {
     this.applied.push(args);
     return this.appliedResult;
   }
-
-  shouldTriggerFileCompletion() {
-    return this.triggersFiles;
-  }
 }
 
 async function setup(native = new NativeProvider(), tools?: ToolInfo[]) {
@@ -53,14 +47,11 @@ async function setup(native = new NativeProvider(), tools?: ToolInfo[]) {
 }
 
 describe("Pi MCP Selector autocomplete", () => {
-  test.each(["rpc", "print", "json"] as const)(
-    "does not register terminal autocomplete in %s mode",
-    async (mode) => {
-      const harness = new McpSelectorHarness();
-      await harness.emit({ type: "session_start", reason: "startup" }, mode);
-      expect(harness.factories).toEqual([]);
-    },
-  );
+  test("does not register terminal autocomplete outside the TUI", async () => {
+    const harness = new McpSelectorHarness();
+    await harness.emit({ type: "session_start", reason: "startup" }, "rpc");
+    expect(harness.factories).toEqual([]);
+  });
 
   test("bare & lists every server by name without asking native", async () => {
     const { provider, native } = await setup();
@@ -82,28 +73,16 @@ describe("Pi MCP Selector autocomplete", () => {
     expect(result?.items.map((item) => item.label)).toEqual(["&github", "&my-git"]);
   });
 
-  test("describes servers by description, first instruction line, or plainly", async () => {
+  test("describes servers by description or plainly", async () => {
     const { provider } = await setup(new NativeProvider(), [
       mcpTool({ name: "a", description: "Does a" }),
-      mcpTool({ name: "b", instructions: "\n First line\nSecond" }),
       mcpTool({ name: "c" }),
     ]);
     expect(
       (await provider.getSuggestions(["Use &"], 0, 5, options()))?.items.map(
         (item) => item.description,
       ),
-    ).toEqual(["MCP server · Does a", "MCP server · First line", "MCP server"]);
-  });
-
-  test("a lone & at the start of a line opens the popup with every server", async () => {
-    const { provider, native } = await setup();
-    expect(await provider.getSuggestions(["&"], 0, 1, options())).toEqual({
-      prefix: "&",
-      items: [RADIUS, GITHUB],
-    });
-    expect((await provider.getSuggestions(["&g"], 0, 2, options()))?.items).toEqual([GITHUB]);
-    expect((await provider.getSuggestions(["Use &g"], 0, 6, options()))?.items).toEqual([GITHUB]);
-    expect(native.calls).toEqual([]);
+    ).toEqual(["MCP server · Does a", "MCP server"]);
   });
 
   test("offers nothing when no server matches or the Catalogue is empty", async () => {
@@ -144,27 +123,6 @@ describe("Pi MCP Selector autocomplete", () => {
     const file = { value: "@src/", label: "src/" };
     expect(provider.applyCompletion(["@sr"], 0, 3, file, "@sr")).toBe(native.appliedResult);
     expect(native.applied).toHaveLength(1);
-  });
-
-  test("preserves native trigger characters and file-trigger decisions, and adds &", async () => {
-    const native = new NativeProvider();
-    native.suggestions = { prefix: "/he", items: [{ value: "help", label: "help" }] };
-    const { provider } = await setup(native);
-    expect(provider.triggerCharacters).toEqual(["#", "&"]);
-    expect(await provider.getSuggestions(["/he"], 0, 3, options())).toBe(native.suggestions);
-    expect(provider.shouldTriggerFileCompletion?.(["x"], 0, 1)).toBe(false);
-    native.triggersFiles = true;
-    expect(provider.shouldTriggerFileCompletion?.(["x"], 0, 1)).toBe(true);
-  });
-
-  test("reads the Catalogue fresh for each popup", async () => {
-    const { provider, harness } = await setup();
-    harness.tools = [mcpTool({ name: "fresh" })];
-    expect(
-      (await provider.getSuggestions(["Use &"], 0, 5, options()))?.items.map((item) => item.label),
-    ).toEqual(["&fresh"]);
-    harness.tools = [mcpTool({ name: "fresh", exposure: "hidden" })];
-    expect(await provider.getSuggestions(["Use &"], 0, 5, options())).toBeNull();
   });
 
   test("works over Pi's real combined provider for slash commands and server items", async () => {

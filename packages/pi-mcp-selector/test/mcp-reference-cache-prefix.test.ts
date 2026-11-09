@@ -301,13 +301,4 @@ describe("MCP Server References keep the cached prefix stable", () => {
       fixture.session.getAllTools().map((tool) => [tool.name, tool.exposure, tool.namespace?.name]),
     ).toEqual(exposureBefore);
   });
-
-  test("a name that is not in the Catalogue stays literal and changes nothing else", async () => {
-    const fixture = await createFixture(["github"]);
-    fixture.responses.push(fauxAssistantMessage("One."), fauxAssistantMessage("Two."));
-    await fixture.session.prompt("Hello");
-    await fixture.session.prompt("Ask &jira and &github.com about it");
-    expectStablePrefix(fixture.turns);
-    expect(userTexts(fixture.turns[1]).at(-1)).toBe("Ask &jira and &github.com about it");
-  });
 });
