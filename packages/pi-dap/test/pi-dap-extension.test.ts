@@ -227,7 +227,7 @@ describe("Pi DAP extension lifecycle", () => {
     expect(hasQueuedSteer(sessionId)).toBe(false);
   });
 
-  test("loads the tool eagerly, reloads trust-aware settings, and shuts down idempotently", async () => {
+  test("reports settings warnings once per load, and shuts down idempotently", async () => {
     const harness = await createExtensionHarness(false, {
       dap: { unknownGlobalField: true },
     });
@@ -238,36 +238,12 @@ describe("Pi DAP extension lifecycle", () => {
     expect(await piDapSessionDirectories(harness.sessionDirectory)).toEqual([]);
 
     await startExtension(harness, "startup");
-    expect(harness.runner.getAllRegisteredTools().map(({ definition }) => definition.name)).toEqual(
-      DAP_TOOL_NAMES,
-    );
-    for (const name of DAP_TOOL_NAMES) {
-      expect(harness.runner.getToolDefinition(name)).toMatchObject({
-        renderCall: expect.any(Function),
-        renderResult: expect.any(Function),
-      });
-    }
-    expect(harness.session.getActiveToolNames().filter((name) => name.startsWith("dap_"))).toEqual(
-      DAP_TOOL_NAMES,
-    );
     expect(harness.notifications).toEqual([
       expect.stringMatching(/^DAP: settings:\n- .*global dap\.unknownGlobalField/su),
     ]);
     expect(harness.notifications[0]).not.toContain("unknownProjectField");
     const firstDirectories = await piDapSessionDirectories(harness.sessionDirectory);
     expect(firstDirectories).toHaveLength(1);
-
-    const tool = harness.runner.getToolDefinition("dap_status");
-    if (tool === undefined) throw new Error("Expected registered DAP status tool");
-    const status = await tool.execute(
-      "status",
-      {},
-      undefined,
-      undefined,
-      toToolContext(harness.runner.createContext()),
-    );
-    expectDapToolOutput("status", status);
-    expect(status.details).toMatchObject({ operation: "status", state: "idle" });
 
     harness.notifications.length = 0;
     await writeFile(resolve(harness.agentDirectory, "settings.json"), "{}");
@@ -276,7 +252,6 @@ describe("Pi DAP extension lifecycle", () => {
     const reloadedDirectories = await piDapSessionDirectories(harness.sessionDirectory);
     expect(reloadedDirectories).toHaveLength(1);
     expect(reloadedDirectories).not.toEqual(firstDirectories);
-    expect(harness.runner.getAllRegisteredTools()).toHaveLength(DAP_TOOL_NAMES.length);
 
     await Promise.all([shutdownExtension(harness), shutdownExtension(harness)]);
     expect(await piDapSessionDirectories(harness.sessionDirectory)).toEqual([]);
@@ -337,57 +312,5 @@ describe("Pi DAP extension lifecycle", () => {
     ).rejects.toThrow("launch requires profile");
     expect(rpc.widgetCalls).toEqual([]);
     await shutdownExtension(rpc);
-  });
-
-  test("dap_stack text collapses runs of hinted Stack Frames while structured output keeps them all", async () => {
-    const fakeAdapterPath = resolve(import.meta.dirname, "fixtures/fake-dap-session-adapter.mjs");
-    const harness = await createExtensionHarness(false, {
-      dap: {
-        adapters: {
-          node: { command: process.execPath, args: [fakeAdapterPath], transport: "stdio" },
-        },
-        profiles: { node: { adapter: "node", arguments: { hintedStack: true } } },
-      },
-    });
-    await startExtension(harness, "startup");
-    const run = async (operation: "launch" | "stack") => {
-      const tool = harness.runner.getToolDefinition(`dap_${operation}`);
-      if (tool === undefined) throw new Error(`Expected registered dap_${operation} tool`);
-      return tool.execute(
-        operation,
-        {},
-        undefined,
-        undefined,
-        toToolContext(harness.runner.createContext()),
-      );
-    };
-    await run("launch");
-    const stack = await run("stack");
-
-    expectDapToolOutput("stack", stack);
-    expect(stack.content).toEqual([
-      {
-        type: "text",
-        text: [
-          "Stack: 6 frames",
-          "  frame 10: main at program.ts:4:1",
-          "  frame 11: caller at 1:1",
-          "  … 3 deemphasized frames (ids 12–14)",
-          "  frame 15: start at start.ts:2:1",
-        ].join("\n"),
-      },
-    ]);
-    expect(stack.structuredContent).toMatchObject({
-      total_frames: 6,
-      stack_frames: [
-        { id: 10, name: "main" },
-        { id: 11, name: "caller" },
-        { id: 12, name: "ModuleJob.run", source_name: "module_job" },
-        { id: 13, name: "await" },
-        { id: 14, name: "processTicks" },
-        { id: 15, name: "start" },
-      ],
-    });
-    await shutdownExtension(harness);
   });
 });

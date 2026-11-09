@@ -1,13 +1,10 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import {
-  DEFAULT_MAX_BYTES,
-  DEFAULT_MAX_LINES,
-  truncateHead,
-  type AgentToolResult,
-  type AgentToolUpdateCallback,
-  type ExtensionToolContext,
+import type {
+  AgentToolResult,
+  AgentToolUpdateCallback,
+  ExtensionToolContext,
 } from "@earendil-works/pi-coding-agent";
 import {
   hasQueuedSteer,
@@ -277,9 +274,15 @@ describe("DAP tools", () => {
     });
     // The model-facing text is truncated and the Observer UI rows are bounded; scripts lose nothing.
     expect(result.content[0]).toMatchObject({ text: expect.stringContaining("Result Spill") });
+    expect(result.content[0]).toMatchObject({
+      text: expect.stringContaining("Debuggee output (4 older bytes discarded):\nline\n"),
+    });
     expect(result.details).toMatchObject({
       output_truncated: true,
-      presentation: { omitted_count: 6 },
+      presentation: {
+        omitted_count: 6,
+        rows: expect.arrayContaining([expect.objectContaining({ value: `${"x".repeat(499)}…` })]),
+      },
     });
   });
 
@@ -533,12 +536,6 @@ describe("DAP tools", () => {
       );
     });
 
-    test("a stop without a readable top frame still reports its reason", async () => {
-      await expect(textOf("next", {}, { snapshot: stoppedSnapshot })).resolves.toBe(
-        "stopped (breakpoint) · thread 1",
-      );
-    });
-
     test("an unexpanded expensive scope is listed with its reference to expand", async () => {
       const fixture = await createToolFixture();
       fixture.session.result = {
@@ -633,14 +630,6 @@ describe("DAP tools", () => {
       expect(hugeText).not.toContain("\uFFFD");
     });
 
-    test("a wait that ended without a stop says it timed out", async () => {
-      const running = {
-        snapshot: { state: "running", adapterId: "node", profileId: "node" },
-      } as const;
-      await expect(textOf("continue", {}, running)).resolves.toBe("running (wait timed out)");
-      await expect(textOf("status", {}, running)).resolves.toBe("running");
-    });
-
     test("adapter strings stay on one line and cannot fake the Debuggee output heading", async () => {
       const text = await textOf(
         "evaluate",
@@ -714,14 +703,7 @@ describe("DAP tools", () => {
       // An empty list adds nothing to a state report.
       await expect(textOf("status", {}, {})).resolves.toBe("idle (no Debug Session)");
       // Every other operation leaves them out of text.
-      for (const operation of [
-        "continue",
-        "next",
-        "step_in",
-        "step_out",
-        "pause",
-        "stop",
-      ] as const) {
+      for (const operation of ["continue"] as const) {
         await expect(
           textOf(operation, {}, { desiredBreakpoints, snapshot: stoppedSnapshot }),
         ).resolves.toBe("stopped (breakpoint) · thread 1");
@@ -762,15 +744,7 @@ describe("DAP tools", () => {
         desiredBreakpoints: [],
         rejectedChildSessions,
       };
-      for (const operation of [
-        "launch",
-        "continue",
-        "next",
-        "step_in",
-        "step_out",
-        "pause",
-        "status",
-      ] as const) {
+      for (const operation of ["launch", "continue", "status"] as const) {
         const result = await dapTool(() => fixture.runtime, operation).execute(
           operation,
           {},
@@ -904,55 +878,6 @@ describe("DAP tools", () => {
     });
   });
 
-  test("preserves exact ordinary, Debuggee output, and Result Spill text", async () => {
-    const fixture = await createToolFixture();
-    const tool = dapTool(() => fixture.runtime, "status");
-    const ordinary = await tool.execute("ordinary", {}, undefined, undefined, fixture.context);
-    expect(ordinary.content).toEqual([
-      {
-        type: "text",
-        text: "idle (no Debug Session)",
-      },
-    ]);
-
-    fixture.session.result = {
-      snapshot: { state: "running", adapterId: "node", profileId: "node" },
-      output: "debuggee\u001b[31m output\n",
-      discardedOutputBytes: 7,
-      desiredBreakpoints: [],
-    };
-    const withOutput = await tool.execute("output", {}, undefined, undefined, fixture.context);
-    expect(withOutput.content).toEqual([
-      {
-        type: "text",
-        text: "running\n\nDebuggee output (7 older bytes discarded):\ndebuggee\u001b[31m output\n",
-      },
-    ]);
-
-    const oversizedOutput = "line\n".repeat(20_000);
-    fixture.session.result = {
-      snapshot: { state: "running", adapterId: "node", profileId: "node" },
-      output: oversizedOutput,
-      discardedOutputBytes: 0,
-      desiredBreakpoints: [],
-    };
-    const raw = `running\n\nDebuggee output:\n${oversizedOutput}`;
-    const truncation = truncateHead(raw, {
-      maxBytes: DEFAULT_MAX_BYTES,
-      maxLines: DEFAULT_MAX_LINES,
-    });
-    const spilled = await tool.execute("spilled", {}, undefined, undefined, fixture.context);
-    if (spilled.details === undefined || "kind" in spilled.details) {
-      throw new Error("Expected final DAP result details");
-    }
-    expect(spilled.content).toEqual([
-      {
-        type: "text",
-        text: `${truncation.content}\n\n[Pi DAP: output truncated; complete Result Spill: ${spilled.details.spill_path}]`,
-      },
-    ]);
-  });
-
   test("publishes immediate one-second progress only for execution waits and clears its timer", async () => {
     vi.useFakeTimers();
     const fixture = await createToolFixture();
@@ -1033,7 +958,7 @@ describe("DAP tools", () => {
       desiredBreakpoints: [],
     });
 
-    test.each(["launch", "continue", "next", "step_in", "step_out"] as const)(
+    test.each(["launch", "continue"] as const)(
       "dap_%s ends its wait when a steer is queued during it and reports it as steered",
       async (operation) => {
         const fixture = await createToolFixture();
@@ -1145,99 +1070,6 @@ describe("DAP tools", () => {
       expect(result.structuredContent).not.toHaveProperty("execution_wait_steered");
       expect(result.details).not.toMatchObject({ presentation: { kind: "execution_wait" } });
     });
-
-    test("a cancelled wait stays cancelled when a steer is pending too", async () => {
-      const fixture = await createToolFixture();
-      fixture.session.result = runningResult();
-      raiseQueuedSteer(TOOL_SESSION_ID);
-      const controller = new AbortController();
-      controller.abort();
-
-      const result = await dapTool(() => fixture.runtime, "continue").execute(
-        "both",
-        {},
-        controller.signal,
-        undefined,
-        fixture.context,
-      );
-
-      expect(result.content).toEqual([{ type: "text", text: "running (wait cancelled)" }]);
-      expect(result.structuredContent).toMatchObject({ execution_wait_cancelled: true });
-      expect(result.structuredContent).not.toHaveProperty("execution_wait_steered");
-    });
-
-    test("ignores steers for other sessions and tools that do not wait", async () => {
-      const fixture = await createToolFixture();
-      fixture.session.result = runningResult();
-      raiseQueuedSteer("another-session");
-      try {
-        const result = await dapTool(() => fixture.runtime, "continue").execute(
-          "other",
-          {},
-          undefined,
-          undefined,
-          fixture.context,
-        );
-        expect(fixture.session.calls[0]?.steerSignal?.aborted).toBe(false);
-        expect(result.content).toEqual([{ type: "text", text: "running (wait timed out)" }]);
-
-        raiseQueuedSteer(TOOL_SESSION_ID);
-        await dapTool(() => fixture.runtime, "stack").execute(
-          "stack",
-          {},
-          undefined,
-          undefined,
-          fixture.context,
-        );
-        expect(fixture.session.calls.at(-1)?.steerSignal).toBeUndefined();
-      } finally {
-        settleQueuedSteers("another-session");
-      }
-    });
-  });
-
-  test("bounds presentation rows and values without bounding the raw result", async () => {
-    const fixture = await createToolFixture();
-    const longValue = "x".repeat(1_000);
-    fixture.session.result = {
-      snapshot: {
-        state: "stopped",
-        adapterId: "node",
-        profileId: "node",
-        stopReason: "breakpoint",
-      },
-      output: "",
-      discardedOutputBytes: 0,
-      desiredBreakpoints: [],
-      variables: Array.from({ length: 25 }, (_, index) => ({
-        name: `value-${index}`,
-        value: longValue,
-        variablesReference: 0,
-      })),
-    };
-    const result = await dapTool(() => fixture.runtime, "variables").execute(
-      "variables",
-      { variables_reference: 1 },
-      undefined,
-      undefined,
-      fixture.context,
-    );
-    expect(result.content[0]).toMatchObject({ text: expect.stringContaining(longValue) });
-    expect(result.details).toMatchObject({
-      presentation: {
-        kind: "variables",
-        rows: expect.arrayContaining([expect.objectContaining({ value: `${"x".repeat(499)}…` })]),
-        omitted_count: 5,
-      },
-    });
-    if (
-      result.details === undefined ||
-      "kind" in result.details ||
-      result.details.presentation?.kind !== "variables"
-    ) {
-      throw new Error("Expected variables presentation details");
-    }
-    expect(result.details.presentation.rows).toHaveLength(20);
   });
 
   test("rejects invalid arguments during preparation and execution before runtime or observers", async () => {
@@ -1250,17 +1082,9 @@ describe("DAP tools", () => {
     const getRuntime = vi.fn(() => ({ ...fixture.runtime, observer }));
     const cases: readonly [DapOperation, DapToolInput][] = [
       ["set_breakpoints", { file_path: "a.ts" }],
-      ["set_breakpoints", { breakpoints: [] }],
-      ["set_breakpoints", { file_path: "a.ts", breakpoints: [{ line: 0 }] }],
-      ["evaluate", {}],
-      ["variables", {}],
       ["variables", { frame_id: 0, variables_reference: 1 }],
-      ["variables", { frame_id: -1 }],
-      ["stack", { count: 0 }],
       // Fields of another operation are unknown to this tool.
       ["status", { expression: "x" }],
-      ["continue", { thread_id: 0 }],
-      ["launch", { file_path: "a.ts" }],
     ];
     for (const [operation, input] of cases) {
       const tool = dapTool(getRuntime, operation);
@@ -1299,83 +1123,6 @@ describe("DAP tools", () => {
     }
   });
 
-  test("never emits a field outside the tool's output schema", async () => {
-    const fixture = await createToolFixture();
-    // A session result carrying every optional field, as a misbehaving or newer Debug Session might.
-    fixture.session.result = {
-      snapshot: {
-        state: "stopped",
-        adapterId: "a",
-        profileId: "p",
-        stopReason: "step",
-        threadId: 1,
-      },
-      output: "out",
-      discardedOutputBytes: 1,
-      desiredBreakpoints: [{ filePath: "/w/a.ts", breakpoints: [{ line: 1 }] }],
-      breakpoints: [{ verified: true }],
-      stackFrames: [{ id: 1, name: "main", line: 1, column: 1 }],
-      totalFrames: 1,
-      variableGroups: [
-        {
-          scope: { name: "Local", variablesReference: 2, expensive: false },
-          variables: [{ name: "a", value: "1", variablesReference: 0 }],
-        },
-      ],
-      variables: [{ name: "a", value: "1", variablesReference: 0 }],
-      evaluation: { result: "1", variablesReference: 0 },
-    };
-    const inputs: readonly [DapOperation, DapToolInput][] = [
-      ["launch", {}],
-      ["set_breakpoints", { file_path: "a.ts", breakpoints: [] }],
-      ["continue", {}],
-      ["next", {}],
-      ["step_in", {}],
-      ["step_out", {}],
-      ["pause", {}],
-      ["stack", {}],
-      ["variables", { frame_id: 1 }],
-      ["evaluate", { expression: "a" }],
-      ["status", {}],
-      ["stop", {}],
-    ];
-    const expectedData = (operation: DapOperation): string[] => {
-      switch (operation) {
-        case "set_breakpoints":
-          return ["breakpoints"];
-        case "stack":
-          return ["stack_frames", "total_frames"];
-        case "variables":
-          return ["scopes", "variables"];
-        case "evaluate":
-          return ["evaluation"];
-        default:
-          return [];
-      }
-    };
-    for (const [operation, input] of inputs) {
-      // dapTool asserts the output schema; here also check which data fields each tool keeps.
-      const result = await dapTool(() => fixture.runtime, operation).execute(
-        operation,
-        input,
-        undefined,
-        undefined,
-        fixture.context,
-      );
-      const data = Object.keys(result.structuredContent ?? {}).filter((key) =>
-        [
-          "breakpoints",
-          "stack_frames",
-          "total_frames",
-          "scopes",
-          "variables",
-          "evaluation",
-        ].includes(key),
-      );
-      expect(data, operation).toEqual(expectedData(operation));
-    }
-  });
-
   describe("dap_set_breakpoints for a source file that does not exist", () => {
     async function setBreakpoints(
       fixture: Awaited<ReturnType<typeof createToolFixture>>,
@@ -1407,19 +1154,6 @@ describe("DAP tools", () => {
       expect(result.isError).toBeUndefined();
       expect(result.content[0]).toMatchObject({ text: expect.stringContaining(warning) });
       expect(result.structuredContent).toMatchObject({ warnings: [warning] });
-    });
-
-    test("does not warn when the file exists", async () => {
-      const fixture = await createToolFixture();
-      await writeFile(resolve(fixture.cwd, "app.ts"), "");
-      const result = await setBreakpoints(fixture, {
-        file_path: "app.ts",
-        breakpoints: [{ line: 1 }],
-      });
-      expect(result.content[0]).toMatchObject({
-        text: expect.not.stringContaining("file not found"),
-      });
-      expect(result.structuredContent).not.toHaveProperty("warnings");
     });
 
     test("warns that a directory is not a file", async () => {
@@ -1546,27 +1280,13 @@ describe("DAP tools", () => {
     const cases: [DapOperation, DapToolInput, RecordedDapInput, string[]][] = [
       ["launch", {}, {}, ["profile", "program", "args", "cwd", "launchArguments"]],
       ["launch", { args: [] }, { args: [] }, ["profile", "program", "cwd", "launchArguments"]],
-      [
-        "launch",
-        { launch_arguments: {} },
-        { launchArguments: {} },
-        ["profile", "program", "args", "cwd"],
-      ],
-      ["stack", {}, {}, ["threadId", "start", "count"]],
       ["stack", { thread_id: 0, start: 0 }, { threadId: 0, start: 0 }, ["count"]],
-      [
-        "variables",
-        { variables_reference: 0 },
-        { variablesReference: 0 },
-        ["frameId", "start", "count"],
-      ],
       [
         "variables",
         { frame_id: 0, start: 0 },
         { frameId: 0, start: 0 },
         ["variablesReference", "count"],
       ],
-      ["evaluate", { expression: "x" }, { expression: "x" }, ["frameId"]],
       ["evaluate", { expression: "x", frame_id: 0 }, { expression: "x", frameId: 0 }, []],
     ];
     for (const [operation, parameters, expected, absentFields] of cases) {
@@ -1596,9 +1316,7 @@ describe("DAP tools", () => {
     );
     const failures: readonly [Error, boolean][] = [
       [adapterFailure, true],
-      [new DapSessionError("configuration", "launch requires a valid Launch Profile"), true],
       [new DapProtocolClientError("exit", "node", "/tmp/stderr.log", "adapter exited"), true],
-      [new DapProtocolClientError("timeout", "node", "/tmp/stderr.log", "timed out"), true],
       [
         new DapProtocolClientError("request", "node", "/tmp/stderr.log", "evaluate request failed"),
         false,

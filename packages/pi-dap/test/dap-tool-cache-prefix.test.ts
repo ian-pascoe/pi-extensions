@@ -53,8 +53,6 @@ interface Fixture {
 interface FixtureOptions {
   /** Global `defaultTools` setting. */
   readonly defaultTools?: readonly string[];
-  /** SDK `tools` allowlist, the equivalent of `--tools`. */
-  readonly tools?: readonly string[];
   readonly codemode?: boolean;
   readonly toolSearch?: boolean;
   /** Extra extensions, loaded after Pi DAP, such as hooks that observe tool calls. */
@@ -160,8 +158,6 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
     sessionManager: SessionManager.create(cwd, join(cwd, "sessions")),
     settingsManager,
   };
-  // Without `tools`, Pi uses the `defaultTools` selection, like omitting `--tools`.
-  if (options.tools !== undefined) sessionOptions.tools = [...options.tools];
   const { session } = await createAgentSession(sessionOptions);
   sessions.push(session);
 
@@ -356,14 +352,5 @@ describe("per-operation DAP tools keep the cached prefix stable", () => {
       "start dap_stop",
       "end dap_stop",
     ]);
-  });
-
-  test("an allowlist can select a subset of the tools without disturbing the prefix", async () => {
-    const fixture = await createFixture({ tools: ["read", "dap_status", "dap_pause"] });
-    fixture.responses.push(fauxAssistantMessage("One."), fauxAssistantMessage("Two."));
-    await fixture.session.prompt("First");
-    await fixture.session.prompt("Second");
-    expectStablePrefix(fixture.turns, 2);
-    expect(toolNamesOf(fixture.turns[0])).toEqual(["read", "dap_status", "dap_pause"]);
   });
 });

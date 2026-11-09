@@ -3,12 +3,11 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import fc from "fast-check";
-import { afterEach, describe, expect, expectTypeOf, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   DapProtocolClient,
   DapProtocolClientError,
   type DapProtocolClientOptions,
-  type DapProtocolObject,
   type DapProtocolTransport,
 } from "../src/dap-protocol-client.js";
 
@@ -81,9 +80,7 @@ describe("DapProtocolClient", () => {
   test("correlates successful and failed responses over stdio", async () => {
     const client = await createClient();
 
-    const response = client.request("echo", { value: 42 });
-    expectTypeOf(response).toEqualTypeOf<Promise<DapProtocolObject | undefined>>();
-    await expect(response).resolves.toEqual({ value: 42 });
+    await expect(client.request("echo", { value: 42 })).resolves.toEqual({ value: 42 });
     await expect(client.request("fail")).rejects.toMatchObject({
       kind: "request",
       message: expect.stringContaining("fixture failure"),
@@ -103,17 +100,12 @@ describe("DapProtocolClient", () => {
     });
   });
 
-  test("omits the adapter stderr path from failed requests while stderr is empty", async () => {
+  test("names the adapter stderr path on failed requests only once stderr has content", async () => {
     const client = await createClient();
 
     await expect(client.request("fail")).rejects.toMatchObject({
       message: expect.not.stringContaining("stderr"),
     });
-  });
-
-  test("names the adapter stderr path on failed requests once stderr has content", async () => {
-    const client = await createClient();
-
     await expect(client.request("fail-with-stderr")).rejects.toMatchObject({
       kind: "request",
       message: expect.stringContaining(`stderr ${client.stderrPath}`),

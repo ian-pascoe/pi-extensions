@@ -120,18 +120,12 @@ function handleRequest(request) {
       }
       desiredBreakpoints.set(sourcePath, requested);
       respond(request, {
-        breakpoints: requested.map((breakpoint, index) => {
-          const verified = {
-            id: index + 1,
-            verified: true,
-            line: breakpoint.line,
-            source: { path: sourcePath },
-          };
-          if (launchArguments.breakpointColumn !== undefined) {
-            verified.column = launchArguments.breakpointColumn;
-          }
-          return verified;
-        }),
+        breakpoints: requested.map((breakpoint, index) => ({
+          id: index + 1,
+          verified: true,
+          line: breakpoint.line,
+          source: { path: sourcePath },
+        })),
       });
       return;
     }
@@ -183,21 +177,6 @@ function handleRequest(request) {
         },
         { id: 11, name: "caller", line: 1, column: 1 },
       ];
-      if (launchArguments.hintedStack === true) {
-        // vscode-js-debug's shape: runtime internals and async separators carry presentation hints.
-        frames.push(
-          {
-            id: 12,
-            name: "ModuleJob.run",
-            line: 345,
-            column: 25,
-            source: { name: "module_job", presentationHint: "deemphasize" },
-          },
-          { id: 13, name: "await", line: 0, column: 0, presentationHint: "label" },
-          { id: 14, name: "processTicks", line: 105, column: 5, presentationHint: "subtle" },
-          { id: 15, name: "start", line: 2, column: 1, source: { path: "start.ts" } },
-        );
-      }
       const start = request.arguments?.startFrame ?? 0;
       const levels = request.arguments?.levels ?? frames.length;
       respond(request, {

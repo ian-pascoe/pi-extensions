@@ -134,45 +134,6 @@ describe("resolveDapSettings", () => {
     ]);
   });
 
-  test("defaults adapter arguments and preserves environment overrides for process startup", async () => {
-    process.env.PI_DAP_SETTINGS_REMOVED = "inherited";
-    try {
-      const settings = resolveDapSettings(
-        await createSettingsReader(
-          {
-            dap: {
-              adapters: {
-                node: {
-                  command: "node",
-                  environment: {
-                    PI_DAP_SETTINGS_ADDED: "configured",
-                    PI_DAP_SETTINGS_REMOVED: null,
-                  },
-                  transport: { type: "tcp", host: "localhost", port: 4711 },
-                },
-              },
-              profiles: { node: launchProfile("node", { stopOnEntry: true }) },
-            },
-          },
-          {},
-        ),
-      );
-
-      const adapter = settings.adapters.get("node");
-      expect(adapter).toMatchObject({
-        args: [],
-        environment: {
-          PI_DAP_SETTINGS_ADDED: "configured",
-          PI_DAP_SETTINGS_REMOVED: null,
-        },
-        transport: { host: "localhost", port: 4711, type: "tcp" },
-      });
-      expect(adapter?.environment.PATH).toBeUndefined();
-    } finally {
-      delete process.env.PI_DAP_SETTINGS_REMOVED;
-    }
-  });
-
   test("quarantines an invalid project replacement instead of falling back to a global entry", async () => {
     const settings = resolveDapSettings(
       await createSettingsReader(

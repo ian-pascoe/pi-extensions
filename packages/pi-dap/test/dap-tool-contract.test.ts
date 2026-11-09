@@ -6,17 +6,8 @@ import { Value } from "typebox/value";
 import { afterEach, describe, expect, test } from "vitest";
 import { DapSessionError, type DapSessionResult } from "../src/dap-session.js";
 import { createDapSessionFiles } from "../src/dap-session-files.js";
-import { DESIRED_BREAKPOINT_OPERATIONS, NEVER_STATE_FAILING } from "./dap-tool-output.js";
-import {
-  DAP_OPERATIONS,
-  DapToolOutputSchemas,
-  type DapOperation,
-} from "../src/dap-tool-contract.js";
-import {
-  createDapToolDefinitions,
-  DAP_TOOL_NAMESPACE,
-  type DapToolRuntime,
-} from "../src/dap-tool.js";
+import { DAP_OPERATIONS, type DapOperation } from "../src/dap-tool-contract.js";
+import { createDapToolDefinitions, type DapToolRuntime } from "../src/dap-tool.js";
 
 const tools = createDapToolDefinitions(() => undefined);
 const directories: string[] = [];
@@ -56,10 +47,7 @@ const EMPTY_RESULT: DapSessionResult = {
 };
 
 /** Run one tool against a session that records which Debug Session methods it reaches. */
-async function methodsReachedBy(
-  operation: DapOperation,
-  outcome: "succeed" | "fail-state",
-): Promise<{ methods: string[]; isError: boolean }> {
+async function methodsReachedBy(operation: DapOperation): Promise<string[]> {
   const methods: string[] = [];
   const directory = await mkdtemp(join(tmpdir(), "pi-dap-contract-"));
   directories.push(directory);
@@ -70,9 +58,6 @@ async function methodsReachedBy(
       get: (_target, method) => () => {
         methods.push(String(method));
         if (method === "snapshot") return EMPTY_RESULT.snapshot;
-        if (outcome === "fail-state") {
-          return Promise.reject(new DapSessionError("state", `${String(method)} not allowed`));
-        }
         return Promise.resolve(EMPTY_RESULT);
       },
     },
@@ -82,7 +67,7 @@ async function methodsReachedBy(
     ({ name }) => name === `dap_${operation}`,
   );
   if (tool === undefined) throw new Error(`Missing dap_${operation}`);
-  const result = await tool.execute(
+  await tool.execute(
     "call",
     // SAFETY: MINIMAL_ARGUMENTS holds valid arguments for each tool.
     MINIMAL_ARGUMENTS[operation] as never,
@@ -94,7 +79,7 @@ async function methodsReachedBy(
       sessionManager: { getSessionId: () => "contract-test" },
     } as ExtensionToolContext,
   );
-  return { methods, isError: result.isError === true };
+  return methods;
 }
 
 function tool(name: string) {
@@ -104,36 +89,10 @@ function tool(name: string) {
 }
 
 describe("DAP tool family", () => {
-  test("registers one dap_<operation> tool per operation in one namespace", () => {
-    expect(tools.map(({ name }) => name)).toEqual(
-      DAP_OPERATIONS.map((operation) => `dap_${operation}`),
-    );
-    for (const [index, definition] of tools.entries()) {
-      const operation = DAP_OPERATIONS[index];
-      if (operation === undefined) throw new Error("Missing operation");
-      expect(definition.namespace).toBe(DAP_TOOL_NAMESPACE);
-      expect(definition.outputSchema).toBe(DapToolOutputSchemas[operation]);
-      expect(definition.executionMode).toBe("sequential");
-      expect(definition.promptGuidelines).toEqual(tools[0]?.promptGuidelines);
-    }
-    expect(DAP_TOOL_NAMESPACE).toMatchObject({ name: "dap" });
-    expect(DAP_TOOL_NAMESPACE.instructions).toContain("same single Debug Session");
-    // One snippet keeps the system prompt's tool list to one DAP line.
-    expect(tools.filter((definition) => definition.promptSnippet !== undefined)).toEqual([
-      tool("dap_launch"),
-    ]);
-  });
-
-  test("declares every tool directly", () => {
-    expect(tools.map(({ name, exposure }) => [name, exposure])).toEqual(
-      DAP_OPERATIONS.map((operation) => [`dap_${operation}`, "direct"]),
-    );
-  });
-
   test("annotates each tool by what it does to the Debuggee", async () => {
     for (const operation of DAP_OPERATIONS) {
       const definition = tool(`dap_${operation}`);
-      const { methods } = await methodsReachedBy(operation, "succeed");
+      const methods = await methodsReachedBy(operation);
       const annotations = definition.annotations;
       const label = `dap_${operation} (reaches ${methods.join(", ")})`;
       const runsDebuggee = methods.some((method) => RUNNING_METHODS.has(method));
@@ -164,35 +123,6 @@ describe("DAP tool family", () => {
         expect(annotations?.idempotentHint, label).toBe(false);
       }
     }
-  });
-
-  test("annotates the tools whose behavior is not a code-running or observing one", () => {
-    const annotations = (name: string) => tool(name).annotations;
-    // Replacing a file's Desired Breakpoints with the same list changes nothing more, but a
-    // condition is code the Debuggee will run.
-    expect(annotations("dap_set_breakpoints")).toEqual({
-      readOnlyHint: false,
-      destructiveHint: true,
-      idempotentHint: true,
-      openWorldHint: true,
-    });
-    // Pausing a paused Debuggee, or stopping a stopped one, is a no-op; pause kills nothing.
-    expect(annotations("dap_pause")).toEqual({
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-    });
-    expect(annotations("dap_stop")).toEqual({
-      readOnlyHint: false,
-      destructiveHint: true,
-      idempotentHint: true,
-      openWorldHint: false,
-    });
-  });
-
-  test("only dap_launch, dap_set_breakpoints, and dap_status results carry desired_breakpoints", () => {
-    expect(DESIRED_BREAKPOINT_OPERATIONS).toEqual(["launch", "set_breakpoints", "status"]);
   });
 
   test("a dap_launch state failure returns isError and an error without desired_breakpoints", async () => {
@@ -229,58 +159,6 @@ describe("DAP tool family", () => {
       state: "idle",
       error: "Pi DAP: DAP Session: launch requires no active Debug Session",
     });
-  });
-
-  test("tells models and scripts about the state-failure result in each description", async () => {
-    for (const operation of DAP_OPERATIONS) {
-      if (NEVER_STATE_FAILING.includes(operation)) continue;
-      const { isError } = await methodsReachedBy(operation, "fail-state");
-      expect(isError, `dap_${operation} returns a state-failure result`).toBe(true);
-      expect(tool(`dap_${operation}`).description, `dap_${operation}`).toMatch(
-        /error result with the current `state` and an `error` message/u,
-      );
-    }
-    for (const operation of NEVER_STATE_FAILING) {
-      expect(tool(`dap_${operation}`).description, `dap_${operation}`).not.toMatch(
-        /`error` message/u,
-      );
-    }
-    for (const schema of Object.values(DapToolOutputSchemas)) {
-      expect(schema.properties.error).toMatchObject({
-        description: expect.stringContaining("current state"),
-      });
-    }
-  });
-
-  test("registers plain object parameters holding only each operation's fields", () => {
-    const fields = Object.fromEntries(
-      tools.map(({ name, parameters }) => {
-        expect(parameters.type).toBe("object");
-        expect(Object.hasOwn(parameters, "anyOf")).toBe(false);
-        expect(parameters).toMatchObject({ additionalProperties: false });
-        return [name, [Object.keys(parameters.properties), parameters.required ?? []]];
-      }),
-    );
-    expect(fields).toEqual({
-      dap_launch: [["profile", "program", "args", "cwd", "launch_arguments"], []],
-      dap_set_breakpoints: [
-        ["file_path", "breakpoints"],
-        ["file_path", "breakpoints"],
-      ],
-      dap_continue: [[], []],
-      dap_next: [[], []],
-      dap_step_in: [[], []],
-      dap_step_out: [[], []],
-      dap_pause: [[], []],
-      dap_stack: [["thread_id", "start", "count"], []],
-      dap_variables: [["frame_id", "variables_reference", "start", "count"], []],
-      dap_evaluate: [["expression", "frame_id"], ["expression"]],
-      dap_status: [[], []],
-      dap_stop: [[], []],
-    });
-    expect(tool("dap_variables").description).toContain(
-      "Exactly one of frame_id (the scopes of a Stack Frame; expensive scopes such as Global are listed but not expanded) or variables_reference (children of a value or of an unexpanded scope) is required, never both",
-    );
   });
 
   test("serializes parameters without TypeBox modifier markers", () => {

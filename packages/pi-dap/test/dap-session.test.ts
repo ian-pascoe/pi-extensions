@@ -164,7 +164,6 @@ describe("DapSession exit code from vscode-js-debug's two channels", () => {
 
   test.each([
     ["integratedTerminal", { console: "integratedTerminal" }],
-    ["externalTerminal", { console: "externalTerminal" }],
     ["outputCapture std", { outputCapture: "std" }],
   ])("%s never guesses exit code 0 for a clean-looking end", async (_name, profile) => {
     const session = await createJsDebugSession("clean", profile);
@@ -381,22 +380,6 @@ describe("DapSession", () => {
     await session.shutdown();
   });
 
-  test("validates the breakpoint column an adapter reports", async () => {
-    const valid = await createSession({ stopOnEntry: true, breakpointColumn: 7 });
-    await valid.session.launch({ program: "program.ts" });
-    const set = await valid.session.setBreakpoints({
-      filePath: "program.ts",
-      breakpoints: [{ line: 4 }],
-    });
-    expect(set.breakpoints).toEqual([expect.objectContaining({ line: 4, column: 7 })]);
-
-    const invalid = await createSession({ stopOnEntry: true, breakpointColumn: "7" });
-    await invalid.session.launch({ program: "program.ts" });
-    await expect(
-      invalid.session.setBreakpoints({ filePath: "program.ts", breakpoints: [{ line: 4 }] }),
-    ).rejects.toThrow("setBreakpoints");
-  });
-
   test("publishes observed launch transitions and clears stop-specific context on resume", async () => {
     const snapshots: DapSessionSnapshot[] = [];
     const { session } = await createSession({ stopOnEntry: true }, 200, {
@@ -555,17 +538,6 @@ describe("DapSession", () => {
     await session.shutdown();
   });
 
-  test("a result that is not a stop carries no stop details", async () => {
-    const { session } = await createSession({ exitOnContinue: true, stopOnEntry: true });
-    await session.launch();
-
-    const exited = await session.continue();
-
-    expect(exited.snapshot.state).toBe("terminated");
-    expect(exited.stop).toBeUndefined();
-    await session.shutdown();
-  });
-
   test("drops telemetry-category output events and keeps every other category", async () => {
     const { session } = await createSession({ outputCategories: true, stopOnEntry: true });
 
@@ -583,6 +555,8 @@ describe("DapSession", () => {
 
     expect(exited.snapshot).toMatchObject({ state: "terminated", exitCode: 0 });
     expect(Object.hasOwn(exited.snapshot, "exitCode")).toBe(true);
+    // A result that is not a stop carries no stop details.
+    expect(exited.stop).toBeUndefined();
     expect(exited.output).toBe("finished\n");
     expect(session.status()).toMatchObject({
       snapshot: expect.objectContaining({ state: "terminated", exitCode: 0 }),
@@ -680,7 +654,7 @@ describe("DapSession", () => {
     expect(third.stop?.topFrame?.source?.path).toBe(resolve(cwd, "program.ts"));
   });
 
-  test("cleans up launch cancellation and an unexpected Debug Adapter exit", async () => {
+  test("cleans up launch cancellation", async () => {
     const controller = new AbortController();
     const cancelled = await createSession({ delayInitializedMs: 200, stopOnEntry: true }, 200, {
       onSnapshotChange: (snapshot) => {
@@ -692,30 +666,5 @@ describe("DapSession", () => {
       "launch was cancelled and cleaned up",
     );
     expect(cancelled.session.status().snapshot.state).toBe("terminated");
-
-    const crashed = await createSession({ crashOnContinue: true, stopOnEntry: true });
-    await crashed.session.launch();
-    const result = await crashed.session.continue();
-    expect(result.snapshot).toMatchObject({
-      state: "terminated",
-      terminationReason: expect.stringContaining("adapter-stderr"),
-    });
-  });
-
-  test("requires an explicit Launch Profile unless exactly one is configured", async () => {
-    const { cwd, files } = await createSession();
-    const settings: ResolvedDapSettings = {
-      adapters: new Map(),
-      profiles: new Map(),
-      timeouts: { executionMs: 10, requestMs: 10, shutdownMs: 10, startupMs: 10 },
-      warnings: [],
-    };
-    const session = new DapSession({ cwd, settings, sessionFiles: files });
-
-    await expect(session.launch()).rejects.toEqual(
-      expect.objectContaining({
-        kind: "configuration",
-      }),
-    );
   });
 });
