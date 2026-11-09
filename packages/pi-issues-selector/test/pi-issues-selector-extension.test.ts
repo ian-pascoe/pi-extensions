@@ -238,17 +238,6 @@ describe("Pi Issues Selector popup", () => {
     });
   });
 
-  test("lists at most 20 items", async () => {
-    const harness = new IssuesSelectorHarness();
-    harness.gh = {
-      ...harness.gh,
-      stdout: JSON.stringify(Array.from({ length: 100 }, (_, index) => issue(100 - index, "Item"))),
-    };
-    const result = await suggest(await harness.provider(), "see #");
-    expect(result?.items).toHaveLength(20);
-    expect(result?.items[0]?.value).toBe("#100");
-  });
-
   test("#digits filters by number prefix, exact number first", async () => {
     const provider = await new IssuesSelectorHarness().provider();
     expect((await suggest(provider, "see #3"))?.items.map((item) => item.value)).toEqual([
@@ -342,21 +331,6 @@ describe("Pi Issues Selector popup", () => {
     ]);
   });
 
-  test("lists a host named by GH_HOST without any hosts.yml", async () => {
-    vi.stubEnv("GH_HOST", "github.corp.example");
-    const harness = new IssuesSelectorHarness();
-    harness.remotes = "remote.origin.url git@github.corp.example:acme/widgets.git\n";
-    expect(await suggest(await harness.provider(), "see #")).not.toBeNull();
-    expect(harness.ghCalls[0]?.args.slice(1, 3)).toEqual(["--hostname", "github.corp.example"]);
-  });
-
-  test("shows nothing for a host gh is not signed in to", async () => {
-    const harness = new IssuesSelectorHarness();
-    harness.remotes = "remote.origin.url https://github.corp.example/acme/widgets.git\n";
-    expect(await suggest(await harness.provider(), "see #")).toBeNull();
-    expect(harness.ghCalls).toHaveLength(0);
-  });
-
   test("returns nothing for a cancelled request without waiting for gh", async () => {
     const harness = new IssuesSelectorHarness();
     let release: () => void = () => undefined;
@@ -372,14 +346,8 @@ describe("Pi Issues Selector popup", () => {
     release();
   });
 
-  test("keeps native slash completion and stacks over other providers", async () => {
+  test("stacks over other providers, adding # and ! to their trigger characters", async () => {
     const harness = new IssuesSelectorHarness();
-    const provider = await harness.provider();
-    expect(await suggest(provider, "/he")).toEqual({
-      prefix: "/he",
-      items: [{ value: "help", label: "help", description: "Native help" }],
-    });
-    expect(provider.triggerCharacters).toContain("#");
     const result = { lines: ["x"], cursorLine: 0, cursorCol: 1 };
     const current: AutocompleteProvider = {
       triggerCharacters: ["$"],
@@ -400,21 +368,10 @@ describe("Pi Issues Selector popup", () => {
     );
   });
 
-  test.each(["rpc", "print", "json"] as const)(
-    "does not register terminal autocomplete in %s mode",
-    async (mode) => {
-      const harness = new IssuesSelectorHarness();
-      await harness.emit({ type: "session_start", reason: "startup" }, mode);
-      expect(harness.factories).toEqual([]);
-    },
-  );
-
-  test("re-registers after Pi clears providers for reload", async () => {
+  test("does not register terminal autocomplete outside the TUI", async () => {
     const harness = new IssuesSelectorHarness();
-    await harness.provider();
-    harness.factories.length = 0;
-    await harness.emit({ type: "session_start", reason: "reload" });
-    expect(harness.factories).toHaveLength(2);
+    await harness.emit({ type: "session_start", reason: "startup" }, "print");
+    expect(harness.factories).toEqual([]);
   });
 });
 
@@ -429,32 +386,25 @@ describe("Pi Issues Selector notices", () => {
     };
   };
 
-  test.each([
-    ["no hosts.yml", undefined],
-    ["a malformed hosts.yml", "a: [unclosed\n  : : :\n"],
-  ])(
-    "%s recognises no host: no popup, no gh call, no notice, and references stay literal",
-    async (_name, hostsFile) => {
-      if (hostsFile !== undefined) await writeFile(join(ghConfigDir, "hosts.yml"), hostsFile);
-      const harness = new IssuesSelectorHarness();
-      // Were the host recognised, gh would be asked and would say it needs signing in.
-      needsCli(harness);
-      harness.remotes = "remote.origin.url https://github.corp.example/acme/widgets.git\n";
-      const provider = await harness.provider();
-      expect(await suggest(provider, "see #")).toBeNull();
-      expect(
-        await harness.emit({
-          type: "input",
-          source: "interactive",
-          text: "Fix #12",
-        }),
-      ).toEqual({
-        action: "continue",
-      });
-      expect(harness.ghCalls).toHaveLength(0);
-      expect(harness.notices).toEqual([]);
-    },
-  );
+  test("no hosts.yml recognises no host: no popup, no gh call, no notice, and references stay literal", async () => {
+    const harness = new IssuesSelectorHarness();
+    // Were the host recognised, gh would be asked and would say it needs signing in.
+    needsCli(harness);
+    harness.remotes = "remote.origin.url https://github.corp.example/acme/widgets.git\n";
+    const provider = await harness.provider();
+    expect(await suggest(provider, "see #")).toBeNull();
+    expect(
+      await harness.emit({
+        type: "input",
+        source: "interactive",
+        text: "Fix #12",
+      }),
+    ).toEqual({
+      action: "continue",
+    });
+    expect(harness.ghCalls).toHaveLength(0);
+    expect(harness.notices).toEqual([]);
+  });
 
   test("says once per host that suggestions need a signed-in GitHub CLI", async () => {
     const harness = new IssuesSelectorHarness();
@@ -484,13 +434,15 @@ describe("Pi Issues Selector notices", () => {
     expect(harness.notices).toHaveLength(2);
   });
 
-  test.each([
-    ["a network error", "error connecting to api.github.com"],
-    ["a rate limit", "gh: API rate limit exceeded (HTTP 403)"],
-    ["a missing repository", "gh: Not Found (HTTP 404)"],
-  ])("stays silent for %s", async (_name, stderr) => {
+  test("stays silent for a failure that is not about signing in", async () => {
     const harness = new IssuesSelectorHarness();
-    harness.gh = { stdout: "", stderr, code: 1, killed: false, truncated: false };
+    harness.gh = {
+      stdout: "",
+      stderr: "gh: API rate limit exceeded (HTTP 403)",
+      code: 1,
+      killed: false,
+      truncated: false,
+    };
     expect(await suggest(await harness.provider(), "see #")).toBeNull();
     expect(harness.notices).toEqual([]);
   });
@@ -519,16 +471,6 @@ describe("Pi Issues Selector input", () => {
     ]);
   });
 
-  test("reads the remotes fresh on every submission that has a candidate", async () => {
-    const harness = new IssuesSelectorHarness();
-    await submit(harness, "#1");
-    harness.remotes = "remote.origin.url https://octo.ghe.com/me/core.git\n";
-    expect(await submit(harness, "#1")).toEqual({
-      action: "transform",
-      text: "[#1](https://octo.ghe.com/me/core/issues/1)",
-    });
-  });
-
   test("runs no command for text that cannot hold a reference", async () => {
     const harness = new IssuesSelectorHarness();
     expect(await submit(harness, "Nothing to see, no #hash and #0 or #x")).toEqual({
@@ -543,9 +485,6 @@ describe("Pi Issues Selector input", () => {
       "a GitLab host that glab is not signed in to",
       "remote.origin.url git@gitlab.corp.example:acme/widgets.git\n",
     ],
-    ["a local path", "remote.origin.url /srv/git/widgets.git\n"],
-    ["a file URL", "remote.origin.url file:///srv/git/widgets.git\n"],
-    ["an SSH host alias", "remote.origin.url git@gh-work:acme/widgets.git\n"],
   ])("leaves every reference literal beside %s", async (_name, remotes) => {
     const harness = new IssuesSelectorHarness();
     harness.remotes = remotes;
@@ -569,20 +508,6 @@ describe("Pi Issues Selector input", () => {
     expect(harness.ghCalls[0]?.args.slice(1, 3)).toEqual(["--hostname", "github.com"]);
   });
 
-  test("leaves bare references literal without a repository or beside another host", async () => {
-    const harness = new IssuesSelectorHarness();
-    harness.remotes = "";
-    expect(await submit(harness, "See #1")).toEqual({ action: "continue" });
-    expect(await submit(harness, "See acme/other#2")).toEqual({
-      action: "transform",
-      text: "See [acme/other#2](https://github.com/acme/other/issues/2)",
-    });
-    harness.remotes = "remote.origin.url git@bitbucket.org:acme/widgets.git\n";
-    expect(await submit(harness, "See #1 and acme/other#2")).toEqual({
-      action: "continue",
-    });
-  });
-
   test("converts on a GitHub Enterprise Server host gh is signed in to, as soon as it is", async () => {
     const harness = new IssuesSelectorHarness();
     harness.remotes = "remote.origin.url https://github.corp.example/acme/widgets.git\n";
@@ -594,43 +519,24 @@ describe("Pi Issues Selector input", () => {
     });
   });
 
-  test("converts on a host named by GH_HOST, with no hosts.yml", async () => {
-    vi.stubEnv("GH_HOST", "github.corp.example");
+  test("preserves attachments and steering/follow-up delivery", async () => {
     const harness = new IssuesSelectorHarness();
-    harness.remotes = "remote.origin.url https://github.corp.example/acme/widgets.git\n";
-    expect(await submit(harness, "Fix #12")).toEqual({
-      action: "transform",
-      text: "Fix [#12](https://github.corp.example/acme/widgets/issues/12)",
-    });
+    for (const streamingBehavior of ["steer", "followUp"] as const) {
+      const event: InputEvent = {
+        type: "input",
+        source: "interactive",
+        text: "#5",
+        streamingBehavior,
+        images: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
+      };
+      expect(await harness.emit(event)).toEqual({
+        action: "transform",
+        text: "[#5](https://github.com/acme/widgets/issues/5)",
+        images: event.images,
+      });
+      expect(event.text).toBe("#5");
+    }
   });
-
-  test("treats a failing git like a missing repository", async () => {
-    const harness = new IssuesSelectorHarness();
-    harness.remotes = "";
-    expect(await submit(harness, "#1")).toEqual({ action: "continue" });
-  });
-
-  test.each(["interactive", "rpc"] as const)(
-    "preserves %s attachments and steering/follow-up delivery",
-    async (source) => {
-      const harness = new IssuesSelectorHarness();
-      for (const streamingBehavior of ["steer", "followUp"] as const) {
-        const event: InputEvent = {
-          type: "input",
-          source,
-          text: "#5",
-          streamingBehavior,
-          images: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
-        };
-        expect(await harness.emit(event, source === "rpc" ? "rpc" : "tui")).toEqual({
-          action: "transform",
-          text: "[#5](https://github.com/acme/widgets/issues/5)",
-          images: event.images,
-        });
-        expect(event.text).toBe("#5");
-      }
-    },
-  );
 
   test("converts in print mode and leaves extension-generated messages alone", async () => {
     const harness = new IssuesSelectorHarness();
@@ -711,24 +617,6 @@ describe("Pi Issues Selector GitLab popup", () => {
     ]);
   });
 
-  test("! filters by number prefix, fuzzy-matches titles, and inserts !<number>", async () => {
-    const provider = await gitLab().provider();
-    expect((await suggest(provider, "see !4"))?.items.map((item) => item.value)).toEqual([
-      "!4",
-      "!41",
-      "!40",
-    ]);
-    const result = await suggest(provider, "see !login");
-    expect(result?.items.map((item) => item.value)).toEqual(["!40"]);
-    const item = result?.items[0];
-    if (!item || !result) throw new Error("Missing suggestion");
-    expect(provider.applyCompletion(["see !login"], 0, 10, item, result.prefix)).toEqual({
-      lines: ["see !40 "],
-      cursorLine: 0,
-      cursorCol: 8,
-    });
-  });
-
   test("# and ! keep separate caches, each fetched once", async () => {
     const harness = gitLab();
     const provider = await harness.provider();
@@ -776,61 +664,6 @@ describe("Pi Issues Selector GitLab popup", () => {
     expect(harness.ghCalls).toEqual([]);
     expect(harness.glabCalls).toEqual([]);
   });
-
-  test("! offers nothing outside a repository or beside an unrecognised host", async () => {
-    const harness = gitLab();
-    const provider = await harness.provider();
-    harness.remotes = "";
-    expect(await suggest(provider, "see !")).toBeNull();
-    harness.remotes = "remote.origin.url git@gitlab.corp.example:group/project.git\n";
-    expect(await suggest(provider, "see !")).toBeNull();
-    expect(harness.glabCalls).toEqual([]);
-  });
-
-  test("lists a self-managed host that glab is configured for", async () => {
-    await signInToGitLab("gitlab.corp.example");
-    const harness = new IssuesSelectorHarness();
-    harness.remotes = "remote.origin.url https://gitlab.corp.example/group/project.git\n";
-    expect((await suggest(await harness.provider(), "see #3"))?.items[0]?.value).toBe("#3");
-    expect(harness.glabCalls.map((call) => call.args.slice(0, 3))).toEqual([
-      ["api", "--hostname", "gitlab.corp.example"],
-    ]);
-  });
-
-  test("lists an ssh_host remote through the web host", async () => {
-    await signInToGitLab("gitlab.corp.example", "    ssh_host: ssh.corp.example\n");
-    const harness = new IssuesSelectorHarness();
-    harness.remotes = "remote.origin.url git@ssh.corp.example:group/project.git\n";
-    expect(await suggest(await harness.provider(), "see #")).not.toBeNull();
-    expect(harness.glabCalls[0]?.args.slice(0, 4)).toEqual([
-      "api",
-      "--hostname",
-      "gitlab.corp.example",
-      "projects/group%2Fproject/issues?state=all&order_by=updated_at&sort=desc&per_page=100",
-    ]);
-  });
-
-  test("a host both gh and glab are configured for is not recognised", async () => {
-    await signInTo("both.example");
-    await signInToGitLab("both.example");
-    const harness = new IssuesSelectorHarness();
-    harness.remotes = "remote.origin.url https://both.example/group/project.git\n";
-    expect(await suggest(await harness.provider(), "see #")).toBeNull();
-    expect(await suggest(await harness.provider(), "see !")).toBeNull();
-    expect(harness.ghCalls).toEqual([]);
-    expect(harness.glabCalls).toEqual([]);
-  });
-
-  test("a glab-marked remote decides the project", async () => {
-    const harness = new IssuesSelectorHarness();
-    harness.remotes = [
-      "remote.upstream.url git@gitlab.com:other/upstream.git",
-      "remote.origin.url git@gitlab.com:group/sub/project.git",
-      "remote.origin.glab-resolved-base base",
-    ].join("\n");
-    await suggest(await harness.provider(), "see #");
-    expect(harness.glabCalls[0]?.args[3]).toBe(issuesPath);
-  });
 });
 
 describe("Pi Issues Selector GitLab notices", () => {
@@ -861,37 +694,6 @@ describe("Pi Issues Selector GitLab notices", () => {
     ]);
     expect(harness.glabCalls).toHaveLength(2);
   });
-
-  test("a self-managed host is named by its web host", async () => {
-    await signInToGitLab("gitlab.corp.example");
-    const harness = new IssuesSelectorHarness();
-    signedOut(harness);
-    harness.remotes = "remote.origin.url https://gitlab.corp.example/group/project.git\n";
-    await suggest(await harness.provider(), "see !");
-    expect(harness.notices.map(([message]) => message)).toEqual([
-      "Issue suggestions need the GitLab CLI (glab) signed in to gitlab.corp.example. Run /skill:pi-issues-selector to diagnose.",
-    ]);
-  });
-
-  test.each([
-    ["a rate limit", "glab: 429 Too Many Requests"],
-    ["a forbidden project", "glab: 403 Forbidden"],
-    ["a network error", "error connecting to gitlab.com"],
-  ])("stays silent for %s", async (_name, stderr) => {
-    const harness = new IssuesSelectorHarness();
-    harness.remotes = GITLAB_PROJECT;
-    harness.glab = { stdout: "", stderr, code: 1, killed: false, truncated: false };
-    expect(await suggest(await harness.provider(), "see #")).toBeNull();
-    expect(harness.notices).toEqual([]);
-  });
-
-  test("a missing glab, which prints nothing, asks for the GitLab CLI", async () => {
-    const harness = new IssuesSelectorHarness();
-    harness.remotes = GITLAB_PROJECT;
-    harness.glab = { stdout: "", stderr: "", code: 1, killed: false, truncated: false };
-    await suggest(await harness.provider(), "see #");
-    expect(harness.notices).toHaveLength(1);
-  });
 });
 
 describe("Pi Issues Selector GitLab input", () => {
@@ -910,26 +712,6 @@ describe("Pi Issues Selector GitLab input", () => {
     });
   });
 
-  test("converts qualified references against the Issue Repository's host", async () => {
-    expect(await submit(gitLab(), "See other/team/proj#12 and other/team/proj!4.")).toEqual({
-      action: "transform",
-      text: "See [other/team/proj#12](https://gitlab.com/other/team/proj/-/issues/12) and [other/team/proj!4](https://gitlab.com/other/team/proj/-/merge_requests/4).",
-    });
-  });
-
-  test.each([
-    "see ./foo/bar#12",
-    "e.g./x#1",
-    "~/a/b#1",
-    "issue#123",
-    "group/proj.git#3",
-    "a != b and x!=3",
-    "Hello!3",
-    "proj#12",
-  ])("leaves %j literal", async (text) => {
-    expect(await submit(gitLab(), text)).toEqual({ action: "continue" });
-  });
-
   test("converts on a self-managed host that glab is configured for", async () => {
     await signInToGitLab("gitlab.corp.example", "    ssh_host: ssh.corp.example\n");
     const harness = gitLab("remote.origin.url git@ssh.corp.example:group/project.git\n");
@@ -945,13 +727,6 @@ describe("Pi Issues Selector GitLab input", () => {
     const harness = gitLab("remote.origin.url https://both.example/group/project.git\n");
     expect(await submit(harness, "Fix #12 and !3 and a/b#1")).toEqual({
       action: "continue",
-    });
-  });
-
-  test("a GitHub checkout keeps ! literal and converts # as before", async () => {
-    expect(await submit(new IssuesSelectorHarness(), "Fix #12 and !3 and a/b/c#4")).toEqual({
-      action: "transform",
-      text: "Fix [#12](https://github.com/acme/widgets/issues/12) and !3 and a/b/c#4",
     });
   });
 

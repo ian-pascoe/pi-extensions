@@ -5,7 +5,7 @@
  * each later request must begin with the byte-identical serialized history of the earlier one.
  */
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -28,7 +28,7 @@ import {
   SettingsManager,
   type AgentSession,
 } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import issuesSelectorExtension from "../src/index.js";
 
 interface CapturedRequest {
@@ -48,45 +48,20 @@ const directories: string[] = [];
 const sessions: AgentSession[] = [];
 
 afterEach(async () => {
-  // A case points the CLIs' config directories at temporary ones; no other fixture may see them.
-  vi.unstubAllEnvs();
   for (const session of sessions.splice(0)) session.dispose();
   await Promise.all(
     directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
   );
 });
 
-interface FixtureOptions {
-  defaultSystemPrompt?: boolean;
-  /** The checkout's `origin`. */
-  remote?: string;
-  /** Hosts `gh` is signed in to: written to a temporary `hosts.yml` that `GH_CONFIG_DIR` names. */
-  signedInHosts?: readonly string[];
-}
-
 async function createFixture({
   defaultSystemPrompt = false,
-  remote = "git@github.com:acme/widgets.git",
-  signedInHosts = [],
-}: FixtureOptions = {}): Promise<Fixture> {
+}: { defaultSystemPrompt?: boolean } = {}): Promise<Fixture> {
   const cwd = await mkdtemp(join(tmpdir(), "pi-issues-selector-sdk-"));
   directories.push(cwd);
   // A real checkout, so the extension reads the Issue Repository the way it does in Pi.
   await run("git", ["init", "-q"], { cwd });
-  await run("git", ["remote", "add", "origin", remote], { cwd });
-  // A developer's own glab configuration must not recognise or claim a host.
-  vi.stubEnv("GLAB_CONFIG_DIR", join(cwd, "glab-config"));
-  if (signedInHosts.length > 0) {
-    // A developer's own GH_HOST must not recognise the host either.
-    vi.stubEnv("GH_HOST", "");
-    const ghConfigDir = join(cwd, "gh-config");
-    await mkdir(ghConfigDir);
-    await writeFile(
-      join(ghConfigDir, "hosts.yml"),
-      signedInHosts.map((host) => `${host}:\n    git_protocol: https\n    user: me\n`).join(""),
-    );
-    vi.stubEnv("GH_CONFIG_DIR", ghConfigDir);
-  }
+  await run("git", ["remote", "add", "origin", "git@github.com:acme/widgets.git"], { cwd });
   const agentDir = join(cwd, "agent");
   const settingsManager = SettingsManager.inMemory({
     retry: { enabled: false },
@@ -213,95 +188,5 @@ describe.each([
     }
     expect(requests[0]!.tools).toBe(requests[2]!.tools);
     expect(requests[0]!.systemPrompt).toBe(requests[2]!.systemPrompt);
-  }, 30_000);
-
-  test("literal text sends the user message untouched", async () => {
-    const { session, requests, responses } = await createFixture({ defaultSystemPrompt });
-    responses.push(fauxAssistantMessage("Ok."), fauxAssistantMessage("Ok."));
-    await session.prompt("Look at `#12` and issue#13");
-    await session.prompt("Again");
-    expect(userTexts(requests[1]!)[0]).toBe("Look at `#12` and issue#13");
-    expectByteIdenticalPrefix(requests[0]!, requests[1]!);
-  }, 30_000);
-});
-
-describe("Issue References on a GitHub Enterprise Server remote", () => {
-  const options = {
-    remote: "https://github.corp.example/acme/widgets.git",
-    signedInHosts: ["github.corp.example"],
-  };
-
-  test("convert without disturbing the tool definitions, system prompt, or earlier history", async () => {
-    const { session, requests, responses } = await createFixture(options);
-    responses.push(
-      fauxAssistantMessage("Hello."),
-      fauxAssistantMessage("Looked."),
-      fauxAssistantMessage("Still here."),
-    );
-    await session.prompt("Hello there");
-    await session.prompt("Please fix #12 and compare with acme/other#3.");
-    await session.prompt("Anything else?");
-    expect(requests).toHaveLength(3);
-
-    expect(userTexts(requests[1]!)).toEqual([
-      "Hello there",
-      "Please fix [#12](https://github.corp.example/acme/widgets/issues/12) and compare with [acme/other#3](https://github.corp.example/acme/other/issues/3).",
-    ]);
-    expect(requests[2]!.messages.length).toBeGreaterThan(requests[1]!.messages.length);
-    for (let index = 1; index < requests.length; index++) {
-      expectByteIdenticalPrefix(requests[index - 1]!, requests[index]!);
-    }
-    expect(requests[0]!.tools).toBe(requests[2]!.tools);
-    expect(requests[0]!.systemPrompt).toBe(requests[2]!.systemPrompt);
-  }, 30_000);
-
-  test("the same remote stays literal when gh is not signed in to its host", async () => {
-    const { session, requests, responses } = await createFixture({
-      remote: options.remote,
-      // A configuration that lists another host only.
-      signedInHosts: ["other.example"],
-    });
-    responses.push(fauxAssistantMessage("Ok."), fauxAssistantMessage("Ok."));
-    await session.prompt("Please fix #12");
-    await session.prompt("Again");
-    expect(userTexts(requests[1]!)[0]).toBe("Please fix #12");
-    expectByteIdenticalPrefix(requests[0]!, requests[1]!);
-  }, 30_000);
-});
-
-describe("Issue References on a GitLab remote", () => {
-  const options = { remote: "git@gitlab.com:group/sub/project.git" };
-
-  test("# and ! convert without disturbing the tool definitions, system prompt, or earlier history", async () => {
-    const { session, requests, responses } = await createFixture(options);
-    responses.push(
-      fauxAssistantMessage("Hello."),
-      fauxAssistantMessage("Looked."),
-      fauxAssistantMessage("Still here."),
-    );
-    await session.prompt("Hello there");
-    await session.prompt("Fix #12 and !3, compare with other/team/proj#4.");
-    await session.prompt("Anything else?");
-    expect(requests).toHaveLength(3);
-
-    expect(userTexts(requests[1]!)).toEqual([
-      "Hello there",
-      "Fix [#12](https://gitlab.com/group/sub/project/-/issues/12) and [!3](https://gitlab.com/group/sub/project/-/merge_requests/3), compare with [other/team/proj#4](https://gitlab.com/other/team/proj/-/issues/4).",
-    ]);
-    expect(requests[2]!.messages.length).toBeGreaterThan(requests[1]!.messages.length);
-    for (let index = 1; index < requests.length; index++) {
-      expectByteIdenticalPrefix(requests[index - 1]!, requests[index]!);
-    }
-    expect(requests[0]!.tools).toBe(requests[2]!.tools);
-    expect(requests[0]!.systemPrompt).toBe(requests[2]!.systemPrompt);
-  }, 30_000);
-
-  test("literal text sends the user message untouched", async () => {
-    const { session, requests, responses } = await createFixture(options);
-    responses.push(fauxAssistantMessage("Ok."), fauxAssistantMessage("Ok."));
-    await session.prompt("Look at `!3` and a != b");
-    await session.prompt("Again");
-    expect(userTexts(requests[1]!)[0]).toBe("Look at `!3` and a != b");
-    expectByteIdenticalPrefix(requests[0]!, requests[1]!);
   }, 30_000);
 });

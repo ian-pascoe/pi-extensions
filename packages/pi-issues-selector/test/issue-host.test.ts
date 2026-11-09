@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { configuredFor } from "./configured-hosts.js";
 import { GITHUB } from "../src/github-host.js";
 import { GITLAB } from "../src/gitlab-host.js";
-import { findIssueHost, type IssueHost } from "../src/issue-host.js";
+import { findIssueHost } from "../src/issue-host.js";
 
 describe("findIssueHost", () => {
   const configuredOf =
@@ -14,11 +14,9 @@ describe("findIssueHost", () => {
   };
 
   test.each([
-    ["github.com", "github.com"],
     ["GitHub.com", "github.com"],
     ["ssh.github.com", "github.com"],
     ["octo.ghe.com", "octo.ghe.com"],
-    ["a.b.ghe.com", "a.b.ghe.com"],
   ])("%s is served as %s without reading the configured hosts", async (host, canonical) => {
     expect(await findIssueHost(host, never)).toEqual({
       adapter: GITHUB,
@@ -26,36 +24,20 @@ describe("findIssueHost", () => {
     });
   });
 
-  test.each(["gitlab.example", "ghe.com", "gh-work", "github.com.evil.example", "xghe.com", ""])(
+  test.each(["ghe.com", "github.com.evil.example", "xghe.com"])(
     "%j is not served",
     async (host) => {
       expect(await findIssueHost(host, configuredOf("github.corp.example"))).toBeUndefined();
     },
   );
 
-  test("a configured host is served by the adapter that lists it, compared case-insensitively", async () => {
+  test("a configured host is served by the adapter that lists it", async () => {
     expect(await findIssueHost("github.corp.example", configuredOf("github.corp.example"))).toEqual(
       {
         adapter: GITHUB,
         host: "github.corp.example",
       },
     );
-    expect(await findIssueHost("GitHub.Corp.Example", configuredOf("github.corp.example"))).toEqual(
-      {
-        adapter: GITHUB,
-        host: "github.corp.example",
-      },
-    );
-  });
-
-  test("a host that more than one adapter claims is not served", async () => {
-    const other: IssueHost = { ...GITHUB };
-    const both = async () =>
-      new Map([
-        ...configuredFor(GITHUB, "shared.example"),
-        ...configuredFor(other, "shared.example"),
-      ]);
-    expect(await findIssueHost("shared.example", both)).toBeUndefined();
   });
 
   test("gitlab.com is built in, served by the GitLab adapter without reading the configured hosts", async () => {

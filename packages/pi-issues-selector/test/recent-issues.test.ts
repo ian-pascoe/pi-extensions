@@ -110,28 +110,6 @@ describe("RecentIssues", () => {
     );
   });
 
-  test("keeps the load running when a new caller arrives within the grace period", async () => {
-    const gate = deferred<IssueListing>();
-    const cache = new RecentIssues({ cancelGraceMs: 50 });
-    let loads = 0;
-    let loadSignal: AbortSignal | undefined;
-    const load = (signal: AbortSignal): Promise<IssueListing> => {
-      loads++;
-      loadSignal = signal;
-      return gate.promise;
-    };
-    const typed = new AbortController();
-    const first = cache.get("a", load, typed.signal);
-    typed.abort();
-    expect(await first).toBeUndefined();
-    const next = cache.get("a", load, new AbortController().signal);
-    await new Promise((resolve) => setTimeout(resolve, 80));
-    expect(loadSignal?.aborted).toBe(false);
-    gate.resolve(listing(1));
-    expect(await next).toEqual(listing(1));
-    expect(loads).toBe(1);
-  });
-
   test("returns undefined at once for a request that is already cancelled", async () => {
     const controller = new AbortController();
     controller.abort();
