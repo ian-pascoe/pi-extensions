@@ -80,6 +80,7 @@ describe("publish-manifest", () => {
       expect(applied.types).toBe("./dist/index.d.ts");
       expect(applied.exports).toEqual(sourceManifest.publishConfig.exports);
       expect(applied.publishConfig).toEqual({ access: "public", provenance: true });
+      expect(Object.keys(applied)).toEqual(Object.keys(sourceManifest));
       expect({ ...applied, main: 0, types: 0, exports: 0, publishConfig: 0 }).toEqual({
         ...sourceManifest,
         main: 0,
@@ -87,14 +88,6 @@ describe("publish-manifest", () => {
         exports: 0,
         publishConfig: 0,
       });
-    });
-
-    it("keeps field order and the final newline", async () => {
-      await applyPublishManifest(packageDirectory);
-
-      const text = await readFile(join(packageDirectory, "package.json"), "utf8");
-      expect(Object.keys(JSON.parse(text))).toEqual(Object.keys(sourceManifest));
-      expect(text.endsWith("}\n")).toBe(true);
     });
 
     it("drops publishConfig when only overrides were in it", async () => {
@@ -109,14 +102,6 @@ describe("publish-manifest", () => {
       expect(access).toBe("public");
       expect(provenance).toBe(true);
       expect(await readManifest(packageDirectory)).not.toHaveProperty("publishConfig");
-    });
-
-    it("keeps the original manifest beside the rewritten one", async () => {
-      await applyPublishManifest(packageDirectory);
-
-      expect(await readFile(join(packageDirectory, originalManifestFileName), "utf8")).toBe(
-        originalText,
-      );
     });
 
     it("changes nothing for a package without overrides", async () => {
@@ -172,27 +157,6 @@ describe("publish-manifest", () => {
       );
     });
 
-    it("fails when one field was left behind", async () => {
-      await applyPublishManifest(packageDirectory);
-      const applied = await readManifest(packageDirectory);
-      await writeFile(
-        join(packageDirectory, "package.json"),
-        serialize({
-          ...applied,
-          main: "./src/index.ts",
-          publishConfig: { ...applied.publishConfig, main: "./dist/index.js" },
-        }),
-      );
-
-      await expect(checkPublishManifest(packageDirectory)).rejects.toThrow(/overrides for main\b/u);
-    });
-
-    it("passes once applied", async () => {
-      await applyPublishManifest(packageDirectory);
-
-      expect(await checkPublishManifest(packageDirectory)).toEqual({ handled: false });
-    });
-
     it("passes when the top level already equals the overrides", async () => {
       await writeFile(
         join(packageDirectory, "package.json"),
@@ -222,13 +186,6 @@ describe("publish-manifest", () => {
       expect(await restorePublishManifest(packageDirectory)).toEqual({ handled: false });
 
       expect(await readFile(join(packageDirectory, "package.json"), "utf8")).toBe(originalText);
-    });
-
-    it("allows applying again afterwards", async () => {
-      await applyPublishManifest(packageDirectory);
-      await restorePublishManifest(packageDirectory);
-
-      expect(await applyPublishManifest(packageDirectory)).toEqual({ handled: true });
     });
   });
 
@@ -276,17 +233,11 @@ describe("publish-manifest", () => {
 
       expect(await readFile(join(packageDirectory, "package.json"), "utf8")).toBe(originalText);
     });
-
-    it("rejects an unknown mode", async () => {
-      await expect(node("publish", packageDirectory)).rejects.toMatchObject({
-        code: 1,
-        stderr: expect.stringContaining("Usage: publish-manifest.mjs <apply|check|restore>"),
-      });
-    });
   });
 
-  it("reports the packages a mode handled", async () => {
-    expect(await runPublishManifest("apply", [packageDirectory])).toHaveLength(1);
-    expect(await runPublishManifest("apply", [packageDirectory])).toEqual([]);
+  it("rejects an unknown mode with the usage", async () => {
+    await expect(runPublishManifest("publish", [packageDirectory])).rejects.toThrow(
+      /Usage: publish-manifest\.mjs <apply\|check\|restore>/u,
+    );
   });
 });

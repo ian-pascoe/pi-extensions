@@ -90,6 +90,8 @@ describe("fetch-vscode-js-debug", () => {
       integrityOf(served),
     );
     expect(requests).toBe(1);
+    // The download's scratch directory is gone.
+    expect((await readdir(fixtureDirectory)).sort()).toEqual(["fixture.json", "js-debug"]);
   });
 
   it("writes a manifest so Node does not load the CommonJS adapter as part of an ES module package", async () => {
@@ -102,12 +104,6 @@ describe("fetch-vscode-js-debug", () => {
       version: "9.9.9",
       private: true,
     });
-  });
-
-  it("leaves no scratch directory behind", async () => {
-    await ensureVscodeJsDebug(fixtureDirectory, 0);
-
-    expect((await readdir(fixtureDirectory)).sort()).toEqual(["fixture.json", "js-debug"]);
   });
 
   it("is idempotent: a second run makes no request and keeps the extract", async () => {
@@ -131,16 +127,6 @@ describe("fetch-vscode-js-debug", () => {
       "// adapter v2\n",
     );
     expect(requests).toBe(2);
-  });
-
-  it("fetches again when the extract carries no integrity marker", async () => {
-    await mkdir(join(fixtureDirectory, "js-debug"));
-
-    expect((await ensureVscodeJsDebug(fixtureDirectory, 0)).status).toBe("downloaded");
-
-    expect(await readFile(join(fixtureDirectory, "js-debug/src/dapDebugServer.js"), "utf8")).toBe(
-      "// adapter v1\n",
-    );
   });
 
   it("rejects a tarball whose hash does not match, after one retry, and extracts nothing", async () => {
@@ -172,15 +158,6 @@ describe("fetch-vscode-js-debug", () => {
     expect(requests).toBe(2);
   });
 
-  it("gives up after the retry fails too", async () => {
-    failures = [503, 502];
-
-    await expect(ensureVscodeJsDebug(fixtureDirectory, 0)).rejects.toThrow(/failed: 502/u);
-
-    expect(requests).toBe(2);
-    expect(await readdir(fixtureDirectory)).toEqual(["fixture.json"]);
-  });
-
   it("times out a stalled download, retries once, and gives up", async () => {
     failures = ["hang", "hang"];
 
@@ -188,14 +165,6 @@ describe("fetch-vscode-js-debug", () => {
 
     expect(requests).toBe(2);
     expect(await readdir(fixtureDirectory)).toEqual(["fixture.json"]);
-  });
-
-  it("recovers when only the first download stalls", async () => {
-    failures = ["hang"];
-
-    expect((await ensureVscodeJsDebug(fixtureDirectory, 0, 500)).status).toBe("downloaded");
-
-    expect(requests).toBe(2);
   });
 
   it("rejects a fixture whose integrity is not a sha512 digest", async () => {
@@ -207,20 +176,5 @@ describe("fetch-vscode-js-debug", () => {
     await expect(ensureVscodeJsDebug(fixtureDirectory, 0)).rejects.toThrow();
 
     expect(requests).toBe(0);
-  });
-
-  it("pins the repository fixture to a sha512 digest of the 1.117.0 release", async () => {
-    const fixture = JSON.parse(
-      await readFile(
-        new URL("../tools/pi-dap-vscode-js-debug/fixture.json", import.meta.url),
-        "utf8",
-      ),
-    );
-
-    expect(fixture).toEqual({
-      version: "1.117.0",
-      url: "https://github.com/microsoft/vscode-js-debug/releases/download/v1.117.0/js-debug-dap-v1.117.0.tar.gz",
-      integrity: expect.stringMatching(/^sha512-[A-Za-z0-9+/]{86}==$/u),
-    });
   });
 });

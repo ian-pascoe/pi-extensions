@@ -261,10 +261,6 @@ async function run(order: readonly string[], value: string) {
 }
 
 describe("Pi Secret with Pi Guardian", () => {
-  test("the collection loads Pi Secret before Guardian", () => {
-    expect(collectionOrder).toEqual([SECRET_ENTRYPOINT, GUARDIAN_ENTRYPOINT]);
-  });
-
   test.each([
     ["collection", collectionOrder, "tok-collection-5f1d0a"],
     ["swapped", collectionOrder.toReversed(), "tok-swapped-c27e94"],

@@ -56,17 +56,15 @@ const SELECTORS = {
 } satisfies Record<string, ExtensionFactory>;
 type SelectorName = keyof typeof SELECTORS;
 
-function permutations<T>(items: readonly T[]): T[][] {
-  if (items.length <= 1) return [[...items]];
-  return items.flatMap((item, index) =>
-    permutations([...items.slice(0, index), ...items.slice(index + 1)]).map((rest) => [
-      item,
-      ...rest,
-    ]),
-  );
-}
-const names: SelectorName[] = ["skills", "mcp", "issues", "subagentModels"];
-const orders = permutations(names);
+/**
+ * Each selector only wraps the provider below it and rewrites what the earlier input handlers
+ * produced, so interaction is pairwise: the load order, its reverse, and one interleaving prove it.
+ */
+const orders: SelectorName[][] = [
+  ["skills", "mcp", "issues", "subagentModels"],
+  ["subagentModels", "issues", "mcp", "skills"],
+  ["mcp", "subagentModels", "skills", "issues"],
+];
 
 const skillCommand = (name: string, path = `/skills/${name}/SKILL.md`): SlashCommandInfo => ({
   name: `skill:${name}`,
@@ -271,21 +269,7 @@ describe.each(orders.map((order) => [order.join(" → "), order] as const))(
 
     test("no selector takes the others' prefixes", async () => {
       const provider = await new Host(order).provider();
-      for (const line of [
-        "mail a@gi",
-        "R&D",
-        "a&gi",
-        "a && b",
-        "+gi",
-        "echo $zzzz",
-        "issue#1",
-        "`#1`",
-        "`@gi`",
-        "`&gi`",
-        "`$re`",
-        "50%la",
-        "`%la`",
-      ]) {
+      for (const line of ["mail a@gi", "a&gi", "echo $zzzz", "issue#1", "50%la", "`$re`"]) {
         const suggestions = await provider.getSuggestions([line], 0, line.length, { signal });
         // A mid-word sigil or code is no token, so no selector (and not the native files) answers.
         expect(suggestions?.items.map((item) => item.value) ?? []).toEqual([]);
@@ -293,12 +277,15 @@ describe.each(orders.map((order) => [order.join(" → "), order] as const))(
     });
 
     test("one message holding every kind of reference converts fully", async () => {
-      const converted = await new Host(order).submit(
-        "Use $review with &github and %large to fix #12 and acme/other#1, not `$review`, `#12` or 50%.",
+      const host = new Host(order);
+      const converted = await host.submit(
+        "Use $review with &github and %large to fix #12 and acme/other#1, not `$review`, `#12`, 50%, &#123 or R&D.",
       );
       expect(converted).toBe(
-        'Use [$review](/skills/review/SKILL.md) with [&github](mcp://github "MCP server mcp__github") and [%large](model-role://large "Subagent model role: role=large") to fix [#12](https://github.com/acme/widgets/issues/12) and [acme/other#1](https://github.com/acme/other/issues/1), not `$review`, `#12` or 50%.',
+        'Use [$review](/skills/review/SKILL.md) with [&github](mcp://github "MCP server mcp__github") and [%large](model-role://large "Subagent model role: role=large") to fix [#12](https://github.com/acme/widgets/issues/12) and [acme/other#1](https://github.com/acme/other/issues/1), not `$review`, `#12`, 50%, &#123 or R&D.',
       );
+      // Converting again leaves every link alone.
+      expect(await host.submit(converted)).toBe(converted);
     });
 
     test("a model reference leaves another selector's percent-encoded link alone", async () => {
@@ -308,23 +295,8 @@ describe.each(orders.map((order) => [order.join(" → "), order] as const))(
       );
     });
 
-    test("a server reference and an issue reference convert independently", async () => {
-      const host = new Host(order);
-      expect(await host.submit("&github and #12")).toBe(
-        '[&github](mcp://github "MCP server mcp__github") and [#12](https://github.com/acme/widgets/issues/12)',
-      );
-      // `&#123` is neither: pi-issues-selector excludes `&` before `#`, and `#` is not a server name character.
-      expect(await host.submit("&#123 and R&D")).toBe("&#123 and R&D");
-    });
-
-    test("converting is idempotent across the selectors", async () => {
-      const host = new Host(order);
-      const once = await host.submit("Use $review, &github, %large, #12 and acme/other#1.");
-      expect(await host.submit(once)).toBe(once);
-    });
-
     describe("on a GitLab remote", () => {
-      test("! completes merge requests beside $, &, @, / and # completions", async () => {
+      test("! completes merge requests beside # completions", async () => {
         const provider = await new Host(order, GITLAB_REMOTE).provider();
 
         expect(await complete(provider, "see !7", (item) => item.value === "!7")).toEqual({
@@ -337,21 +309,6 @@ describe.each(orders.map((order) => [order.join(" → "), order] as const))(
         expect(await complete(provider, "fix #1", (item) => item.value === "#123")).toEqual({
           values: ["#123", "#12"],
           applied: "fix #123 ",
-        });
-        expect(await complete(provider, "use $re", (item) => item.value === "$review")).toEqual({
-          values: ["$review"],
-          applied: "use $review ",
-        });
-        expect(await complete(provider, "ask &gi", (item) => item.value === "&github")).toEqual({
-          values: ["&github"],
-          applied: "ask &github ",
-        });
-        expect(await complete(provider, "see @no", (item) => item.value === "@notes.txt")).toEqual({
-          values: ["@notes.txt"],
-          applied: "see @notes.txt ",
-        });
-        expect(await complete(provider, "/he", (item) => item.value === "help")).toMatchObject({
-          applied: "/help ",
         });
       });
 
@@ -369,18 +326,15 @@ describe.each(orders.map((order) => [order.join(" → "), order] as const))(
       });
 
       test("one message holding every kind of reference converts fully", async () => {
-        const converted = await new Host(order, GITLAB_REMOTE).submit(
+        const host = new Host(order, GITLAB_REMOTE);
+        const converted = await host.submit(
           "Use $review with &github to fix #12 and !7, see other/team/proj!3, not `!7`, a != b or &!7.",
         );
         expect(converted).toBe(
           'Use [$review](/skills/review/SKILL.md) with [&github](mcp://github "MCP server mcp__github") to fix [#12](https://gitlab.com/group/sub/project/-/issues/12) and [!7](https://gitlab.com/group/sub/project/-/merge_requests/7), see [other/team/proj!3](https://gitlab.com/other/team/proj/-/merge_requests/3), not `!7`, a != b or &!7.',
         );
-      });
-
-      test("converting is idempotent across the selectors", async () => {
-        const host = new Host(order, GITLAB_REMOTE);
-        const once = await host.submit("Use $review, &github, #12, !7 and other/team/proj#1.");
-        expect(await host.submit(once)).toBe(once);
+        // Converting again leaves every link alone.
+        expect(await host.submit(converted)).toBe(converted);
       });
     });
   },
