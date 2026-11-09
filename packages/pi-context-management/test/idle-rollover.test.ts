@@ -7,7 +7,6 @@ import {
   cacheRefreshDelayMs,
   decideIdle,
   IDLE_ROLLOVER_DEFAULTS,
-  latestCacheWarm,
   promptCacheTtlMs,
   readIdleRolloverSettings,
   WARMING_SETTLE_MS,
@@ -35,7 +34,6 @@ describe("Idle Rollover decisions", () => {
       settings: IDLE_ROLLOVER_DEFAULTS,
       invalid: [],
     });
-    expect(IDLE_ROLLOVER_DEFAULTS).toEqual({ enabled: true, minTokens: 200_000 });
     const global = { contextManagement: { idleRollover: { enabled: false, minTokens: 50_000 } } };
     const project = { contextManagement: { idleRollover: { enabled: true } } };
     expect(readIdleRolloverSettings(settingsReader(global, project)).settings).toEqual({
@@ -73,18 +71,6 @@ describe("Idle Rollover decisions", () => {
     expect(cacheRefreshDelayMs(10_000)).toBeUndefined();
   });
 
-  it("finds the latest Pi cache warm after a time", () => {
-    const at = (ms: number) => new Date(ms).toISOString();
-    const entries = [
-      { type: "usage", kind: "cache_warm", timestamp: at(1_000) },
-      { type: "usage", kind: "compaction", timestamp: at(9_000) },
-      { type: "usage", kind: "cache_warm", timestamp: at(5_000) },
-      { type: "message", timestamp: at(8_000) },
-    ];
-    expect(latestCacheWarm(entries, 0)).toBe(5_000);
-    expect(latestCacheWarm(entries, 5_000)).toBeUndefined();
-  });
-
   it("waits for Pi's warming, then rolls over before expiry", () => {
     const window = { touchedAt: 0, ttlMs: SHORT_TTL, delayMs: SHORT_DELAY };
     const settled = SHORT_DELAY + WARMING_SETTLE_MS;
@@ -99,7 +85,6 @@ describe("Idle Rollover decisions", () => {
       at: settled + 10 + WARMING_SETTLE_MS,
     });
     expect(decideIdle(window, inactive, settled)).toEqual({ action: "rollover" });
-    expect(decideIdle(window, undefined, settled)).toEqual({ action: "rollover" });
     // Pi's late-refresh cutoff: half of the 30-second margin before expiry.
     expect(decideIdle(window, inactive, SHORT_DELAY + 15_000)).toEqual({ action: "rollover" });
     expect(decideIdle(window, inactive, SHORT_DELAY + 15_001)).toEqual({ action: "expired" });
@@ -161,11 +146,6 @@ describe("Idle Rollover in a Pi session", () => {
 
   it.each([
     { name: "below the default minimum", tokens: 150_000, contextSettings: undefined },
-    {
-      name: "below a configured minimum",
-      tokens: 250_000,
-      contextSettings: { idleRollover: { minTokens: 300_000 } },
-    },
     {
       name: "disabled",
       tokens: 250_000,

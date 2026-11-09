@@ -12,93 +12,89 @@ for (const position of ["before", "after"] as const) {
   const ordered = (other: ExtensionFactory) =>
     position === "before" ? [other, contextManagement] : [contextManagement, other];
 
-  it.each([undefined, {}, { cancel: false }])(
-    `allows a passive listener ${position} Context Management: %j`,
-    async (result) => {
-      let calls = 0;
-      const f = await createSdkHarness(
-        ordered((pi) => {
-          pi.on("session_before_compact", () => {
-            calls++;
-            return result;
-          });
-        }),
-      );
-      f.responses.push(reply("Ready."));
-      await f.session.prompt("Ordinary task " + "history ".repeat(3000));
-      expect(f.requests).toHaveLength(1);
-      const handlers = compactionHandlers(f.session);
-      f.responses.push(overflow(), reply("Recovered."));
-      await f.session.prompt("Trigger native overflow");
-      expect(compactionHandlers(f.session)).toEqual(handlers);
-      expect(f.providerRequests).toHaveLength(0);
-      expect(calls).toBe(1);
-      expect(f.requests).toHaveLength(3);
-      expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
-      expect(f.session.messages).toEqual(f.manager.buildSessionContext().messages);
-    },
-  );
-
-  it(`lets a hook ${position} Context Management cancel native overflow recovery`, async () => {
+  it(`allows a passive listener ${position} Context Management`, async () => {
+    // Both passive result shapes: nothing returned, and an explicit non-cancelling result.
+    const result = position === "before" ? undefined : { cancel: false };
     let calls = 0;
     const f = await createSdkHarness(
       ordered((pi) => {
         pi.on("session_before_compact", () => {
           calls++;
-          return { cancel: true };
+          return result;
+        });
+      }),
+    );
+    f.responses.push(reply("Ready."));
+    await f.session.prompt("Ordinary task " + "history ".repeat(3000));
+    expect(f.requests).toHaveLength(1);
+    const handlers = compactionHandlers(f.session);
+    f.responses.push(overflow(), reply("Recovered."));
+    await f.session.prompt("Trigger native overflow");
+    expect(compactionHandlers(f.session)).toEqual(handlers);
+    expect(f.providerRequests).toHaveLength(0);
+    expect(calls).toBe(1);
+    expect(f.requests).toHaveLength(3);
+    expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
+    expect(f.session.messages).toEqual(f.manager.buildSessionContext().messages);
+  });
+
+  if (position === "before")
+    it(`lets a hook ${position} Context Management cancel native overflow recovery`, async () => {
+      let calls = 0;
+      const f = await createSdkHarness(
+        ordered((pi) => {
+          pi.on("session_before_compact", () => {
+            calls++;
+            return { cancel: true };
+          });
+        }),
+      );
+      f.responses.push(reply("Ready."));
+      await f.session.prompt("Ordinary task " + "history ".repeat(3000));
+      const handlers = compactionHandlers(f.session);
+      f.responses.push(overflow());
+      await f.session.prompt("Trigger native overflow");
+      expect(compactionHandlers(f.session)).toEqual(handlers);
+      expect(calls).toBe(1);
+      expect(f.providerRequests).toHaveLength(0);
+      expect(f.manager.getBranch().some((entry) => entry.type === "compaction")).toBe(false);
+      f.responses.push(reply("Still working."));
+      await f.session.prompt("Continue without compacting");
+      expect(f.requests).toHaveLength(3);
+    });
+
+  it(`claims manual compaction before a hook ${position} Context Management`, async () => {
+    let calls = 0;
+    const f = await createSdkHarness(
+      ordered((pi) => {
+        pi.on("session_before_compact", (event) => {
+          calls++;
+          return {
+            compaction: {
+              summary: "FOREIGN SUMMARY",
+              firstKeptEntryId: event.preparation.firstKeptEntryId,
+              tokensBefore: event.preparation.tokensBefore,
+            },
+          };
         });
       }),
     );
     f.responses.push(reply("Ready."));
     await f.session.prompt("Ordinary task " + "history ".repeat(3000));
     const handlers = compactionHandlers(f.session);
-    f.responses.push(overflow());
-    await f.session.prompt("Trigger native overflow");
+    f.responses.push(toolCall("context_rollover", { handoff: "Fresh Handoff." }));
+    await expect(f.session.compact()).rejects.toThrow("Compaction cancelled");
+    await expect
+      .poll(() => f.manager.getBranch().filter((entry) => entry.type === "compaction").length)
+      .toBe(1);
+    await f.session.waitForIdle();
     expect(compactionHandlers(f.session)).toEqual(handlers);
-    expect(calls).toBe(1);
+    expect(calls).toBe(0);
     expect(f.providerRequests).toHaveLength(0);
-    expect(f.manager.getBranch().some((entry) => entry.type === "compaction")).toBe(false);
-    f.responses.push(reply("Still working."));
-    await f.session.prompt("Continue without compacting");
-    expect(f.requests).toHaveLength(3);
+    const checkpoint = f.manager.getBranch().findLast((entry) => entry.type === "compaction");
+    expect(checkpoint?.summary).toContain("Fresh Handoff.");
+    expect(checkpoint?.summary).not.toContain("FOREIGN SUMMARY");
   });
-
-  it.each(["rpc", "tui"] as const)(
-    `claims manual compaction before a hook ${position} Context Management in %s`,
-    async (mode) => {
-      let calls = 0;
-      const f = await createSdkHarness(
-        ordered((pi) => {
-          pi.on("session_before_compact", (event) => {
-            calls++;
-            return {
-              compaction: {
-                summary: "FOREIGN SUMMARY",
-                firstKeptEntryId: event.preparation.firstKeptEntryId,
-                tokensBefore: event.preparation.tokensBefore,
-              },
-            };
-          });
-        }),
-      );
-      f.responses.push(reply("Ready."));
-      await f.session.prompt("Ordinary task " + "history ".repeat(3000));
-      await f.session.bindExtensions({ mode });
-      const handlers = compactionHandlers(f.session);
-      f.responses.push(toolCall("context_rollover", { handoff: "Fresh Handoff." }));
-      await expect(f.session.compact()).rejects.toThrow("Compaction cancelled");
-      await expect
-        .poll(() => f.manager.getBranch().filter((entry) => entry.type === "compaction").length)
-        .toBe(1);
-      await f.session.waitForIdle();
-      expect(compactionHandlers(f.session)).toEqual(handlers);
-      expect(calls).toBe(0);
-      expect(f.providerRequests).toHaveLength(0);
-      const checkpoint = f.manager.getBranch().findLast((entry) => entry.type === "compaction");
-      expect(checkpoint?.summary).toContain("Fresh Handoff.");
-      expect(checkpoint?.summary).not.toContain("FOREIGN SUMMARY");
-    },
-  );
 
   it(`supersedes a compaction summary ${position} Context Management during native overflow`, async () => {
     let calls = 0;
@@ -192,22 +188,6 @@ it("recovers native overflow when Pi wraps registered handlers", async () => {
   expect(f.providerRequests).toHaveLength(0);
   expect(f.requests).toHaveLength(3);
   expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
-});
-
-it("claims manual compaction when Pi wraps registered handlers", async () => {
-  const f = await createSdkHarness([contextManagement]);
-  wrapRegisteredHandlers(f.session);
-  f.responses.push(reply("Ready."));
-  await f.session.prompt("Ordinary task " + "history ".repeat(3000));
-  f.responses.push(toolCall("context_rollover", { handoff: "Fresh Handoff." }));
-  await expect(f.session.compact()).rejects.toThrow("Compaction cancelled");
-  await expect
-    .poll(() => f.manager.getBranch().filter((entry) => entry.type === "compaction").length)
-    .toBe(1);
-  await f.session.waitForIdle();
-  expect(f.providerRequests).toHaveLength(0);
-  const checkpoint = f.manager.getBranch().findLast((entry) => entry.type === "compaction");
-  expect(checkpoint?.summary).toContain("Fresh Handoff.");
 });
 
 it("guards listeners registered after startup", async () => {

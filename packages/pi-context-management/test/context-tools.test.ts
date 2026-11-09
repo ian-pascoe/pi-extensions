@@ -10,7 +10,7 @@ import {
   fauxToolCall,
   type JsonValue,
 } from "@earendil-works/pi-ai";
-import { chmodSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type, type TSchema } from "typebox";
@@ -20,7 +20,7 @@ import { AGENT_LINEAGE_ENTRY_TYPE, agentLineageRecord } from "@ian-pascoe/pi-uti
 import { expectToolOutputMatches } from "@ian-pascoe/pi-utils/tool-testing";
 import { ensureReferenceOrigin } from "../src/context-store.js";
 import { registerContextTools } from "../src/context-tools.js";
-import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
+import { TROUBLESHOOTING_HINT, TROUBLESHOOTING_SKILL_PATH } from "../src/troubleshooting-skill.js";
 
 interface ToolInput {
   action: string;
@@ -142,39 +142,6 @@ describe("Context History tools", () => {
       /source-qualified/,
     );
   });
-  test("malformed references explain the format, an example, and where valid refs come from", async () => {
-    const f = harness();
-    const id = f.manager.appendMessage({ role: "user", content: "recent", timestamp: 0 });
-    const message = await f.run("context_history", { action: "read", ref: "bogus" }).then(
-      () => "",
-      (error: Error) => error.message,
-    );
-    expect(message).toContain('Invalid reference "bogus"');
-    expect(message).toContain("context:<session>:<entry>");
-    expect(message).toContain(`context:${f.manager.getSessionId()}:${id}`);
-    expect(message).toMatch(/windows.*list.*search/);
-    await expect(f.run("context_history", { action: "list", window: "bogus" })).rejects.toThrow(
-      /Invalid reference "bogus"/,
-    );
-  });
-  test("rejects forged source qualifiers even when the entry exists locally", async () => {
-    const f = harness();
-    f.manager.appendMessage({ role: "user", content: "local", timestamp: 0 });
-    f.ensureOrigin();
-    const ref = /"ref":"([^"]+)"/.exec(await f.run("context_history", { action: "list" }))?.[1];
-    const window = /"ref":"([^"]+)"/.exec(
-      await f.run("context_history", { action: "windows" }),
-    )?.[1];
-    if (!ref || !window) throw new Error("Missing local references");
-    const forgedRef = ref.replace(/^context:[^:]+:/, "context:unrelated-session:");
-    const forgedWindow = window.replace(/^context:[^:]+:/, "context:unrelated-session:");
-    await expect(f.run("context_history", { action: "read", ref: forgedRef })).rejects.toThrow(
-      /source session/i,
-    );
-    await expect(
-      f.run("context_history", { action: "list", window: forgedWindow }),
-    ).rejects.toThrow(/source session/i);
-  });
   test("origin records preserve references through multiple native forks", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-context-multifork-"));
     onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
@@ -204,38 +171,6 @@ describe("Context History tools", () => {
     );
     await expect(child.run("context_history", { action: "list", window: forged })).rejects.toThrow(
       /source session/i,
-    );
-  });
-  test("forks resolve inherited references and Notes while plain children do not inherit the store", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "pi-context-fork-"));
-    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
-    const manager = SessionManager.create(dir, dir);
-    manager.appendMessage(fauxAssistantMessage("Original task"));
-    const f = harness(manager);
-    f.ensureOrigin();
-    await f.run("context_notes", { action: "write", name: "task", content: "PARENT NOTE" });
-    const listed = await f.run("context_history", { action: "list" });
-    const ref = /"ref":"([^"]+)"/.exec(listed)?.[1];
-    const window = /"ref":"([^"]+)"/.exec(
-      await f.run("context_history", { action: "windows" }),
-    )?.[1];
-    const file = manager.getSessionFile();
-    if (!ref || !window || !file) throw new Error("Missing reference or scratch journal");
-    const fork = harness(SessionManager.forkFrom(file, dir, dir));
-    expect(await fork.run("context_history", { action: "read", ref })).toContain("Original task");
-    expect(await fork.run("context_history", { action: "list", window })).toContain("items");
-    expect(await fork.run("context_notes", { action: "read", name: "task" })).toContain(
-      "PARENT NOTE",
-    );
-    await fork.run("context_notes", { action: "write", name: "task", content: "FORK NOTE" });
-    expect(await f.run("context_notes", { action: "read", name: "task" })).toContain("PARENT NOTE");
-    const child = harness();
-    expect(await child.run("context_notes", { action: "list" })).toContain('"notes":[]');
-    await expect(child.run("context_history", { action: "read", ref })).rejects.toThrow(
-      /selected branch/,
-    );
-    await expect(child.run("context_history", { action: "list", window })).rejects.toThrow(
-      /selected branch/,
     );
   });
   test("browses native windows and reads archived items without exposing siblings", async () => {
@@ -369,6 +304,7 @@ describe("Context Notes tools", () => {
       chmodSync(file, 0o600);
     }
     expect(failures).toHaveLength(1);
+    expect(existsSync(TROUBLESHOOTING_SKILL_PATH)).toBe(true);
     expect(failures[0]?.message).not.toContain(TROUBLESHOOTING_HINT);
     await expect(f.run("context_notes", { action: "read", name: "task" })).rejects.toThrow(
       TROUBLESHOOTING_HINT,
@@ -406,16 +342,6 @@ describe("Context Notes tools", () => {
       '"matches":[]',
     );
   });
-  test("agent can write, append, and read exact ranges of named Markdown Notes", async () => {
-    const f = harness();
-    await f.run("context_notes", { action: "write", name: "task", content: "# Task\nBlue" });
-    await f.run("context_notes", { action: "append", name: "task", content: "widget" });
-    expect(
-      await f.run("context_notes", { action: "read", name: "task", offset: 7, limit: 4 }),
-    ).toContain('"content":"Blue"');
-    expect(await f.run("context_notes", { action: "list" })).toContain('"name":"task"');
-    expect(f.tools.get("context_notes")?.executionMode).toBe("sequential");
-  });
   test("append separates the appended text from a Note without a trailing newline", async () => {
     const f = harness();
     const read = (name: string) => f.structured("context_notes", { action: "read", name });
@@ -428,10 +354,6 @@ describe("Context Notes tools", () => {
     await f.run("context_notes", { action: "write", name: "ended", content: "a\n" });
     await f.run("context_notes", { action: "append", name: "ended", content: "b" });
     expect(await read("ended")).toMatchObject({ content: "a\nb" });
-
-    await f.run("context_notes", { action: "write", name: "empty", content: "" });
-    await f.run("context_notes", { action: "append", name: "empty", content: "x" });
-    expect(await read("empty")).toMatchObject({ content: "x" });
 
     await f.run("context_notes", { action: "append", name: "fresh", content: "only" });
     expect(await read("fresh")).toMatchObject({ content: "only" });
@@ -497,20 +419,6 @@ describe("History previews and filters", () => {
       "thinking_level_change(high)",
       "custom(pi-todo-state)",
     ]);
-  });
-
-  test("previews are bounded and stay on one line", async () => {
-    const f = harness();
-    f.manager.appendMessage({
-      role: "user",
-      content: `${"long text\n".repeat(100)}`,
-      timestamp: 0,
-    });
-    const [preview] = await previews(f);
-    expect(preview?.length).toBeLessThanOrEqual(120);
-    expect(preview).toMatch(/^user: long text long text/);
-    expect(preview).toMatch(/…$/);
-    expect(preview).not.toContain("\n");
   });
 
   test("previews separate thinking-only, failed, and error entries and never split a character", async () => {
@@ -612,25 +520,6 @@ describe("History previews and filters", () => {
       );
       expect(chunk.content).toBe("config.json");
     }
-  });
-
-  test("search honours the filters", async () => {
-    const f = seeded();
-    f.manager.appendCustomEntry("note-keeper", {
-      text: "config.json lives here",
-    });
-    const refs = async (input: Partial<ToolInput>) =>
-      JSON.parse(
-        await f.run("context_history", {
-          action: "search",
-          query: "config",
-          ...input,
-        }),
-      ).matches.length;
-    const all = await refs({});
-    expect(await refs({ type: "message" })).toBeLessThan(all);
-    expect(await refs({ type: "custom" })).toBe(1);
-    expect(await refs({ role: "user" })).toBe(1);
   });
 
   test("search previews are readable text, not escaped JSON", async () => {

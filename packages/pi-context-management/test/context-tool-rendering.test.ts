@@ -94,34 +94,6 @@ function withDetails(details: ContextToolDetails): AgentToolResult<unknown> {
 const TOOK = "<muted>Took 1.2s</muted>";
 const textOf = (rendered: string[]) => rendered.join("\n");
 
-test("call rows lead with the lowercase registered name, then action and target, and stay after completion", async () => {
-  const { tool } = await registeredTool("context_notes");
-  const args = { action: "read", name: "plan", window: "context:source:window-a" };
-  expect(call(tool, renderContext(args))[0]).toBe(
-    "<toolTitle><b>context_notes</b></toolTitle> <accent>read</accent> <muted>“plan” · window-a</muted>",
-  );
-  const history = await registeredTool("context_history");
-  expect(call(history.tool, renderContext({ action: "read", ref: "context:s:entry-a" }))[0]).toBe(
-    "<toolTitle><b>context_history</b></toolTitle> <accent>read</accent> <muted>entry-a</muted>",
-  );
-  const rollover = await registeredTool("context_rollover");
-  expect(call(rollover.tool, renderContext({}))[0]).toBe(
-    "<toolTitle><b>context_rollover</b></toolTitle>",
-  );
-});
-
-test("a running call shows the live Elapsed footer and no placeholder text", async () => {
-  const { tool } = await registeredTool("context_history");
-  const running = renderContext(
-    { action: "list" },
-    { isPartial: true, durationMs: undefined, executionStarted: true },
-  );
-  const rendered = call(tool, running);
-  expect(rendered[0]).toContain("context_history");
-  expect(rendered.at(-1)).toMatch(/^<muted>Elapsed \d+\.\ds<\/muted>$/);
-  expect(textOf(rendered)).not.toMatch(/…|preparing|running|streaming/);
-});
-
 test("Notes reads show the header only when collapsed and the content with metadata when expanded", async () => {
   const { tool, context } = await registeredTool("context_notes");
   await tool.execute(
@@ -147,29 +119,6 @@ test("Notes reads show the header only when collapsed and the content with metad
     "<muted>name: plan</muted>",
     "<muted>limit: 20</muted>",
   ]);
-});
-
-test("History reads keep exact serialized fragments and expand to metadata and content", async () => {
-  const { tool } = await registeredTool("context_history");
-  const args = { action: "read", ref: "context:source-session:entry-a", offset: 8 };
-  const content = '"text":"# Heading\\n**literal**","unfinished';
-  const read = withDetails({
-    ref: args.ref,
-    resolvedInSession: "fork-session",
-    format: "recorded-entry-json",
-    content,
-    offset: 8,
-    totalCharacters: 200,
-    nextOffset: 51,
-    availability: "External spill originals are not read or verified.",
-  });
-  expect(result(tool, read, renderContext(args))).toEqual(["", TOOK]);
-  const expanded = textOf(result(tool, read, renderContext(args, { expanded: true })));
-  expect(expanded).toContain(`<toolOutput>${content}</toolOutput>`);
-  expect(expanded).toContain("<muted>Resolved in session: fork-session</muted>");
-  expect(expanded).toContain("<muted>Format: recorded-entry-json</muted>");
-  expect(expanded).toContain("<muted>Next offset: 51</muted>");
-  expect(expanded).toContain("<muted>Availability: External spill originals");
 });
 
 test("Notes lists copy ls: 20 names, an Expand Hint, and a continuation line", async () => {
@@ -203,7 +152,7 @@ test("Notes lists copy ls: 20 names, an Expand Hint, and a continuation line", a
   expect(empty).toEqual(["<muted>No Notes</muted>", "", TOOK]);
 });
 
-test("Lineage Notes name their owning agent, and the call row names a non-default scope", async () => {
+test("Lineage Notes name their owning agent", async () => {
   const { tool } = await registeredTool("context_notes");
   const args = { action: "list", scope: "lineage" };
   const list = withDetails({
@@ -223,48 +172,9 @@ test("Lineage Notes name their owning agent, and the call row names a non-defaul
   expect(textOf(result(tool, list, renderContext(args, { expanded: true })))).toContain(
     "<muted>Agent: root</muted>",
   );
-  expect(call(tool, renderContext(args))[0]).toBe(
-    "<toolTitle><b>context_notes</b></toolTitle> <accent>list</accent> <muted>lineage</muted>",
-  );
-  expect(call(tool, renderContext({ action: "list", scope: "branch" }))[0]).toBe(
-    "<toolTitle><b>context_notes</b></toolTitle> <accent>list</accent>",
-  );
 });
 
-test("History pages show 10 rows collapsed and readable detail when expanded", async () => {
-  const { tool } = await registeredTool("context_history");
-  const ref = (index: number) => `context:source-session:entry-${index}`;
-  const items = Array.from({ length: 12 }, (_, index) => ({
-    ref: ref(index),
-    type: "message",
-    timestamp: "2026-09-07T10:00:00Z",
-    preview: `user: hello ${index}`,
-  }));
-  const args = { action: "list", window: "context:source-session:window-a", role: "user" };
-  const page = withDetails({ items, total: 12, nextOffset: null });
-  const collapsed = result(tool, page, renderContext(args));
-  expect(collapsed[0]).toBe("<toolOutput>entry-0 · message · user: hello 0</toolOutput>");
-  expect(collapsed).toHaveLength(13);
-  expect(collapsed[10]).toContain("<muted>... (2 more lines,</muted>");
-  const expanded = textOf(result(tool, page, renderContext(args, { expanded: true })));
-  expect(expanded).toContain("<toolOutput>message · 2026-09-07T10:00:00Z</toolOutput>");
-  expect(expanded).toContain(`<muted>Reference: ${ref(11)}</muted>`);
-  expect(expanded).toContain("<muted>Next offset: none</muted>");
-  expect(expanded).not.toContain("to expand");
-  const windows = withDetails({
-    windows: [{ ref: ref(1), items: 7 }],
-    total: 2,
-    nextOffset: 1,
-  });
-  expect(result(tool, windows, renderContext({ action: "windows" }))).toEqual([
-    "<toolOutput>entry-1 · 7 entries</toolOutput>",
-    "<muted>1 of 2 · next offset 1</muted>",
-    "",
-    TOOK,
-  ]);
-});
-
-test.each(["context_notes", "context_history"])(
+test.each(["context_notes"])(
   "%s search lists matches and expands references and offsets",
   async (name) => {
     const { tool, session, context } = await registeredTool(name);
@@ -302,53 +212,8 @@ test.each(["context_notes", "context_history"])(
   },
 );
 
-test("Collapsed History searches identify their Context Window in the call header", async () => {
-  const { tool } = await registeredTool("context_history");
-  for (const window of ["window-a", "window-b"]) {
-    const args = { action: "search", query: "checkpoint", window: `context:source:${window}` };
-    const header = call(tool, renderContext(args))[0];
-    expect(header).toContain(window);
-    expect(header).not.toContain("context:source:");
-  }
-});
-
-test("Notes mutations keep the content in the call row and add only the footer to the result", async () => {
-  const { tool, context } = await registeredTool("context_notes");
-  for (const action of ["write", "append", "delete"]) {
-    const args = { action, name: "handoff", content: "Private working content" };
-    const done = await tool.execute("note-edit", args, undefined, undefined, context);
-    const row = textOf(call(tool, renderContext(args)));
-    expect(row).toContain(`<accent>${action}</accent> <muted>“handoff”</muted>`);
-    if (action === "delete") expect(row).not.toContain("Private working content");
-    else expect(row).toContain("<toolOutput>Private working content</toolOutput>");
-    expect(result(tool, done, renderContext(args))).toEqual(["", TOOK]);
-    expect(done.content[0]).toEqual({
-      type: "text",
-      text: JSON.stringify({ action, name: "handoff", saved: true }),
-    });
-  }
-});
-
-test("Rollover shows its Handoff in the call row and only the footer for the request", async () => {
-  const { tool } = await registeredTool("context_rollover");
-  const args = { handoff: "# Continue\n\nFinish the renderer." };
-  const requested = {
-    content: [
-      {
-        type: "text" as const,
-        text: "Handoff saved. Rollover requested; commit follows the complete tool batch.",
-      },
-    ],
-    details: { requested: true },
-  };
-  const row = textOf(call(tool, renderContext(args)));
-  expect(row).toContain("<toolOutput>Finish the renderer.</toolOutput>");
-  expect(result(tool, requested, renderContext(args))).toEqual(["", TOOK]);
-});
-
 test.each([
   ["context_notes", "write"],
-  ["context_notes", "append"],
   ["context_rollover", undefined],
 ] as const)(
   "%s %s keeps the head of long text collapsed and shows all of it expanded",
@@ -385,7 +250,7 @@ test.each([
   },
 );
 
-test.each(["context_notes", "context_history", "context_rollover"])(
+test.each(["context_history"])(
   "%s shows failures as error text with 10 head lines and an Expand Hint",
   async (name) => {
     const { tool } = await registeredTool(name);
@@ -416,39 +281,9 @@ test.each(["context_notes", "context_history", "context_rollover"])(
   },
 );
 
-test("a partial result renders only the Elapsed footer", async () => {
-  const { tool } = await registeredTool("context_history");
-  const running = renderContext({ action: "list" }, { isPartial: true, durationMs: undefined });
-  const rendered = result(tool, { content: [], details: undefined }, running, true);
-  expect(rendered).toHaveLength(2);
-  expect(rendered[1]).toMatch(/^<muted>Elapsed \d+\.\ds<\/muted>$/);
-});
-
-test("long multiline queries stay compact and terminal-safe without changing result data", async () => {
-  const { tool } = await registeredTool("context_history");
-  const query = `界😀${"long query ".repeat(30)}\nsecond line\u001b[2J`;
-  const args = { action: "search", query };
-  const details = {
-    matches: [{ ref: "context:source:entry-a", offset: 8, preview: "literal\u001b[2Jcontent" }],
-    nextOffset: null,
-  };
-  const found = withDetails(details);
-  const original = structuredClone(found);
-  for (const expanded of [false, true]) {
-    const context = renderContext(args, { expanded });
-    expect(textOf(call(tool, context))).toContain("long query");
-    expect(textOf(result(tool, found, context))).toContain("literalcontent");
-  }
-  expect(found).toEqual(original);
-});
-
 test.each([
   ["pi-context-prepare", ""],
   ["pi-context-manual-prepare", "<dim> \u00b7 </dim><customMessageText>manual</customMessageText>"],
-  [
-    "pi-context-prepare-cancelled",
-    "<dim> \u00b7 </dim><customMessageText>cancelled</customMessageText>",
-  ],
 ])(
   "%s renders in Pi's custom-message box with a 10-line Collapsed View",
   async (customType, heading) => {

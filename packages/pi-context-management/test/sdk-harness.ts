@@ -31,14 +31,12 @@ interface HarnessOptions {
   contextSettings?: unknown;
   settings?: SettingsManager;
   contextWindow?: number;
-  maxTokens?: number;
-  reserveTokens?: number;
   keepRecentTokens?: number;
+  manager?: SessionManager;
   systemPrompt?: string;
   /** Render Pi's default structured prompt, which carries tool rules, instead of a custom one. */
   defaultSystemPrompt?: boolean;
   modelId?: "claude-sonnet-4-5" | "claude-opus-5-5";
-  manager?: SessionManager;
   additionalExtensionPaths?: string[];
 }
 
@@ -55,7 +53,7 @@ export async function createSdkHarness(
     compaction: {
       enabled: true,
       keepRecentTokens: options.keepRecentTokens ?? 1,
-      reserveTokens: options.reserveTokens ?? 512,
+      reserveTokens: 512,
     },
     retry: { enabled: false },
   };
@@ -64,7 +62,7 @@ export async function createSdkHarness(
   const model = {
     ...baseModel,
     contextWindow: options.contextWindow ?? 200_000,
-    maxTokens: options.maxTokens ?? 512,
+    maxTokens: 512,
   };
   const providerRequests: string[] = [];
   // The session exists by the time any tool result fires.

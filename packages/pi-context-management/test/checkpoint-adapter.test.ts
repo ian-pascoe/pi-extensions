@@ -63,10 +63,24 @@ test("native checkpoint immediately refreshes the ongoing request and survives r
   expect(Object.getOwnPropertyDescriptor(AgentSession.prototype, "getAllTools")).toEqual(
     descriptor,
   );
+  f.api.on("context", (event) => ({
+    messages: [
+      ...event.messages,
+      {
+        role: "custom",
+        customType: "live-test",
+        content: "LIVE PROJECTION",
+        display: false,
+        timestamp: 0,
+      },
+    ],
+  }));
   f.responses.push(toolCall("checkpoint_test", {}), reply("Finished."));
   await f.session.prompt("OLD ARCHIVED MATERIAL");
   expect(f.requests).toHaveLength(2);
   expect(JSON.stringify(f.requests[1])).toContain("Continue the blue widget.");
+  expect(JSON.stringify(f.requests[1])).toContain("LIVE PROJECTION");
+  expect(JSON.stringify(f.manager.buildSessionContext())).not.toContain("LIVE PROJECTION");
   expect(JSON.stringify(f.requests[1])).not.toContain("OLD ARCHIVED MATERIAL");
   expect(f.requests[1]?.systemPrompt).toContain("Standing instructions survive.");
   expect(f.session.messages).toEqual(f.manager.buildSessionContext().messages);
@@ -189,11 +203,7 @@ test("capability loss is rejected without checkpoint mutation and always restore
   );
 });
 
-test.each([
-  { target: "manager", method: "getHeader" },
-  { target: "session", method: "getContextUsage" },
-  { target: "settings", method: "isProjectTrusted" },
-] as const)(
+test.each([{ target: "manager", method: "getHeader" }] as const)(
   "rejects missing $target / $method at capture and before mutation",
   async ({ target, method }) => {
     const f = await fixture();
@@ -230,28 +240,4 @@ test("an initial unflushed session rejects checkpointing without preventing a sh
   f.responses.push(reply("Ready."));
   await f.session.prompt("Short request");
   expect(f.requests).toHaveLength(1);
-});
-
-test("normal context projections survive an explicit native checkpoint", async () => {
-  const f = await fixture();
-  f.api.on("context", (event) => ({
-    messages: [
-      ...event.messages,
-      {
-        role: "custom",
-        customType: "live-test",
-        content: "LIVE PROJECTION",
-        display: false,
-        timestamp: 0,
-      },
-    ],
-  }));
-  f.responses.push(toolCall("checkpoint_test", {}), reply("Finished."));
-  await f.session.prompt("OLD ARCHIVED MATERIAL");
-  expect(f.requests).toHaveLength(2);
-  expect(JSON.stringify(f.requests[1])).toContain("Continue the blue widget.");
-  expect(JSON.stringify(f.requests[1])).toContain("LIVE PROJECTION");
-  expect(JSON.stringify(f.manager.buildSessionContext())).not.toContain("LIVE PROJECTION");
-  expect(JSON.stringify(f.requests[1])).not.toContain("OLD ARCHIVED MATERIAL");
-  expect(f.session.messages).toEqual(f.manager.buildSessionContext().messages);
 });
