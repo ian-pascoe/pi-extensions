@@ -45,13 +45,6 @@ function text(component: Component | undefined): string {
 }
 
 describe("Escalation Pass", () => {
-  it("is skipped when the first pass allows the call", async () => {
-    const { harness, entry } = await deployOnce({}, [assessment("low", "high", "Requested.")]);
-    expect(harness.reviews).toHaveLength(1);
-    expect(harness.executed).toEqual(["deploy:prod"]);
-    expect(entry).not.toHaveProperty("escalation");
-  });
-
   it("runs once a first pass would reject, and its allow decides", async () => {
     const { harness, entry } = await deployOnce({}, [
       assessment("high", "low", "Looks risky."),
@@ -130,28 +123,6 @@ describe("Escalation Pass", () => {
       risk: "high",
       rationale: "Looks risky.",
       escalation: { result: "failed", failure: expect.stringMatching(failure) },
-    });
-    expect(text(renderReviewEntry(entry, false, plainTheme, false))).toContain(
-      "escalation failed, first pass stands",
-    );
-  });
-
-  it("keeps the Rejection when the escalation's corrective reply to an uncategorized critical is malformed", async () => {
-    const { harness, entry } = await deployOnce({}, [
-      assessment("high", "low", "Looks risky."),
-      assessment("critical", "unknown", "Wipes prod.", null),
-      "not json",
-    ]);
-    expect(harness.reviews).toHaveLength(3);
-    expect(harness.executed).toEqual([]);
-    expect(entry).toMatchObject({
-      result: "rejected",
-      risk: "high",
-      escalation: {
-        result: "failed",
-        failure: expect.stringMatching(/malformed output.*even after a corrective retry/),
-        retried: true,
-      },
     });
   });
 

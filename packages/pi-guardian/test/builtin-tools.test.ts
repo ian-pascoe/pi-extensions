@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { link, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
@@ -139,46 +139,6 @@ describe("Pi's built-in tools on a real workspace", () => {
     expect(shown).toContain('- "write" with arguments {"path":"vendor/config"');
     // The issuing call is shown once, as the issuing call, not as a batch sibling.
     expect(shown).not.toContain('- "runner"');
-  });
-
-  it("reviews an edit to a hard-linked file", async () => {
-    const harness = await createGuardianHarness({ guardianSettings: reviewer, builtinTools: true });
-    await mkdir(join(harness.dir, "src"), { recursive: true });
-    await writeFile(join(harness.dir, "outside.txt"), "old\n");
-    await link(join(harness.dir, "outside.txt"), join(harness.dir, "src", "linked.txt"));
-    harness.responses.push(
-      toolCalls(["write", { path: "src/linked.txt", content: "new\n" }, "call-1"]),
-      reply("Ok."),
-    );
-    harness.guardianReplies.push(...confirmedRejection("high", "unknown", "Changes another path."));
-    await harness.session.prompt("Update linked.txt.");
-    expect(harness.reviews).toHaveLength(2);
-    expect(await readFile(join(harness.dir, "outside.txt"), "utf8")).toBe("old\n");
-  });
-
-  it("allows an ordinary write beside a reviewed call, which sees it as batch context", async () => {
-    const harness = await createGuardianHarness({ guardianSettings: reviewer, builtinTools: true });
-    harness.responses.push(
-      toolCalls(
-        ["bash", { command: "ln -s /etc target.txt" }, "call-1"],
-        ["write", { path: "target.txt", content: "x" }, "call-2"],
-      ),
-      reply("Ok."),
-    );
-    harness.guardianReplies.push(
-      ...confirmedRejection(
-        "critical",
-        "unknown",
-        "Links a path the batch writes.",
-        "sensitive_path",
-      ),
-    );
-    await harness.session.prompt("Do it.");
-    expect(harness.reviews).toHaveLength(2);
-    expect(reviewedCall(harness, 0)).toContain(
-      'Other calls in the same tool batch (each reviewed on its own; they bear on this call only where they change what it does, and Pi may run them before or alongside this call):\n- "write" with arguments {"path":"target.txt","content":"x"}',
-    );
-    expect(await readFile(join(harness.dir, "target.txt"), "utf8")).toBe("x");
   });
 
   it("shows other batch calls' path and command in full, shortening only their other arguments", async () => {

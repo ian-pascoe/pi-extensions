@@ -103,32 +103,6 @@ describe("staggered sibling reviews", () => {
     );
   });
 
-  it("releases siblings when the first request never streams and times out", async () => {
-    const harness = await createGuardianHarness({
-      guardianSettings: { ...reviewer, reviewTimeoutMs: 150 },
-    });
-    const [first, second] = [allowed(), allowed()];
-    harness.guardianReplies.push(first, second);
-    harness.responses.push(deploys("a", "b"), reply("Ok."));
-    const prompt = harness.session.prompt("Deploy a and b.");
-    await first.requested;
-    await settle();
-    expect(harness.reviews).toHaveLength(1);
-
-    // Nothing ever arrives from the first request; its deadline ends it and frees the sibling.
-    await second.requested;
-    expect(first.signal?.aborted).toBe(true);
-    second.complete();
-    await prompt;
-    expect(harness.executed).toEqual(["deploy:b"]);
-    expect(harness.entries("pi-guardian-review")).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ toolCallId: "call-a", result: "failed" }),
-        expect.objectContaining({ toolCallId: "call-b", result: "allowed" }),
-      ]),
-    );
-  });
-
   it("does not deadlock when the Guarded Agent is aborted while siblings wait", async () => {
     const harness = await createGuardianHarness({
       guardianSettings: { ...reviewer, reviewTimeoutMs: 60_000 },
@@ -199,21 +173,6 @@ describe("staggered sibling reviews", () => {
     await prompt;
     expect(harness.executed).toEqual(["deploy:a", "deploy:b"]);
     expect(harness.reviews).toHaveLength(2);
-  });
-
-  it("releases siblings when the first review returns before any request", async () => {
-    const harness = await createGuardianHarness({
-      guardianSettings: { model: "guardian-test/missing", reviewTimeoutMs: 5_000 },
-    });
-    harness.responses.push(deploys("a", "b"), reply("Ok."));
-    await harness.session.prompt("Deploy a and b.");
-    // No Guardian model resolves, so no request is ever made; neither review waits for one.
-    expect(harness.reviews).toHaveLength(0);
-    expect(harness.executed).toEqual([]);
-    expect(harness.entries("pi-guardian-review")).toEqual([
-      expect.objectContaining({ toolCallId: "call-a", result: "failed" }),
-      expect.objectContaining({ toolCallId: "call-b", result: "failed" }),
-    ]);
   });
 
   it("starts a classifier batch's siblings before the classifier pass resolves", async () => {

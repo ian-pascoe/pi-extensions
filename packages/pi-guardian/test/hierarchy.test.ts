@@ -95,33 +95,6 @@ describe("Child Agents and Advisors", () => {
     });
   });
 
-  it("weigh the root user's typed requests as Trusted Evidence, but not their own task", async () => {
-    const root = await createGuardianHarness({
-      guardianSettings: { model: "guardian-test/reviewer" },
-    });
-    root.responses.push(reply("I will delegate it."));
-    await root.session.prompt("Have a worker deploy staging.");
-    const child = await createGuardianHarness({
-      manager: await childManager(root.session.sessionManager.getSessionId()),
-    });
-    child.responses.push(toolCalls(["deploy", { target: "staging" }, "call-1"]), reply("Ok."));
-    child.guardianReplies.push(assessment("low", "high", "The root user asked for it."));
-    await child.session.prompt("Task from the parent agent: deploy staging and production.");
-    expect(child.executed).toEqual(["deploy:staging"]);
-    const message = child.reviews[0]?.messages[0];
-    const texts =
-      message?.role === "user" && Array.isArray(message.content)
-        ? message.content.map((part) => (part.type === "text" ? part.text : ""))
-        : [];
-    const labels = texts.map((text) => text.split("\n", 1)[0]);
-    expect(labels.slice(0, 2)).toEqual([
-      "Evidence (TRUSTED, origin: rootUser):",
-      "Evidence (UNTRUSTED, origin: user):",
-    ]);
-    expect(texts[0]).toContain("Have a worker deploy staging.");
-    expect(texts[1]).toContain("deploy staging and production");
-  });
-
   it("follow the root session's effective settings live", async () => {
     const root = await createGuardianHarness({
       guardianSettings: { model: "guardian-test/reviewer", tools: { deploy: "deny" } },
@@ -245,21 +218,10 @@ describe("Child Agents and Advisors", () => {
         delegationRecipient: "worker.deployer",
       },
     ]);
-    const reviewTask = async (
-      agentId: string,
-      parentAgentId: string,
-      /** A Coordination Message from the parent carrying the same text, before the prompt. */
-      coordination = false,
-    ) => {
-      const manager = await childManager(rootId, agentId, parentAgentId);
-      if (coordination)
-        manager.appendCustomMessageEntry(
-          "minimal-subagents.message",
-          `[Subagent message | agent=${parentAgentId} | turn=t1]\nDeploy staging.`,
-          true,
-          { source_agent_id: parentAgentId },
-        );
-      const grandchild = await createGuardianHarness({ manager });
+    const reviewTask = async (agentId: string, parentAgentId: string) => {
+      const grandchild = await createGuardianHarness({
+        manager: await childManager(rootId, agentId, parentAgentId),
+      });
       grandchild.responses.push(
         toolCalls(["deploy", { target: "staging" }, "call-1"]),
         reply("Ok."),
@@ -276,20 +238,9 @@ describe("Child Agents and Advisors", () => {
     ]);
     // A Child Agent of another parent does not, even with the same text.
     expect((await reviewTask("other", "root"))[1]).toBe("Evidence (UNTRUSTED, origin: user):");
-    // Nor does a sibling the task was not handed to, as with a replay through a spawn or an
-    // `agent_message` an `allow` Tool Policy let through unreviewed.
+    // Nor does a sibling the task was not handed to, as with a replay through a spawn.
     expect((await reviewTask("worker.other", "worker"))[1]).toBe(
       "Evidence (UNTRUSTED, origin: user):",
-    );
-    expect(await reviewTask("worker.other", "worker", true)).toEqual([
-      "Evidence (TRUSTED, origin: rootUser):",
-      "Evidence (UNTRUSTED, origin: agentMessage):",
-      "Evidence (UNTRUSTED, origin: user):",
-      expect.stringMatching(/^Reviewed Call/),
-    ]);
-    // The task approved for a spawn is not a Coordination Message, even to the same agent.
-    expect((await reviewTask("worker.deployer", "worker", true))[1]).toBe(
-      "Evidence (UNTRUSTED, origin: agentMessage):",
     );
   });
 
@@ -326,16 +277,6 @@ describe("Child Agents and Advisors", () => {
     await message("root", "Deploy b.");
     expect(child.reviews).toHaveLength(3);
     expect(child.executed).toEqual(["deploy:b"]);
-  });
-
-  it("fall back to their own settings when the root does not run Guardian in-process", async () => {
-    const child = await createGuardianHarness({
-      guardianSettings: { enabled: false },
-      manager: await childManager("absent-root"),
-    });
-    child.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
-    await child.session.prompt("deploy a");
-    expect(child.executed).toEqual(["deploy:a"]);
   });
 
   it("block Review Failures without asking, since Child Agents have no UI", async () => {

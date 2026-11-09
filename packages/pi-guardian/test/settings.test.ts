@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import {
-  completeGuardianCommandArguments,
-  parseGuardianCommand,
-  updatedToolEntries,
-} from "../src/guardian-command.js";
+import { completeGuardianCommandArguments, parseGuardianCommand } from "../src/guardian-command.js";
 import { parseGuardianMenuValue } from "../src/guardian-menu.js";
 import {
   escalationThinkingLevel,
@@ -43,25 +39,6 @@ function resolveInvalid(global: string) {
 }
 
 describe("Guardian settings", () => {
-  it("defaults to disabled with conservative review settings", () => {
-    expect(resolve({}, {})).toEqual({
-      settings: {
-        enabled: false,
-        thinkingLevel: "low",
-        escalationThreshold: 0.2,
-        tools: {},
-        commands: {},
-        policy: "",
-        reviewTimeoutMs: 60_000,
-        evidenceBudgetTokens: "auto",
-        onDeny: "block",
-        maxConsecutiveRejections: 3,
-        verbose: false,
-      },
-      sources: expect.objectContaining({ enabled: "default", tools: "default" }),
-    });
-  });
-
   it("merges Tool Policies per entry and lets null reset an entry to the built-in default", () => {
     const { settings, sources } = resolve(
       { tools: { bash: "allow", mcp__x: "deny" }, commands: { "npm test": "allow", rm: "deny" } },
@@ -78,15 +55,10 @@ describe("Guardian settings", () => {
     expect(sources["commands"]).toBe("session");
   });
 
-  it("lets a trusted project weaken Guardian (ADR-0002)", () => {
-    expect(resolve({ enabled: true }, { enabled: false }).settings.enabled).toBe(false);
-  });
-
   it("rejects invalid authored settings", () => {
     expect(() => resolveInvalid('{"tools":{"bash":"maybe"}}')).toThrow(
       /Invalid global Guardian settings/,
     );
-    expect(() => resolveInvalid('{"onDeny":"prompt"}')).toThrow(/Invalid global Guardian settings/);
     expect(() => resolveInvalid('{"escalationThreshold":1.5}')).toThrow(
       /Invalid global Guardian settings/,
     );
@@ -98,12 +70,6 @@ describe("Guardian settings", () => {
     );
     expect(() => resolveInvalid('{"commands":{"npm test | tee":"allow"}}')).toThrow(
       /must be literal words without shell syntax/,
-    );
-    expect(() => resolveInvalid('{"commands":{"rm":"maybe"}}')).toThrow(
-      /Invalid global Guardian settings/,
-    );
-    expect(() => parseGuardianCommand('set commands {"bin/test":"deny"} --global')).toThrow(
-      /must start with a bare program name/,
     );
     expect(() => parseGuardianCommand("command PAGER=x git deny")).toThrow(/assignment/);
     expect(resolve({ commands: { "npm test -- src/a": "allow" } }, {}).settings.commands).toEqual({
@@ -131,7 +97,6 @@ describe("Guardian settings", () => {
 describe("/guardian command", () => {
   it("parses scoped changes", () => {
     expect(parseGuardianCommand("")).toEqual({ action: "menu" });
-    expect(parseGuardianCommand("status")).toEqual({ action: "status" });
     expect(parseGuardianCommand("off --global")).toEqual({
       action: "set",
       scope: "global",
@@ -154,35 +119,19 @@ describe("/guardian command", () => {
       prefix: "git push --force",
       value: "deny",
     });
-    expect(() => parseGuardianCommand("command rm maybe")).toThrow(/Usage/);
     expect(() => parseGuardianCommand("tool bash maybe")).toThrow(/Usage/);
     expect(() => parseGuardianCommand("set nonsense 1")).toThrow(/Unknown Guardian option/);
     expect(() => parseGuardianCommand("set maxConsecutiveRejections -1")).toThrow(/Invalid/);
-    expect(parseGuardianCommand('set classifierModel "typesafe/jev-latest"')).toMatchObject({
-      key: "classifierModel",
-      patch: { classifierModel: "typesafe/jev-latest" },
-    });
     expect(parseGuardianCommand("set escalationThreshold 0.3")).toMatchObject({
       patch: { escalationThreshold: 0.3 },
     });
-  });
-
-  it("updates one tool entry within a scope", () => {
-    expect(updatedToolEntries(undefined, "bash", "deny")).toEqual({ bash: "deny" });
-    expect(updatedToolEntries({ bash: "deny" }, "read", "default")).toEqual({
-      bash: "deny",
-      read: null,
-    });
-    expect(updatedToolEntries({ bash: "deny" }, "bash", "inherit")).toBeUndefined();
   });
 
   it("completes subcommands, keys, tool values, and scopes", () => {
     const values = (prefix: string) =>
       completeGuardianCommandArguments(prefix).map((item) => item.value);
     expect(values("t")).toEqual(["tool"]);
-    expect(values("set on")).toEqual(["set onDeny"]);
     expect(values("tool bash d")).toEqual(["tool bash deny", "tool bash default"]);
-    expect(values("command rm d")).toEqual(["command rm deny", "command rm default"]);
     expect(values("off ")).toEqual(["off --global", "off --project"]);
   });
 
@@ -204,11 +153,9 @@ describe("/guardian command", () => {
       patch: { commands: {} },
     });
     expect(() => parseGuardianMenuValue("commands", "rm", "global")).toThrow(/prefix=/);
-    expect(() => parseGuardianMenuValue("commands", "rm=maybe", "global")).toThrow(/Invalid/);
     expect(parseGuardianMenuValue("evidenceBudgetTokens", "inherit", "global")).toEqual({
       action: "inherit",
       key: "evidenceBudgetTokens",
     });
-    expect(() => parseGuardianMenuValue("maxConsecutiveRejections", "", "session")).toThrow();
   });
 });

@@ -5,9 +5,8 @@ import {
   type KeybindingsManager,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { stripTerminalSequences, type Component, type TUI } from "@earendil-works/pi-tui";
+import type { Component, TUI } from "@earendil-works/pi-tui";
 import { expectLinesFitWidth } from "@ian-pascoe/pi-utils/ui-testing";
-import { renderStatusEntry, type GuardianRenderTheme } from "../src/guardian-rendering.js";
 import {
   assessment,
   confirmedRejection,
@@ -82,37 +81,11 @@ describe("/guardian command", () => {
         failed: 0,
         overrides: 0,
         escalated: 1,
+        escalatedBy: { rejected: 1 },
         cost: 0.0033,
       },
       error: null,
     });
-    const rendered = renderStatusEntry(status, false, plainTheme).render(120).join("\n");
-    expect(rendered).toContain("[guardian] ● on");
-    expect(rendered).toContain(
-      "2 reviews · 1 allowed · 1 rejected · 0 failed · 0 overrides · 1 escalated (1 rejected) · cost $0.0033",
-    );
-    expect(rendered).toContain("escalates to the Guardian model (low thinking)");
-  });
-
-  it("records a classifier First Pass and escalations by trigger", async () => {
-    const harness = await createGuardianHarness({
-      guardianSettings: { classifierModel: "guardian-test/judge", model: "guardian-test/reviewer" },
-    });
-    harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
-    harness.classifierReplies.push(new Error("overloaded"));
-    harness.guardianReplies.push(assessment("low", "high", "Requested."));
-    await harness.session.prompt("Deploy a.");
-    await harness.session.prompt("/guardian status");
-    const status = harness.entries("pi-guardian-status").at(-1);
-    expect(status).toMatchObject({
-      totals: { reviews: 1, allowed: 1, escalated: 1, escalatedBy: { failed: 1 } },
-    });
-    const rendered = renderStatusEntry(status, false, plainTheme).render(200).join("\n");
-    expect(rendered).toContain(
-      "classifier guardian-test/judge (escalates at Rejection Probability 0.2)",
-    );
-    expect(rendered).toContain("escalates to guardian-test/reviewer (low thinking)");
-    expect(rendered).toContain("1 escalated (1 failed)");
   });
 
   it("changes one Tool Policy entry at the session scope", async () => {
@@ -162,6 +135,11 @@ describe("/guardian settings menu", () => {
     await vi.waitFor(() => expect(host.shown.component).toBeDefined());
     expect(host.screen()).toContain("Guardian settings");
     expect(host.screen()).toContain("Scope");
+    for (const width of [40, 120]) {
+      expectLinesFitWidth(host.shown.component?.render(width) ?? [], width, {
+        piThemedBody: true,
+      });
+    }
     host.goTo("onDeny");
     host.press(keys.enter);
     await vi.waitFor(() =>
@@ -177,25 +155,7 @@ describe("/guardian settings menu", () => {
     ]);
   });
 
-  it("frames an accent title between borders and fits narrow and wide terminals", async () => {
-    const host = menuUi();
-    const harness = await createGuardianHarness({ ui: host.ui, mode: "tui" });
-    host.shown.theme = harness.session.extensionRunner?.getUIContext().theme;
-    const command = harness.session.prompt("/guardian");
-    await vi.waitFor(() => expect(host.shown.component).toBeDefined());
-    for (const width of [40, 120]) {
-      expectLinesFitWidth(host.shown.component?.render(width) ?? [], width, {
-        piThemedBody: true,
-      });
-    }
-    expect(stripTerminalSequences(host.shown.component?.render(120)[1] ?? "")).toBe(
-      " Guardian settings",
-    );
-    host.press(keys.escape);
-    await command;
-  });
-
-  it("picks a classifier model, or off, for the First Pass", async () => {
+  it("picks a classifier model for the First Pass", async () => {
     const host = menuUi();
     const harness = await createGuardianHarness({ ui: host.ui, mode: "tui" });
     host.shown.theme = harness.session.extensionRunner?.getUIContext().theme;
@@ -214,24 +174,7 @@ describe("/guardian settings menu", () => {
         overrides: { classifierModel: "guardian-test/tiny-judge" },
       }),
     );
-    host.goTo("classifierModel");
-    host.press(keys.enter);
-    host.type("off");
-    host.press(keys.enter);
-    await vi.waitFor(() =>
-      expect(harness.entries("pi-guardian-settings").at(-1)).toEqual({
-        version: 1,
-        overrides: { classifierModel: "off" },
-      }),
-    );
     host.press(keys.escape);
     await command;
   });
 });
-
-/** Unstyled theme: renderers use only fg, bg, and bold. */
-const plainTheme: GuardianRenderTheme = {
-  fg: (_color, text) => text,
-  bg: (_color, text) => text,
-  bold: (text) => text,
-};

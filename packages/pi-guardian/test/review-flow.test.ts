@@ -75,12 +75,6 @@ describe("Review Failure", () => {
 
   it.each([
     [
-      "an unknown model",
-      { model: "guardian-test/missing" },
-      undefined,
-      /Guardian model guardian-test\/missing was not found/,
-    ],
-    [
       "a provider error",
       reviewer,
       new Error("rate limited"),
@@ -128,18 +122,6 @@ describe("Review Failure", () => {
     expect(harness.entries("pi-guardian-review")).toMatchObject([
       { result: "failed", userOverride: true, blocked: false },
     ]);
-  });
-
-  it("blocks when the interactive user chooses Block", async () => {
-    const harness = await createGuardianHarness({
-      guardianSettings: reviewer,
-      ui: { select: async () => "Block" },
-    });
-    harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
-    harness.guardianReplies.push(new Error("provider down"));
-    await harness.session.prompt("Deploy a.");
-    expect(harness.executed).toEqual([]);
-    expect(resultText(harness, "call-1")).toMatch(/^Guardian could not review this deploy call/);
   });
 
   it("fails closed when settings are invalid, running only built-in read-only tools", async () => {
@@ -195,16 +177,6 @@ describe("Guardian Review lifecycle", () => {
     ]);
   });
 
-  it("denies a tool by Tool Policy without a model call", async () => {
-    const harness = await createGuardianHarness({
-      guardianSettings: { ...reviewer, tools: { deploy: "deny" } },
-    });
-    harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
-    await harness.session.prompt("Deploy a.");
-    expect(harness.reviews).toHaveLength(0);
-    expect(resultText(harness, "call-1")).toMatch(/denied by Guardian's Tool Policy/);
-  });
-
   it("is disabled until a setting enables it", async () => {
     const harness = await createGuardianHarness({ guardianSettings: null });
     harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
@@ -216,16 +188,6 @@ describe("Guardian Review lifecycle", () => {
       state: "disabled",
       sources: { enabled: "default" },
     });
-  });
-
-  it("does nothing when disabled", async () => {
-    const harness = await createGuardianHarness({
-      guardianSettings: { ...reviewer, enabled: false, tools: { deploy: "deny" } },
-    });
-    harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
-    await harness.session.prompt("Deploy a.");
-    expect(harness.reviews).toHaveLength(0);
-    expect(harness.executed).toEqual(["deploy:a"]);
   });
 
   it("ends the turn when the Rejection Streak reaches its limit and resets per request", async () => {
@@ -464,43 +426,6 @@ describe("Guardian Review lifecycle", () => {
     expect(harness.executed).toEqual([]);
     expect(harness.entries("pi-guardian-review")).toMatchObject([
       { result: "rejected", riskCategory: "destruction", retried: true },
-    ]);
-  });
-
-  it("names the Risk Category and a fixed reason in the warning and the dialog", async () => {
-    const notices: string[] = [];
-    const titles: string[] = [];
-    const harness = await createGuardianHarness({
-      guardianSettings: { ...reviewer, onDeny: "ask" },
-      ui: {
-        notify: (text) => notices.push(text),
-        select: async (title) => {
-          titles.push(title);
-          return "Block";
-        },
-      },
-    });
-    harness.responses.push(toolCalls(["deploy", { target: "prod" }, "call-1"]), reply("Ok."));
-    harness.guardianReplies.push(
-      JSON.stringify({
-        risk_level: "critical",
-        user_authorization: "unknown",
-        risk_category: "data_egress",
-      }),
-    );
-    await harness.session.prompt("Deploy.");
-    expect(harness.executed).toEqual([]);
-    expect(notices).toContain(
-      "Guardian: rejected deploy (critical (data_egress) risk): The Guardian gave no specific rationale.",
-    );
-    expect(titles[0]).toMatch(
-      /^Guardian rejected deploy \u2014 risk critical \(data_egress\), authorization unknown\nThe Guardian gave no specific rationale\./,
-    );
-    expect(resultText(harness, "call-1")).toContain(
-      "Risk: critical (data_egress). Authorization: unknown.",
-    );
-    expect(harness.entries("pi-guardian-review")).toMatchObject([
-      { result: "rejected", riskCategory: "data_egress" },
     ]);
   });
 

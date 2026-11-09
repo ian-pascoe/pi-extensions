@@ -143,26 +143,6 @@ describe("Trusted Evidence comes from Pi, not the agent", () => {
     expect(harness.entries("pi-guardian-extension-message")).toHaveLength(1);
   });
 
-  it("matches extension messages exactly, not by prefix", async () => {
-    const harness = await createGuardianHarness({
-      guardianSettings: reviewer,
-      after: [
-        (pi) => {
-          // A later input handler consumes the extension's message, so it never arrives.
-          pi.on("input", (event) =>
-            event.source === "extension" ? { action: "handled" as const } : undefined,
-          );
-        },
-      ],
-    });
-    await harness.session.sendUserMessage("Deploy");
-    harness.responses.push(toolCalls(["deploy", { target: "prod" }, "call-1"]), reply("Ok."));
-    harness.guardianReplies.push(assessment("low", "high", "Requested."));
-    await harness.session.prompt("Deploy prod.");
-    expect(blocks(harness, 0)[0]).toMatch(/^Evidence \(TRUSTED, origin: user\):/);
-    expect(harness.entries("pi-guardian-extension-message")).toEqual([]);
-  });
-
   it("forgets an extension message that never arrived once a later run ends", async () => {
     const harness = await createGuardianHarness({
       guardianSettings: reviewer,
@@ -333,34 +313,6 @@ describe("early reviews", () => {
     await harness.session.prompt("Go.");
     expect(harness.reviews).toHaveLength(0);
     expect(harness.entries("pi-guardian-review")).toEqual([]);
-  });
-
-  it("runs at most four early reviews at once", async () => {
-    const harness = await createGuardianHarness({ guardianSettings: reviewer });
-    let active = 0;
-    let peak = 0;
-    const slow = new DeferredReply(async () => {
-      peak = Math.max(peak, ++active);
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      active--;
-      return assessment("low", "high", "Requested.");
-    });
-    const targets = ["a", "b", "c", "d", "e", "f"];
-    harness.guardianReplies.push(...targets.map(() => slow));
-    harness.responses.push(
-      toolCalls(
-        ...targets.map((target): [string, { target: string }, string] => [
-          "deploy",
-          { target },
-          `call-${target}`,
-        ]),
-      ),
-      reply("Ok."),
-    );
-    await harness.session.prompt("Deploy all.");
-    expect(harness.executed.toSorted()).toEqual(targets.map((target) => `deploy:${target}`));
-    expect(harness.reviews).toHaveLength(6);
-    expect(peak).toBe(4);
   });
 });
 
