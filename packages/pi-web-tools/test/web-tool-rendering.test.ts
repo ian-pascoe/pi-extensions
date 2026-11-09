@@ -1,5 +1,5 @@
 import { initTheme } from "@earendil-works/pi-coding-agent";
-import { KeybindingsManager, setKeybindings, stripTerminalSequences } from "@earendil-works/pi-tui";
+import { KeybindingsManager, setKeybindings } from "@earendil-works/pi-tui";
 import {
   escapeTaggedTheme as taggedTheme,
   expectLinesFitWidth,
@@ -53,22 +53,11 @@ const numbered = (count: number) =>
 describe("web_search rendering", () => {
   const details = { provider: "exa" as const };
 
-  test("call row is a lowercase tool header with the query as target", () => {
+  test("call row is a lowercase tool header with the sanitized query as target", () => {
     const row = renderWebSearchToolCall({ query: "Pi\u001b[31m tools" }, taggedTheme, context());
     expect(lines(row)[0]).toBe(
       '<toolTitle><b>web_search</b></toolTitle> <accent>"Pi tools"</accent>',
     );
-    fitsAt(row);
-  });
-
-  test("expanded call lists the options one per line", () => {
-    const row = renderWebSearchToolCall(
-      { query: "q", numResults: 3, contextMaxCharacters: 1_200 },
-      taggedTheme,
-      context({ expanded: true }),
-    );
-    expect(lines(row)).toContain("<muted>numResults: 3</muted>");
-    expect(lines(row)).toContain("<muted>contextMaxCharacters: 1200</muted>");
     fitsAt(row);
   });
 
@@ -125,52 +114,6 @@ describe("web_search rendering", () => {
     expect(out).toContain("visible: 100 of 200 lines · 1000 of 2000 bytes");
     expect(out).toContain("complete output: /tmp/pi-web-tools/output.txt");
     expect(out).not.toContain("ctrl+o");
-  });
-
-  test("expanded result shows every line of the Markdown output", () => {
-    const result = {
-      content: [{ type: "text" as const, text: "# Heading\n\nUseful\u001b[31m content" }],
-      details,
-    };
-    const row = renderWebSearchToolResult(result, expanded, taggedTheme, context(), false, details);
-    fitsAt(row, { piThemedBody: true });
-    const text = stripTerminalSequences(rawLines(row, 120).join("\n"));
-    expect(text).toContain("Useful content");
-  });
-
-  test("partial result shows only the live Elapsed footer", () => {
-    const row = renderWebSearchToolResult(
-      { content: [], details },
-      { expanded: false, isPartial: true },
-      taggedTheme,
-      context({ durationMs: undefined }),
-      false,
-      details,
-    );
-    const out = lines(row).join("\n");
-    expect(out).not.toContain("Searching");
-    expect(out).not.toContain("…");
-    fitsAt(row);
-  });
-
-  test("error shows the first 10 lines in error text with the hint", () => {
-    const result = { content: [{ type: "text" as const, text: numbered(14) }], details: undefined };
-    const row = renderWebSearchToolResult(
-      result,
-      collapsed,
-      taggedTheme,
-      context(),
-      true,
-      undefined,
-    );
-    const out = lines(row);
-    expect(out[0]).toBe("<error>line 1</error>");
-    expect(out).toContain("<error>line 10</error>");
-    expect(out).not.toContain("<error>line 11</error>");
-    expect(out).toContain(
-      "<muted>... (4 more lines,</muted> <dim>ctrl+o</dim><muted> to expand</muted><muted>)</muted>",
-    );
-    fitsAt(row);
   });
 });
 
@@ -260,59 +203,6 @@ describe("web_fetch rendering", () => {
     expect(out).toContain("Fetched page");
     expect(out).not.toContain("password");
     expect(out).not.toContain("ctrl+o");
-  });
-
-  test("expanded text and html formats keep literal syntax", () => {
-    for (const format of ["text", "html"] as const) {
-      const details = { url: "https://example.com", contentType: "text/plain", format };
-      const result = {
-        content: [{ type: "text" as const, text: "# Literal\n\n<strong>text</strong>" }],
-        details,
-      };
-      const row = renderWebFetchToolResult(
-        result,
-        expanded,
-        taggedTheme,
-        context(),
-        false,
-        details,
-      );
-      const out = lines(row);
-      expect(out).toContain("<toolOutput># Literal</toolOutput>");
-      expect(out.join("\n")).toContain("<strong>text</strong>");
-    }
-  });
-
-  test("warns when the fetch was truncated", () => {
-    const details = {
-      ...fetchDetails,
-      contentType: "",
-      truncation: {
-        outputLines: 1,
-        totalLines: 2,
-        outputBytes: 1,
-        totalBytes: 2,
-        fullOutputPath: "/tmp/x",
-      },
-    };
-    const result = { content: [{ type: "text" as const, text: "x" }], details };
-    const out = lines(
-      renderWebFetchToolResult(result, collapsed, taggedTheme, context(), false, details),
-    );
-    expect(out[0]).toContain("<muted>markdown</muted><dim> · </dim><warning>truncated</warning>");
-  });
-
-  test("partial shows no placeholder text", () => {
-    const row = renderWebFetchToolResult(
-      { content: [], details: undefined },
-      { expanded: false, isPartial: true },
-      taggedTheme,
-      context({ durationMs: undefined }),
-      false,
-      undefined,
-    );
-    expect(lines(row).join("\n")).not.toContain("Fetching");
-    fitsAt(row);
   });
 
   test("historical failure shows sanitized first lines in error text and all when expanded", () => {

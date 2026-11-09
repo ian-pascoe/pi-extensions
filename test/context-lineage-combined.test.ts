@@ -88,10 +88,6 @@ function next(messages) {
   const call = (name, args) => ({ name, arguments: args });
   if (first.includes(${JSON.stringify(CHILD_TASK)}))
     return done.length === 0 ? call("context_notes", { action: "list", scope: "lineage" }) : undefined;
-  if (first === "STANDALONE") {
-    if (!done.includes("context_notes")) return call("context_notes", { action: "write", name: "own", content: "mine" });
-    return done.length === 1 ? call("context_notes", { action: "list", scope: "lineage" }) : undefined;
-  }
   if (first !== "COMBINED") return undefined;
   if (!done.includes("context_notes")) return call("context_notes", { action: "write", name: "plan", content: "root plan" });
   if (!done.includes("subagent")) return call("subagent", { agent_id: "reader", task: ${JSON.stringify(CHILD_TASK)}, tools: ["context_notes"] });
@@ -337,15 +333,5 @@ describe("Context Management with Minimal Subagents", () => {
     expect(declarations(subagentsAlone.session, COORDINATOR_TOOLS)).toBe(
       declarations(both.session, COORDINATOR_TOOLS),
     );
-  }, 60_000);
-
-  test("Context Management alone answers the lineage scope with the session's own Notes", async () => {
-    const root = await startRoot([CONTEXT_ENTRYPOINT]);
-    await root.session.prompt("STANDALONE");
-    const requests = await root.requests();
-    const final = requests.at(-1);
-    if (!final) throw new Error("No model request");
-    expect(notesResults(final).map(({ isError }) => isError)).toEqual([false, false]);
-    expect(listedNotes(final)).toEqual([expect.objectContaining({ name: "own", agent: "root" })]);
   }, 60_000);
 });

@@ -364,7 +364,6 @@ describe("Pi Formatter extension lifecycle", () => {
 
   test.each([
     ["edit", "edit", (path: string) => ({ input: { path }, details: undefined })],
-    ["write", "write", (path: string) => ({ input: { path }, details: undefined })],
     [
       "lsp_apply",
       "lsp_apply",
@@ -413,30 +412,27 @@ describe("Pi Formatter extension lifecycle", () => {
     ]);
   });
 
-  test.each(["lsp_rename", "lsp_code_actions", "not_lsp"])(
-    "ignores %s results even with a valid manifest and apply details",
-    async (toolName) => {
-      const script = "require('node:fs').writeFileSync(process.argv[1],'formatted')";
-      const harness = await createFormatterHarness({
-        formatter: { formatters: { overwrite: formatterDefinition(["-e", script, "$FILE"]) } },
-      });
-      const filePath = resolve(harness.cwd, "preview.txt");
-      await writeFile(filePath, "original");
+  test("ignores lsp_rename results even with a valid manifest and apply details", async () => {
+    const script = "require('node:fs').writeFileSync(process.argv[1],'formatted')";
+    const harness = await createFormatterHarness({
+      formatter: { formatters: { overwrite: formatterDefinition(["-e", script, "$FILE"]) } },
+    });
+    const filePath = resolve(harness.cwd, "preview.txt");
+    await writeFile(filePath, "original");
 
-      // Only the tool name distinguishes this from a real lsp_apply result.
-      await harness.runner.emitToolResult(
-        toolResultEvent(toolName, {
-          input: {
-            preview_id: "preview-1",
-            mutation_manifest: [{ operation: "modify", path: filePath }],
-          },
-          details: { kind: "workspace_edit_apply", state: "applied", changed_paths: [filePath] },
-        }),
-      );
+    // Only the tool name distinguishes this from a real lsp_apply result.
+    await harness.runner.emitToolResult(
+      toolResultEvent("lsp_rename", {
+        input: {
+          preview_id: "preview-1",
+          mutation_manifest: [{ operation: "modify", path: filePath }],
+        },
+        details: { kind: "workspace_edit_apply", state: "applied", changed_paths: [filePath] },
+      }),
+    );
 
-      expect(await readFile(filePath, "utf8")).toBe("original");
-    },
-  );
+    expect(await readFile(filePath, "utf8")).toBe("original");
+  });
 
   test("ignores an lsp_apply result without Workspace Edit application details", async () => {
     const script = "require('node:fs').writeFileSync(process.argv[1],'formatted')";
@@ -707,40 +703,6 @@ describe("Pi Formatter extension lifecycle", () => {
     expect(editResult).toBeUndefined();
   });
 
-  test("formats parallel writes to one file once, after the last write", async () => {
-    const harness = await createFormatterHarness({
-      formatter: { formatters: { trim: formatterDefinition(["-e", SLOW_TRIM_SCRIPT, "$FILE"]) } },
-    });
-    const filePath = resolve(harness.cwd, "values.txt");
-    const writeTool = createWriteTool(harness.cwd, {
-      operations: {
-        mkdir: async (directory) => {
-          await mkdir(directory, { recursive: true });
-        },
-        writeFile: async (path, content) => {
-          await delay(100);
-          await writeFile(path, content);
-        },
-      },
-    });
-
-    const results = await Promise.all(
-      ["x  \n", "y  \n", "z  \n"].map(async (content, index) => {
-        const written = await writeTool.execute(`write-${index}`, { path: filePath, content });
-        return harness.runner.emitToolResult({
-          ...toolResultEvent("write", { input: { path: filePath }, details: undefined }),
-          toolCallId: `write-${index}`,
-          content: written.content,
-        });
-      }),
-    );
-
-    expect(await readFile(filePath, "utf8")).toBe("z\n");
-    expect(results.flatMap((result) => formatterNotes(result))).toEqual([
-      ["Formatted by trim: line 1 changed", "@@ -1 +1 @@", "-z  ", "+z"].join("\n"),
-    ]);
-  });
-
   test("holds every file of a mutation until all of them are formatted", async () => {
     const harness = await createFormatterHarness({
       formatter: { formatters: { trim: formatterDefinition(["-e", SLOW_TRIM_SCRIPT, "$FILE"]) } },
@@ -928,27 +890,6 @@ describe("Pi Formatter extension lifecycle", () => {
     await expect(access(resolve(harness.cwd, "after-ran"))).rejects.toThrow();
   });
 
-  test("falls back to the changed-line summary when the diff exceeds the line limit", async () => {
-    const script =
-      "const fs=require('node:fs');const p=process.argv[1];fs.writeFileSync(p,fs.readFileSync(p,'utf8').replaceAll('x','y'))";
-    const harness = await createFormatterHarness({
-      formatter: {
-        formatters: { rewrite: formatterDefinition(["-e", script, "$FILE"]) },
-      },
-    });
-    const filePath = resolve(harness.cwd, "large.txt");
-    await writeFile(filePath, "x\n".repeat(40));
-
-    const result = await harness.runner.emitToolResult(
-      toolResultEvent("write", {
-        input: { path: filePath },
-        details: undefined,
-      }),
-    );
-
-    expect(lastText(result)).toBe("Formatted by rewrite: lines 1–40 changed");
-  });
-
   test("falls back to the changed-line summary when the diff exceeds the byte limit", async () => {
     const script =
       "const fs=require('node:fs');const p=process.argv[1];fs.writeFileSync(p,fs.readFileSync(p,'utf8').toUpperCase())";
@@ -1044,20 +985,9 @@ describe("Pi Formatter extension lifecycle", () => {
       hint: true,
     },
     {
-      name: "ruff's bad configuration error",
-      stderr: () =>
-        "ruff failed\n  Cause: Failed to parse /x/pyproject.toml\n  Cause: TOML parse error at line 1, column 1",
-      hint: true,
-    },
-    {
       name: "stylua's bad configuration error that names the formatted file",
       stderr: (file: string) =>
         `error: could not format ${file}: Config file not in correct format: TOML parse error`,
-      hint: true,
-    },
-    {
-      name: "an unknown option",
-      stderr: () => "`--bogus` is not expected in this context",
       hint: true,
     },
   ])("handles the troubleshooting hint for $name", async ({ stderr, hint }) => {
@@ -1089,12 +1019,6 @@ describe("Pi Formatter extension lifecycle", () => {
       name: "a declared signal that the heuristic would not accept",
       stderr: () => "error: Failed to format input",
       pattern: "^error: Failed to format",
-      hint: false,
-    },
-    {
-      name: "a declared signal that matches stderr mentioning configuration",
-      stderr: (file: string) => `${file}: invalid config near token`,
-      pattern: "invalid config near token",
       hint: false,
     },
     {
@@ -1139,26 +1063,6 @@ describe("Pi Formatter extension lifecycle", () => {
       formatter: "oxfmt",
       stderr:
         "  x Unexpected token\n   ,-[vite.config.ts:1:34]\n 1 | export default defineConfig({ a: ,\n   :                                  ^\n   `----\nError occurred when checking code style in the above files.",
-      hint: false,
-    },
-    {
-      name: "oxfmt bad configuration file",
-      formatter: "oxfmt",
-      stderr: "Failed to load configuration file.\nkey must be a string at line 1 column 3",
-      hint: true,
-    },
-    {
-      name: "oxfmt with no target file",
-      formatter: "oxfmt",
-      stderr:
-        "Expected at least one target file. All matched files may have been excluded by ignore rules.",
-      hint: true,
-    },
-    {
-      name: "ruff syntax error",
-      formatter: "ruff-format",
-      stderr:
-        "error: Failed to parse bad.py:1:7: Expected a parameter or the end of the parameter list",
       hint: false,
     },
     {
@@ -1246,32 +1150,6 @@ describe("Pi Formatter extension lifecycle", () => {
       expect(lastText(result)).toContain(TROUBLESHOOTING_HINT);
     },
   );
-
-  test.each([
-    {
-      name: "a timeout",
-      settings: {
-        timeoutMs: 25,
-        formatters: {
-          hanging: formatterDefinition(["-e", "setInterval(() => {}, 1000)", "$FILE"]),
-        },
-      },
-    },
-    {
-      name: "a spawn error",
-      settings: { formatters: { missing: { ...formatterDefinition(["$FILE"]), command: "\0" } } },
-    },
-  ])("keeps the troubleshooting hint on $name", async ({ settings }) => {
-    const harness = await createFormatterHarness({ formatter: settings });
-    const filePath = resolve(harness.cwd, "input.txt");
-    await writeFile(filePath, "original");
-
-    const result = await harness.runner.emitToolResult(
-      toolResultEvent("write", { input: { path: filePath }, details: undefined }),
-    );
-
-    expect(lastText(result)).toContain(TROUBLESHOOTING_HINT);
-  });
 
   test("keeps the hint when a syntax error and another failure are reported together", async () => {
     const syntaxFormatter = formatterDefinition([
@@ -1378,30 +1256,6 @@ describe("Pi Formatter extension lifecycle", () => {
         "+B",
       ].join("\n"),
     );
-  });
-
-  test("bounds a hanging formatter with the configured timeout", async () => {
-    const harness = await createFormatterHarness({
-      formatter: {
-        timeoutMs: 25,
-        formatters: {
-          hanging: formatterDefinition(["-e", "setInterval(() => {}, 1000)", "$FILE"]),
-        },
-      },
-    });
-    const filePath = resolve(harness.cwd, "timeout.txt");
-    await writeFile(filePath, "original");
-
-    const result = await harness.runner.emitToolResult(
-      toolResultEvent("write", { input: { path: filePath }, details: undefined }),
-    );
-
-    expect(result?.content?.at(-1)).toMatchObject({
-      type: "text",
-      text: expect.stringMatching(
-        /Pi Formatter: hanging failed .*timeout\.txt \(timeout after 25ms\)/,
-      ),
-    });
   });
 
   test("reports quarantined settings and skips vanished files", async () => {

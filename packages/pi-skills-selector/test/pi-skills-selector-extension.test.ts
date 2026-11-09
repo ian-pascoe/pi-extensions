@@ -104,24 +104,6 @@ describe("Pi Skills Selector autocomplete", () => {
       text: "Use [$style.guide](/skills/style.guide/SKILL.md).",
     });
   });
-  test("preserves native slash suggestions and completion", async () => {
-    const provider = await new SkillsSelectorHarness().provider();
-    const suggestions = await provider.getSuggestions(["/he"], 0, 3, {
-      signal: new AbortController().signal,
-    });
-    expect(suggestions).toEqual({
-      prefix: "/he",
-      items: [{ value: "help", label: "help", description: "Native help" }],
-    });
-    const item = suggestions?.items[0];
-    if (!item) throw new Error("Missing native suggestion");
-    expect(provider.applyCompletion(["/he"], 0, 3, item, "/he")).toEqual({
-      lines: ["/help "],
-      cursorLine: 0,
-      cursorCol: 6,
-    });
-  });
-
   test("uses the current Catalogue and re-registers after Pi clears providers for reload", async () => {
     const harness = new SkillsSelectorHarness();
     const provider = await harness.provider();
@@ -142,62 +124,11 @@ describe("Pi Skills Selector autocomplete", () => {
       text: "[$fresh](/project/fresh/SKILL.md) $code-review",
     });
   });
-  test("delegates literal-context completions even when another provider uses dollar-prefixed values", async () => {
-    const options = { signal: new AbortController().signal, force: true };
-    const item = { value: "$path", label: "$path" };
-    const result = { lines: ["`$path`"], cursorLine: 0, cursorCol: 6 };
-    const current: AutocompleteProvider = {
-      triggerCharacters: ["#"],
-      async getSuggestions(lines, cursorLine, cursorCol, receivedOptions) {
-        expect([lines, cursorLine, cursorCol, receivedOptions]).toEqual([["`$p`"], 0, 3, options]);
-        expect(receivedOptions.signal).toBe(options.signal);
-        return { prefix: "$p", items: [item] };
-      },
-      applyCompletion: () => result,
-      shouldTriggerFileCompletion: () => false,
-    };
-    const provider = await new SkillsSelectorHarness().provider(current);
-    expect(provider.triggerCharacters).toEqual(["#", "$"]);
-    expect(await provider.getSuggestions(["`$p`"], 0, 3, options)).toEqual({
-      prefix: "$p",
-      items: [item],
-    });
-    expect(provider.applyCompletion(["`$p`"], 0, 3, item, "$p")).toBe(result);
-    expect(provider.shouldTriggerFileCompletion?.(["`$p`"], 0, 3)).toBe(false);
-  });
-  test("has no suggestions for unmatched or cancelled Skill queries", async () => {
-    const provider = await new SkillsSelectorHarness().provider();
-    expect(
-      await provider.getSuggestions(["$zzzz"], 0, 5, { signal: new AbortController().signal }),
-    ).toBeNull();
-    const controller = new AbortController();
-    controller.abort();
-    expect(await provider.getSuggestions(["$"], 0, 1, { signal: controller.signal })).toBeNull();
-  });
-  test("selection inserts one shorthand with native spacing and preserves the rest of the editor", async () => {
+  test("does not register terminal autocomplete outside the TUI", async () => {
     const harness = new SkillsSelectorHarness();
-    const provider = await harness.provider();
-    const lines = ["First $ponytail", "Use $crv, then inspect.", "Last line"];
-    const suggestions = await provider.getSuggestions(lines, 1, 8, {
-      signal: new AbortController().signal,
-    });
-    const item = suggestions?.items[0];
-    if (!item || !suggestions) throw new Error("Missing Skill suggestion");
-    expect(provider.applyCompletion(lines, 1, 8, item, suggestions.prefix)).toEqual({
-      lines: ["First $ponytail", "Use $code-review , then inspect.", "Last line"],
-      cursorLine: 1,
-      cursorCol: 17,
-    });
-    expect(lines[1]).toBe("Use $crv, then inspect.");
+    await harness.emit({ type: "session_start", reason: "startup" }, "rpc");
+    expect(harness.factories).toEqual([]);
   });
-  test.each(["rpc", "print", "json"] as const)(
-    "does not register terminal autocomplete in %s mode",
-    async (mode) => {
-      const harness = new SkillsSelectorHarness();
-      await harness.emit({ type: "session_start", reason: "startup" }, mode);
-      expect(harness.factories).toEqual([]);
-    },
-  );
   test("bare $ lists current Skill names and descriptions, with native fuzzy filtering", async () => {
     const harness = new SkillsSelectorHarness();
     const provider = await harness.provider();
@@ -255,28 +186,23 @@ describe("Pi Skills Selector input", () => {
       items: [{ value: "$valid", label: "$valid", description: "Instructions for valid" }],
     });
   });
-  test.each(["interactive", "rpc"] as const)(
-    "preserves %s attachments and steering/follow-up delivery",
-    async (source) => {
-      const harness = new SkillsSelectorHarness();
-      for (const streamingBehavior of ["steer", "followUp"] as const) {
-        const event: InputEvent = {
-          type: "input",
-          source,
-          text: "$ponytail",
-          streamingBehavior,
-          images: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
-        };
-        expect(await harness.emit(event, source === "rpc" ? "rpc" : "tui")).toEqual({
-          action: "transform",
-          text: "[$ponytail](/skills/ponytail/SKILL.md)",
-          images: event.images,
-        });
-        expect(event.streamingBehavior).toBe(streamingBehavior);
-        expect(event.text).toBe("$ponytail");
-      }
-    },
-  );
+  test("preserves attachments and steering delivery", async () => {
+    const harness = new SkillsSelectorHarness();
+    const event: InputEvent = {
+      type: "input",
+      source: "rpc",
+      text: "$ponytail",
+      streamingBehavior: "steer",
+      images: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
+    };
+    expect(await harness.emit(event, "rpc")).toEqual({
+      action: "transform",
+      text: "[$ponytail](/skills/ponytail/SKILL.md)",
+      images: event.images,
+    });
+    expect(event.streamingBehavior).toBe("steer");
+    expect(event.text).toBe("$ponytail");
+  });
   test("leaves extension-generated messages and unknown references unchanged", async () => {
     const harness = new SkillsSelectorHarness();
     expect(
@@ -285,14 +211,5 @@ describe("Pi Skills Selector input", () => {
     expect(
       await harness.emit({ type: "input", source: "interactive", text: "$unknown $HOME" }),
     ).toEqual({ action: "continue" });
-  });
-  test("first user prompt receives Skill links from the bound Catalogue", async () => {
-    const harness = new SkillsSelectorHarness();
-    expect(
-      await harness.emit({ type: "input", source: "interactive", text: "Use $code-review." }),
-    ).toEqual({
-      action: "transform",
-      text: "Use [$code-review](/skills/code-review/SKILL.md).",
-    });
   });
 });

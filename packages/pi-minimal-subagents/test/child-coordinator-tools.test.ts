@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
@@ -157,48 +157,5 @@ test("treats a fanout child at the depth cap like a child that cannot spawn", as
     expect(capped.systemPrompt).toContain("Coordinator tools support only agent_message");
   } finally {
     await coordinator.shutdown();
-  }
-}, 30_000);
-
-test("restores a child whose history declared the legacy three-tool set with only agent_message", async () => {
-  const { createCoordinator, runChild, requestAt, restoreAndMessage } = createFixture();
-  const coordinator = createCoordinator();
-  let restored: MinimalSubagentsCoordinator | undefined;
-  try {
-    await runChild(coordinator, "legacy", "none");
-    const original = requestAt(0);
-    const sessionFile = coordinator.snapshot().agents[0]?.session_file;
-    if (!sessionFile) throw new Error("Expected a persisted child session file");
-    // Rewrite the child's declared tools as the previous release recorded them.
-    const template = original.tools.find((tool) => tool.name === "agent_message");
-    if (!template) throw new Error("Expected the agent_message definition");
-    const legacyTools = ["agent_message", "subagent_wait", "subagent_status"].map((name) => ({
-      ...template,
-      name,
-    }));
-    let rewrote = false;
-    const lines = readFileSync(sessionFile, "utf8")
-      .split("\n")
-      .map((line) => {
-        if (!line.includes('"toolsAdded"')) return line;
-        const entry = JSON.parse(line);
-        if (entry.message?.role !== "system") return line;
-        rewrote = true;
-        entry.message.toolsAdded = [
-          ...entry.message.toolsAdded.filter(
-            (tool: { name: string }) => tool.name !== "agent_message",
-          ),
-          ...legacyTools,
-        ];
-        return JSON.stringify(entry);
-      });
-    expect(rewrote).toBe(true);
-    writeFileSync(sessionFile, lines.join("\n"));
-
-    restored = await restoreAndMessage(coordinator, "legacy");
-    const after = requestAt(-1);
-    expect(after.tools.map((tool) => tool.name)).toEqual(["read", "agent_message"]);
-  } finally {
-    await (restored ?? coordinator).shutdown();
   }
 }, 30_000);

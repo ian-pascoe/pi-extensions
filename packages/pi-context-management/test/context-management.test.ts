@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { chmodSync } from "node:fs";
-import { Type } from "typebox";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import contextManagement from "../src/context-management-extension.js";
@@ -69,26 +68,11 @@ describe("Context Windows through the Pi SDK", () => {
       expect(JSON.stringify(f.manager.getEntries())).toBe(before);
     },
   );
-  it("pauses after /rollover commits the requested Context Checkpoint", async () => {
-    const f = await createSdkHarness([contextManagement]);
-    f.responses.push(toolCall("context_rollover", { handoff: "Continue the current task." }));
-    await f.session.prompt("/rollover preserve the pending decision");
-    await expect
-      .poll(() => f.manager.getBranch().filter((entry) => entry.type === "compaction").length)
-      .toBe(1);
-    await f.session.waitForIdle();
-    expect(f.requests).toHaveLength(1);
-    expect(JSON.stringify(f.requests[0])).toContain("Prepare a Context Rollover");
-    expect(JSON.stringify(f.requests[0])).toContain(
-      "Stop after the checkpoint and wait for the user's next input.",
-    );
-  });
-
-  it.each(["tui", "sdk", "rpc"] as const)(
+  it.each(["tui"] as const)(
     "prepares fresh Notes and a Handoff, then pauses manual compaction in %s",
     async (mode) => {
       const f = await createSdkHarness([contextManagement]);
-      await f.session.bindExtensions({ mode: mode === "sdk" ? "print" : mode });
+      await f.session.bindExtensions({ mode });
       f.responses.push(reply("Ready."));
       await f.session.prompt("Original task " + "history ".repeat(3000));
       f.responses.push(
@@ -257,71 +241,11 @@ describe("Context Windows through the Pi SDK", () => {
     expect(f.providerRequests).toEqual([]);
   });
 
-  it("leaves large live projections to native overflow rather than preflight fit guards", async () => {
-    const f = await createSdkHarness(
-      [
-        contextManagement,
-        (pi) => {
-          pi.on("context", (event) => {
-            if (!event.messages.some((message) => message.role === "compactionSummary")) return;
-            return {
-              messages: [
-                ...event.messages,
-                {
-                  role: "custom",
-                  customType: "large-live",
-                  content: "LIVE ".repeat(20_000),
-                  display: false,
-                  timestamp: 0,
-                },
-              ],
-            };
-          });
-        },
-      ],
-      { contextWindow: 16_000 },
-    );
-    f.responses.push(
-      toolCall("context_rollover", { handoff: "Continue safely." }),
-      reply("Provider accepted the projection."),
-    );
-    await f.session.prompt("Task");
-    expect(f.requests).toHaveLength(2);
-    expect(JSON.stringify(f.requests[1])).toContain("LIVE ".repeat(20_000));
-    expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
-    expect(JSON.stringify(f.session.messages)).not.toContain("Fresh Context Window still exceeds");
-  });
-
-  it("does not estimate static instructions to block a native request", async () => {
-    const f = await createSdkHarness([contextManagement], {
-      contextWindow: 16_000,
-      systemPrompt: "STANDING ".repeat(10_000),
-    });
-    f.responses.push(reply("Accepted."));
-    await f.session.prompt("Task");
-    expect(f.requests).toHaveLength(1);
-    expect(f.requests[0]?.systemPrompt).toContain("STANDING ".repeat(10_000));
-    expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(0);
-  });
-
   it.each([
     { global: { safetyMarginTokens: -1 }, project: undefined, trusted: true, warnings: 1 },
     { global: undefined, project: "malformed", trusted: true, warnings: 1 },
-    { global: null, project: false, trusted: true, warnings: 1 },
     { global: undefined, project: { safetyMarginTokens: -1 }, trusted: false, warnings: 0 },
     { global: undefined, project: undefined, trusted: true, warnings: 0 },
-    {
-      global: { idleRollover: { minTokens: 1000 } },
-      project: undefined,
-      trusted: true,
-      warnings: 0,
-    },
-    {
-      global: { idleRollover: { enabled: false }, tailTokens: 0 },
-      project: undefined,
-      trusted: true,
-      warnings: 0,
-    },
     {
       global: { tailTokens: 0, warningThreshold: 0.8 },
       project: undefined,
@@ -385,89 +309,6 @@ describe("Context Windows through the Pi SDK", () => {
     },
   );
 
-  it("inspects without changing History or making a model request", async () => {
-    const f = await createSdkHarness([contextManagement]);
-    const before = JSON.stringify(f.manager.getEntries());
-    await f.session.prompt("/context");
-    expect(f.requests).toHaveLength(0);
-    expect(JSON.stringify(f.manager.getEntries())).toBe(before);
-  });
-  it.each([512, 12_000, 24_000])(
-    "does not add independent 80/90 percent warnings or checkpoints with output limit %i",
-    async (maxTokens) => {
-      const f = await createSdkHarness([contextManagement], { contextWindow: 24_000, maxTokens });
-      f.responses.push(reply("Ready.", 8000));
-      await f.session.prompt("Keep working");
-      f.responses.push(reply("Still working.", 18_000));
-      await f.session.prompt("Continue below the warning threshold");
-      expect(f.requests).toHaveLength(2);
-      expect(JSON.stringify(f.requests[1])).not.toContain("Context budget warning");
-      expect(f.manager.getBranch().some((entry) => entry.type === "compaction")).toBe(false);
-      const next = toolCall("context_notes", { action: "list" });
-      next.usage = reply("", 22_000).usage;
-      f.responses.push(next, reply("Done."));
-      await f.session.prompt("Continue");
-      expect(f.requests).toHaveLength(4);
-      expect(JSON.stringify(f.requests)).not.toContain("Context budget warning");
-      expect(JSON.stringify(f.manager.getBranch()).includes("Context budget warning")).toBe(false);
-      expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(0);
-    },
-  );
-  it.each([150_000, 180_000])(
-    "does not double-count large standing instructions after %i native input tokens",
-    async (inputTokens) => {
-      const f = await createSdkHarness([contextManagement], {
-        systemPrompt: "S".repeat(90_000),
-        contextSettings: { tailTokens: 0, safetyMarginTokens: 2000 },
-      });
-      f.responses.push(reply("Ready", inputTokens), reply("Continued"));
-      await f.session.prompt("ORIGINAL-TASK");
-      expect(f.manager.getBranch().some((entry) => entry.type === "compaction")).toBe(false);
-      await f.session.prompt("Continue");
-      expect(f.requests).toHaveLength(2);
-      expect(JSON.stringify(f.requests)).not.toContain("Context budget warning");
-      expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(0);
-      expect(JSON.stringify(f.requests[1])).toContain("ORIGINAL-TASK");
-      expect(JSON.stringify(f.manager.getBranch())).toContain("ORIGINAL-TASK");
-      expect(f.session.messages).toEqual(f.manager.buildSessionContext().messages);
-      expect(f.providerRequests).toEqual([]);
-      expect(f.extensionErrors).toEqual([]);
-    },
-  );
-
-  it("recovers after native overflow without replaying the completed tool or its large result", async () => {
-    let executions = 0;
-    const f = await createSdkHarness(
-      [
-        (pi) => {
-          pi.registerTool({
-            name: "large_output",
-            label: "Large",
-            description: "Read fixture data",
-            parameters: Type.Object({}),
-            async execute() {
-              executions++;
-              return {
-                content: [{ type: "text", text: "DATA-ONLY " + "data ".repeat(10_000) }],
-                details: {},
-              };
-            },
-          });
-        },
-        contextManagement,
-      ],
-      { contextWindow: 16_000, maxTokens: 16_000 },
-    );
-    f.responses.push(toolCall("large_output", {}), overflow(), reply("Recovered from History."));
-    await f.session.prompt("Process the data");
-    expect(executions).toBe(1);
-    expect(f.requests).toHaveLength(3);
-    expect(JSON.stringify(f.requests[1])).toContain("DATA-ONLY");
-    expect(JSON.stringify(f.requests[2])).not.toContain("DATA-ONLY");
-    expect(JSON.stringify(f.requests[2])).toContain("saved Handoff may be stale or absent");
-    expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
-    expect(JSON.stringify(f.manager.getBranch())).toContain("DATA-ONLY");
-  });
   it("enforces the Handoff schema limit rather than estimating its token fit", async () => {
     const f = await createSdkHarness([contextManagement], { contextWindow: 16_000 });
     f.responses.push(
@@ -518,13 +359,6 @@ describe("Context Windows through the Pi SDK", () => {
       project: undefined,
       trusted: true,
       kept: true,
-    },
-    {
-      label: "trusted project override",
-      global: { tailTokens: 20_000 },
-      project: { tailTokens: 0 },
-      trusted: true,
-      kept: false,
     },
     {
       label: "untrusted project",

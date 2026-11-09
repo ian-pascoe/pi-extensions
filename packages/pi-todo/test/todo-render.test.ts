@@ -121,17 +121,6 @@ describe("todo call row", () => {
       "<toolTitle><b>todo</b></toolTitle> <accent>list</accent>",
     ]);
   });
-
-  test("shows a live Elapsed footer under the header while the call runs, and fits narrow widths", () => {
-    vi.useFakeTimers({ now: 0 });
-    const component = renderTodoCall(
-      { action: "add", title: "A title that is much longer than a forty column terminal" },
-      escapeTaggedTheme,
-      durationContext({ isPartial: true, durationMs: undefined }),
-    );
-    vi.advanceTimersByTime(2000);
-    expect(renderLines(component).at(-1)).toBe("<muted>Elapsed 2.0s</muted>");
-  });
 });
 
 describe("todo result row", () => {

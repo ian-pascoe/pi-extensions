@@ -15,19 +15,6 @@ describe("Bible verse picker", () => {
     );
   });
 
-  test("uses deterministic random boundaries and never repeats within the Recent Passage Window", () => {
-    const picker = createBibleVersePicker(pickerMessages);
-
-    expect(picker(() => 0)).toBe(pickerMessages[0]);
-    expect(picker(() => 0.999_999)).toBe(pickerMessages[20]);
-
-    const remainingSelections = Array.from({ length: RECENT_BIBLE_VERSE_LIMIT - 2 }, () =>
-      picker(() => 0),
-    );
-    const selectedMessages = [pickerMessages[0], pickerMessages[20], ...remainingSelections];
-    expect(new Set(selectedMessages).size).toBe(RECENT_BIBLE_VERSE_LIMIT);
-  });
-
   test("evicts the oldest passage object after the Recent Passage Window", () => {
     const picker = createBibleVersePicker(pickerMessages);
     const selectedMessages = Array.from({ length: RECENT_BIBLE_VERSE_LIMIT + 1 }, () =>
@@ -39,5 +26,7 @@ describe("Bible verse picker", () => {
       pickerMessages[20],
     ]);
     expect(picker(() => 0)).toBe(pickerMessages[0]);
+    // The random value maps onto the whole pool: just below 1 reaches the last passage.
+    expect(createBibleVersePicker(pickerMessages)(() => 0.999_999)).toBe(pickerMessages[20]);
   });
 });

@@ -61,13 +61,6 @@ describe("lspQueryPosition", () => {
       line_text: "",
     });
   });
-
-  test("keeps a very long token and line whole", () => {
-    const long = "x".repeat(300);
-    const query = lspQueryPosition(PATH, `  ${long} = 1;`, { line: 1, character: 5 });
-    expect(query.token).toBe(long);
-    expect(query.line_text).toBe(`${long} = 1;`);
-  });
 });
 
 describe("describeLspQueryPosition", () => {

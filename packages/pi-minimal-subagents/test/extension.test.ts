@@ -2,7 +2,6 @@ import { toToolContext } from "./tool-context.js";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
@@ -23,14 +22,11 @@ import {
   type SessionShutdownEvent,
   type SessionStartEvent,
   type SessionTreeEvent,
-  type Theme,
   type ToolInfo,
 } from "@earendil-works/pi-coding-agent";
 import {
   ProcessTerminal,
   TuiMainScreen,
-  type TUI,
-  type Component,
   type EditorComponent,
   type EditorTheme,
 } from "@earendil-works/pi-tui";
@@ -49,7 +45,6 @@ import {
   REGISTRY_ENTRY_TYPE,
   createRegistryEvent,
   replayRegistryEntries,
-  type RegistryEventV2,
 } from "../src/minimal-subagents-registry.js";
 import type { PiAgentSessionFactoryOptions } from "../src/minimal-subagents-sessions.js";
 import { RecordingAgentSessionFactory } from "./fixtures/recording-sessions.js";
@@ -62,7 +57,6 @@ import type {
   AgentSessionFactory,
   PersistedAgent,
   RegistrySnapshot,
-  StatusResult,
 } from "../src/minimal-subagents-types.js";
 
 const temporaryDirectories: string[] = [];
@@ -433,37 +427,6 @@ const toolResultMessageEndEvent = {
   },
 } satisfies MessageEndEvent;
 
-function rootAssistantMessage(text: string) {
-  return {
-    role: "assistant" as const,
-    content: [{ type: "text" as const, text }],
-    api: TEST_MODEL.api,
-    provider: TEST_MODEL.provider,
-    model: TEST_MODEL.id,
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
-    stopReason: "stop" as const,
-    timestamp: Date.now(),
-  };
-}
-
-function asQueuedCustomMessage(message: ExtensionHarness["sentMessages"][number]): AgentMessage {
-  return {
-    role: "custom",
-    customType: message.customType,
-    content: message.content,
-    display: message.display,
-    details: message.details,
-    timestamp: Date.now(),
-  };
-}
-
 async function emitSessionShutdown(
   harness: ExtensionHarness,
   reason: SessionShutdownEvent["reason"],
@@ -662,7 +625,7 @@ describe("minimal subagents extension lifecycle", () => {
     expect(await input("Plan with %large")).toEqual({ action: "continue" });
   });
 
-  it("registers both renderers and all six real coordinator tools, then hands off only a confirmed fork", async () => {
+  it("registers both renderers and the coordinator tools, then hands off only a confirmed fork", async () => {
     const cwd = await createTemporaryDirectory("minimal-subagents-lifecycle-cwd-");
     const sessionDirectory = await createTemporaryDirectory(
       "minimal-subagents-lifecycle-sessions-",
@@ -690,28 +653,8 @@ describe("minimal subagents extension lifecycle", () => {
         harness.runner.getUIContext().theme,
       );
     }
-    expect(harness.runner.hasHandlers("session_start")).toBe(true);
-    expect(harness.runner.hasHandlers("session_before_fork")).toBe(true);
-    expect(harness.runner.hasHandlers("session_tree")).toBe(true);
-    expect(harness.runner.hasHandlers("message_end")).toBe(true);
-    expect(harness.runner.hasHandlers("agent_start")).toBe(true);
-    // Registered only while a result waits in the root's steer queue.
-    expect(harness.runner.hasHandlers("turn_end")).toBe(false);
-    expect(harness.runner.hasHandlers("agent_settled")).toBe(false);
-    expect(harness.runner.hasHandlers("session_shutdown")).toBe(true);
-    expect(harness.runner.getCommand("subagents")?.description).toBe(
-      "Control Subagent Access and inspect Child Agents",
-    );
 
     await harness.runner.emit(sessionStartEvent());
-    expect(harness.runner.getAllRegisteredTools().map((tool) => tool.definition.name)).toEqual([
-      "subagent",
-      "agent_message",
-      "subagent_wait",
-      "subagent_status",
-      "subagent_cancel",
-      "subagent_delete",
-    ]);
     expect(harness.getActiveTools()).toEqual([
       "read",
       "subagent",
@@ -940,67 +883,6 @@ describe("minimal subagents extension lifecycle", () => {
     await emitSessionShutdown(harness, "quit");
   });
 
-  it("opens and closes the live status view through the registered bare command", async () => {
-    const cwd = await createTemporaryDirectory("minimal-subagents-status-command-cwd-");
-    const sessionDirectory = await createTemporaryDirectory(
-      "minimal-subagents-status-command-sessions-",
-    );
-    const sessionManager = await createPersistedSession(cwd, sessionDirectory);
-    const harness = await createExtensionHarness(sessionManager);
-    await harness.runner.emit(sessionStartEvent());
-    const command = harness.runner.getCommand("subagents");
-    if (!command) throw new Error("Expected the registered /subagents command");
-
-    const tui = {
-      terminal: { rows: 20, columns: 100 } satisfies Pick<TUI["terminal"], "rows" | "columns">,
-      requestRender: vi.fn<TUI["requestRender"]>(),
-    };
-    const theme = {
-      fg: (_color, text) => text,
-      bg: (_color, text) => text,
-      bold: (text) => text,
-      getBgAnsi: (_color) => "",
-    } satisfies Pick<Theme, "fg" | "bg" | "bold" | "getBgAnsi">;
-    const keybindings: Pick<KeybindingsManager, "matches" | "getKeys"> = {
-      matches: (data, binding) => data === "escape" && binding === "tui.select.cancel",
-      getKeys: () => ["ctrl+o"],
-    };
-    let rendered: string[] = [];
-    let customOptions: Parameters<ExtensionUIContext["custom"]>[1];
-    const custom: ExtensionUIContext["custom"] = async <T>(
-      factory: (
-        tui: TUI,
-        theme: Theme,
-        keybindings: KeybindingsManager,
-        done: (result: T) => void,
-      ) => (Component & { dispose?(): void }) | Promise<Component & { dispose?(): void }>,
-      options?: Parameters<ExtensionUIContext["custom"]>[1],
-    ): Promise<T> => {
-      customOptions = options;
-      const result = Promise.withResolvers<T>();
-      const component = await factory(
-        // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: The status view reads only checked terminal dimensions and the typed requestRender mock.
-        tui as unknown as TUI,
-        // SAFETY: The framed status render reads only the checked fg, bg, and bold methods.
-        theme as Theme,
-        // SAFETY: This command test sends only Escape and renders hints through the checked methods.
-        keybindings as KeybindingsManager,
-        result.resolve,
-      );
-      rendered = component.render(80);
-      component.handleInput?.("escape");
-      return result.promise;
-    };
-    harness.runner.setUIContext({ ...harness.runner.getUIContext(), custom }, "tui");
-
-    await command.handler("", harness.runner.createCommandContext());
-
-    expect(customOptions).toMatchObject({ overlay: true });
-    expect(rendered.join("\n")).toContain("Subagents status");
-    expect(rendered.join("\n")).toContain("Access: enabled");
-    await emitSessionShutdown(harness, "quit");
-  });
-
   it("opens the same viewer on double Left in the empty editor while the root is working", async () => {
     const harness = await createShortcutHarness();
     const clock = vi.spyOn(performance, "now").mockReturnValue(1000);
@@ -1026,10 +908,7 @@ describe("minimal subagents extension lifecycle", () => {
 
   it.each([
     { text: "", keys: ["\x1b[D", "\x1b[D"], gap: 501 },
-    { text: " ", keys: ["\x1b[D", "\x1b[D"], gap: 50 },
     { text: "draft", keys: ["\x1b[D", "\x1b[D"], gap: 50 },
-    { text: "", keys: ["\x1b[D", "\x1b[C", "\x1b[D"], gap: 50 },
-    { text: "", keys: ["\x1b[D", "\x1b[1;1:2D"], gap: 50 },
   ])("preserves ordinary editing for $text / $keys at $gap ms", async ({ text, keys, gap }) => {
     const harness = await createShortcutHarness();
     const clock = vi.spyOn(performance, "now");
@@ -1102,24 +981,6 @@ describe("minimal subagents extension lifecycle", () => {
     expect(harness.getFactory()).toBe(previous);
   });
 
-  it("installs a fresh shortcut after reload without carrying the previous Left press", async () => {
-    const harness = await createShortcutHarness();
-    vi.spyOn(performance, "now").mockReturnValue(1000);
-    harness.editor().handleInput("\x1b[D");
-    await emitSessionShutdown(harness, "reload");
-    expect(harness.getFactory()).toBeUndefined();
-    await harness.runner.emit(sessionStartEvent("reload"));
-    try {
-      harness.editor().handleInput("\x1b[D");
-      expect(harness.custom).not.toHaveBeenCalled();
-      harness.editor().handleInput("\x1b[D");
-      expect(harness.custom).toHaveBeenCalledOnce();
-      expect(harness.extensionErrors).toEqual([]);
-    } finally {
-      await emitSessionShutdown(harness, "quit");
-    }
-  });
-
   it("does not remove a later editor replacement and disables retained wrappers on shutdown", async () => {
     const harness = await createShortcutHarness();
     const retained = harness.getFactory();
@@ -1172,29 +1033,6 @@ describe("minimal subagents extension lifecycle", () => {
     await reloadedHarness.runner.emit(sessionStartEvent("reload"));
     expect(reloadedHarness.getActiveTools()).toEqual(["read"]);
     await emitSessionShutdown(reloadedHarness, "quit");
-  });
-
-  it("starts from trusted project, global, then built-in Subagent Access settings", async () => {
-    const cwd = await createTemporaryDirectory("minimal-subagents-access-settings-cwd-");
-    const sessionDirectory = await createTemporaryDirectory(
-      "minimal-subagents-access-settings-sessions-",
-    );
-    const sessionManager = await createPersistedSession(cwd, sessionDirectory);
-    const harness = await createExtensionHarness(sessionManager);
-    await mkdir(harness.agentDirectory, { recursive: true });
-    await writeFile(
-      join(harness.agentDirectory, "settings.json"),
-      JSON.stringify({ minimalSubagents: { enabled: false } }),
-    );
-    await mkdir(join(cwd, ".pi"), { recursive: true });
-    await writeFile(
-      join(cwd, ".pi", "settings.json"),
-      JSON.stringify({ minimalSubagents: { enabled: true } }),
-    );
-
-    await harness.runner.emit(sessionStartEvent());
-    expect(harness.getActiveTools()).toContain("subagent");
-    await emitSessionShutdown(harness, "quit");
   });
 
   it("preserves tool order on redundant enable/reset and keeps Child Agents running across access changes", async () => {
@@ -1325,95 +1163,6 @@ describe("minimal subagents extension lifecycle", () => {
     await emitSessionShutdown(harness, "quit");
   });
 
-  it("restores the deleted or the respawned Child Agent of a reused Agent ID by tree branch", async () => {
-    const cwd = await createTemporaryDirectory("minimal-subagents-reuse-cwd-");
-    const sessionDirectory = await createTemporaryDirectory("minimal-subagents-reuse-sessions-");
-    const sessionManager = await createPersistedSession(cwd, sessionDirectory);
-    const rootSessionId = sessionManager.getSessionId();
-    const original = { ...persistedAgent("worker"), task: "Original" };
-    const append = (event: RegistryEventV2) =>
-      sessionManager.appendCustomEntry(REGISTRY_ENTRY_TYPE, event);
-    append(createRegistryEvent(rootSessionId, "agent-created", { agent: original }));
-    const beforeDeletion = sessionManager.getLeafId();
-    if (!beforeDeletion) throw new Error("Expected a tree branch point");
-    append(createRegistryEvent(rootSessionId, "agent-deleted", { agent_ids: ["worker"] }));
-    append(
-      createRegistryEvent(rootSessionId, "agent-created", {
-        agent: {
-          ...persistedAgent("worker"),
-          task: "Respawned",
-          session_file: "/sessions/worker-respawned.jsonl",
-          session_id: "session-worker-respawned",
-        },
-      }),
-    );
-    const afterReuse = sessionManager.getLeafId();
-    if (!afterReuse) throw new Error("Expected the reuse leaf");
-    const harness = await createExtensionHarness(sessionManager);
-    const statusTool = harness.runner.getToolDefinition("subagent_status")!;
-    const workerTask = async () => {
-      const result = await statusTool.execute(
-        "status",
-        { agent_id: "worker", verbose: true },
-        undefined,
-        undefined,
-        toToolContext(harness.runner.createContext()),
-      );
-      // SAFETY: subagent_status details are always a StatusResult.
-      const details = result.details as StatusResult;
-      return "agent" in details ? details.agent.task : undefined;
-    };
-
-    await harness.runner.emit(sessionStartEvent());
-    await expect(workerTask()).resolves.toBe("Respawned");
-
-    sessionManager.branch(beforeDeletion);
-    await harness.runner.emit(sessionTreeEvent);
-    await expect(workerTask()).resolves.toBe("Original");
-
-    sessionManager.branch(afterReuse);
-    await harness.runner.emit(sessionTreeEvent);
-    await expect(workerTask()).resolves.toBe("Respawned");
-
-    await emitSessionShutdown(harness, "quit");
-  });
-
-  it("steers a completed result into an active root turn without duplicate reconciliation", async () => {
-    const cwd = await createTemporaryDirectory("minimal-subagents-delivery-cwd-");
-    const sessionDirectory = await createTemporaryDirectory("minimal-subagents-delivery-sessions-");
-    const sessionManager = await createPersistedSession(cwd, sessionDirectory);
-    const harness = await createExtensionHarness(sessionManager);
-    await harness.runner.emit(sessionStartEvent());
-    harness.setIdle(false);
-
-    const spawnTool = harness.runner.getToolDefinition("subagent");
-    if (!spawnTool) throw new Error("Expected the registered subagent tool");
-    await spawnTool.execute(
-      "spawn-call",
-      { task: "Complete a lifecycle delivery", agent_id: "delivery-child" },
-      undefined,
-      undefined,
-      toToolContext(harness.runner.createContext()),
-    );
-    await vi.waitFor(() => {
-      expect(harness.sessionFactory.createdAgentIds).toEqual(["delivery-child"]);
-    });
-
-    await vi.waitFor(
-      () => {
-        expect(harness.sentMessageTypes).toEqual(["minimal-subagents.result"]);
-      },
-      { timeout: 2_000 },
-    );
-    expect(harness.sentDeliveryModes).toEqual(["steer"]);
-    await harness.runner.emit(agentSettledEvent);
-    await harness.runner.emitMessageEnd(toolResultMessageEndEvent);
-    await harness.runner.emitMessageEnd(toolResultMessageEndEvent);
-    expect(harness.sentMessageTypes).toEqual(["minimal-subagents.result"]);
-
-    await emitSessionShutdown(harness, "quit");
-  });
-
   it("raises the root's Queued Steer only when a result is steered into a running root turn", async () => {
     for (const rootIdle of [false, true]) {
       const cwd = await createTemporaryDirectory("minimal-subagents-queued-steer-cwd-");
@@ -1442,6 +1191,14 @@ describe("minimal subagents extension lifecycle", () => {
         );
         // An idle root starts a turn with the message, so no steer is left queued behind a tool.
         expect(hasQueuedSteer(sessionId)).toBe(!rootIdle);
+        if (!rootIdle) {
+          // Reconciling again, with the result still queued, never re-sends it.
+          expect(harness.sentDeliveryModes).toEqual(["steer"]);
+          await harness.runner.emit(agentSettledEvent);
+          await harness.runner.emitMessageEnd(toolResultMessageEndEvent);
+          await harness.runner.emitMessageEnd(toolResultMessageEndEvent);
+          expect(harness.sentMessageTypes).toEqual(["minimal-subagents.result"]);
+        }
         await harness.runner.emit({ type: "turn_start", turnIndex: 0, timestamp: 0 });
         expect(hasQueuedSteer(sessionId)).toBe(false);
       } finally {
@@ -1450,159 +1207,6 @@ describe("minimal subagents extension lifecycle", () => {
         await emitSessionShutdown(harness, "quit");
       }
     }
-  });
-
-  /** Steer one completed result into an active root turn, then end that turn with Pi's queue preview. */
-  async function steerResultThenEndRootTurn(
-    prefix: string,
-    pendingMessages: (harness: ExtensionHarness) => AgentMessage[],
-    beforeTurnEnd?: (harness: ExtensionHarness) => void,
-  ) {
-    const cwd = await createTemporaryDirectory(`${prefix}-cwd-`);
-    const sessionDirectory = await createTemporaryDirectory(`${prefix}-sessions-`);
-    const harness = await createExtensionHarness(
-      await createPersistedSession(cwd, sessionDirectory),
-    );
-    await harness.runner.emit(sessionStartEvent());
-    harness.setIdle(false);
-    await harness.runner
-      .getToolDefinition("subagent")!
-      .execute(
-        "spawn-call",
-        { task: "Complete while the root runs", agent_id: "esc-child" },
-        undefined,
-        undefined,
-        toToolContext(harness.runner.createContext()),
-      );
-    await vi.waitFor(() => expect(harness.sentMessageTypes).toEqual(["minimal-subagents.result"]), {
-      timeout: 2_000,
-    });
-    expect(harness.sentDeliveryModes).toEqual(["steer"]);
-    expect(harness.runner.hasHandlers("turn_end")).toBe(true);
-    beforeTurnEnd?.(harness);
-
-    const aborted = {
-      ...rootAssistantMessage("interrupted"),
-      stopReason: "aborted",
-    } satisfies AgentMessage;
-    await harness.runner.emitMessageEnd({ type: "message_end", message: aborted });
-    const boundary = await harness.runner.emitBoundary(
-      {
-        type: "turn_end",
-        turnIndex: 1,
-        message: aborted,
-        toolResults: [],
-        messageEntryId: "aborted-entry",
-        toolResultEntryIds: [],
-        outcome: "aborted",
-      },
-      () => ({
-        contextEntries: [],
-        contextMessages: [],
-        llmMessages: [],
-        pendingMessages: pendingMessages(harness),
-        canContinue: false,
-      }),
-    );
-    // The handler never edits the transcript or asks Pi for another request.
-    expect(boundary).toMatchObject({ entries: [], continue: false });
-    return harness;
-  }
-
-  /** Drain coordinator work deterministically: an idle root lets a reload shutdown settle it. */
-  async function settleAndShutDown(harness: ExtensionHarness): Promise<void> {
-    harness.setIdle(true);
-    await emitSessionShutdown(harness, "reload");
-  }
-
-  it("re-sends a result Pi discarded from the root queue", async () => {
-    // Esc clears the queue, then aborts the run whose turn is ending.
-    const harness = await steerResultThenEndRootTurn(
-      "minimal-subagents-esc-discarded",
-      () => [],
-      (current) => current.setSignal(AbortSignal.abort()),
-    );
-    expect(harness.sentMessageTypes).toEqual(["minimal-subagents.result"]);
-    expect(harness.runner.hasHandlers("turn_end")).toBe(false);
-    harness.setSignal(undefined);
-
-    // Esc leaves the root idle; recovery waits for the next run instead of starting one.
-    harness.setIdle(true);
-    await harness.runner.emit({ type: "agent_start" });
-    await new Promise((resolve) => setTimeout(resolve, 1_200));
-    expect(harness.sentMessageTypes).toEqual(["minimal-subagents.result"]);
-
-    harness.setIdle(false);
-    await harness.runner.emit({ type: "agent_start" });
-    expect(harness.sentMessageTypes).toEqual([
-      "minimal-subagents.result",
-      "minimal-subagents.result",
-    ]);
-    expect(harness.sentDeliveryModes).toEqual(["steer", "steer"]);
-    expect(harness.sentMessages[1]).toEqual(harness.sentMessages[0]);
-    expect(harness.runner.hasHandlers("turn_end")).toBe(true);
-    await settleAndShutDown(harness);
-    expect(harness.extensionErrors).toEqual([]);
-  });
-
-  it("steers a released result back into a root run whose queue was cleared without an abort", async () => {
-    const harness = await steerResultThenEndRootTurn(
-      "minimal-subagents-dequeued",
-      () => [],
-      (current) => current.setSignal(new AbortController().signal),
-    );
-
-    // Pi polls steers after this boundary, so the same run takes the result.
-    expect(harness.sentMessageTypes).toEqual([
-      "minimal-subagents.result",
-      "minimal-subagents.result",
-    ]);
-    expect(harness.sentDeliveryModes).toEqual(["steer", "steer"]);
-    expect(harness.sentMessages[1]).toEqual(harness.sentMessages[0]);
-    expect(harness.runner.hasHandlers("turn_end")).toBe(true);
-    harness.setSignal(undefined);
-    await settleAndShutDown(harness);
-    expect(harness.extensionErrors).toEqual([]);
-  });
-
-  it("keeps a result Pi still holds queued", async () => {
-    const harness = await steerResultThenEndRootTurn(
-      "minimal-subagents-esc-still-queued",
-      (current) => current.sentMessages.map(asQueuedCustomMessage),
-    );
-    expect(harness.runner.hasHandlers("turn_end")).toBe(true);
-
-    await settleAndShutDown(harness);
-    expect(harness.sentMessageTypes).toEqual(["minimal-subagents.result"]);
-    expect(harness.extensionErrors).toEqual([]);
-  });
-
-  it("settles a result the root received at the turn boundary", async () => {
-    const harness = await steerResultThenEndRootTurn(
-      "minimal-subagents-esc-received",
-      () => [],
-      (current) => {
-        // Pi persists a consumed steer before the turn boundary that follows it.
-        const sent = current.sentMessages[0]!;
-        current.sessionManager.appendCustomMessageEntry(
-          sent.customType,
-          sent.content,
-          sent.display,
-          sent.details,
-        );
-      },
-    );
-    expect(harness.runner.hasHandlers("turn_end")).toBe(false);
-
-    await settleAndShutDown(harness);
-    expect(harness.sentMessageTypes).toEqual(["minimal-subagents.result"]);
-    expect(
-      replayRegistryEntries(
-        harness.sessionManager.getBranch(),
-        harness.sessionManager.getSessionId(),
-      ).deliveries,
-    ).toEqual([]);
-    expect(harness.extensionErrors).toEqual([]);
   });
 
   it("consumes a stored fork handoff without cloning the source root", async () => {

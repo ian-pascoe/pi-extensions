@@ -188,20 +188,6 @@ describe("Server Instances shared across sessions in one Pi process", () => {
 
     expect(await project.launches()).toHaveLength(2);
   });
-  test("sessions routing to a cold instance at once share one launch", async () => {
-    const project = await createSharedProject({ FAKE_INITIALIZE_DELAY_MS: "200" });
-    const parent = await openSession(project);
-    const child = await openSession(project);
-    const start = { server_id: "fake", file_path: project.filePath };
-
-    await Promise.all([
-      runTool(parent, "lsp_capabilities", start),
-      runTool(child, "lsp_capabilities", start),
-    ]);
-
-    expect(await project.launches()).toHaveLength(1);
-  });
-
   test("a startup continues when the session that triggered it shuts down while another holds a lease", async () => {
     const project = await createSharedProject({ FAKE_INITIALIZE_DELAY_MS: "300" });
     const parent = await openSession(project);

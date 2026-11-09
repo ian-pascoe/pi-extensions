@@ -175,32 +175,6 @@ describe("Anthropic evidence cache breakpoint", () => {
       });
     expect(prefix(escalation)).toBe(prefix(first));
   });
-
-  it("keeps a corrective retry on the first request's prefix", async () => {
-    const harness = await createGuardianHarness({
-      guardianSettings: { model: anthropic },
-      wirePayloads: true,
-    });
-    harness.responses.push(toolCalls(["deploy", { target: "prod" }, "call-1"]), reply("Ok."));
-    // A `high` risk without a Risk Category is asked about once more.
-    harness.guardianReplies.push(
-      assessment("high", "high", "Needs a category.", null),
-      assessment("high", "high", "Destructive.", "destruction"),
-    );
-    await harness.session.prompt("Deploy prod.");
-    expect(harness.reviews).toHaveLength(2);
-    const [first, retry] = harness.reviews.map((review) => wire(AnthropicBody, review));
-    if (!first || !retry) throw new Error("Missing reviews");
-    const evidence = (first.messages[0]?.content.length ?? 0) - 1;
-    expect(anthropicBreakpoints(first)).toEqual([evidence - 1, evidence]);
-    // The retry keeps the evidence breakpoint and moves the adapter's tail to its new message.
-    expect(anthropicBreakpoints(retry)).toEqual([evidence - 1]);
-    expect(retry.messages).toHaveLength(3);
-    expect(retry.messages.at(-1)?.content.at(-1)?.cache_control).toBeDefined();
-    expect(JSON.stringify(retry.messages[0]?.content.map(withoutMarker))).toBe(
-      JSON.stringify(first.messages[0]?.content.map(withoutMarker)),
-    );
-  });
 });
 
 describe("Bedrock evidence cache breakpoint", () => {
@@ -269,19 +243,19 @@ describe("evidenceCacheBreakpoint", () => {
     });
   });
 
-  it("does nothing where the adapter left caching off", async () => {
-    const body = payload();
-    const before = structuredClone(body);
-    const result = await evidenceCacheBreakpoint(1)(body, modelFor("anthropic-messages"));
-    expect(result).toBeUndefined();
-    expect(body).toEqual(before);
-  });
-
-  it("does nothing without evidence, or when the Reviewed Call would be marked", async () => {
-    for (const evidenceBlocks of [0, 2]) {
-      const body = payload({ type: "ephemeral" });
+  it("does nothing where caching is off, without evidence, or when the Reviewed Call would be marked", async () => {
+    for (const [tail, evidenceBlocks] of [
+      [undefined, 1],
+      [{ type: "ephemeral" }, 0],
+      [{ type: "ephemeral" }, 2],
+    ] as const) {
+      const body = payload(tail);
       const before = structuredClone(body);
-      await evidenceCacheBreakpoint(evidenceBlocks)(body, modelFor("anthropic-messages"));
+      const result = await evidenceCacheBreakpoint(evidenceBlocks)(
+        body,
+        modelFor("anthropic-messages"),
+      );
+      expect(result).toBeUndefined();
       expect(body).toEqual(before);
     }
   });

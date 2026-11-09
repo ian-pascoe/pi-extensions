@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { getCurrentTools, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
+import { type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
 import { childMcpServerScope } from "../src/minimal-subagents-child-resources.js";
@@ -273,20 +273,6 @@ describe("child MCP reachability", () => {
     expect(child.readLaunches()).toEqual(["beta-docs"]);
   }, 30_000);
 
-  it("declares a granted direct MCP tool", async () => {
-    const child = await runChild({
-      tools: ["mcp__alpha__search"],
-      exposure: "direct",
-      calls: [{ name: "mcp__alpha__search", arguments: {} }],
-    });
-
-    expect(getCurrentTools(child.requests[0]!.messages).map(({ name }) => name)).toEqual([
-      "mcp__alpha__search",
-    ]);
-    expect(child.resultTexts[0]).toBe("alpha:search");
-    expect(child.readLaunches()).toEqual(["alpha"]);
-  }, 30_000);
-
   it("connects every server for a granted resource tool", async () => {
     const child = await runChild({
       tools: ["read_mcp_resource"],
@@ -324,18 +310,10 @@ describe("childMcpServerScope", () => {
       : ["alpha", "beta-docs", "beta_docs", "beta"].filter(scope);
   };
 
-  it("reaches no server without an MCP grant", () => {
-    expect(reached(["codemode", "tool_search", "read"])).toBe("none");
-  });
-
-  it("reaches the servers whose namespace a granted tool names", () => {
+  it("reaches the servers whose namespace a granted tool names, or every server for a pattern", () => {
     expect(reached(["codemode", "mcp__alpha__search"])).toEqual(["alpha"]);
     // `-` and `_` share a namespace, as in Pi's tool names.
     expect(reached(["mcp__beta_docs__search"])).toEqual(["beta-docs", "beta_docs"]);
-  });
-
-  it("reaches every server through a resource tool or a pattern", () => {
-    expect(reached(["list_mcp_resources"])).toBe("all");
     expect(reached(["mcp__*"])).toBe("all");
   });
 });

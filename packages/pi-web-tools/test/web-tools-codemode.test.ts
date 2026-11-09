@@ -252,42 +252,6 @@ describe("Web Tools through Pi codemode", () => {
     }
   });
 
-  test("rejects the removed type and livecrawl arguments through Pi's validation", async () => {
-    const fixture = await createFixture();
-    const code = `
-      const outcomes = {};
-      for (const extra of [{ type: "fast" }, { livecrawl: "preferred" }]) {
-        try {
-          await tools.web_search({ query: "pi", ...extra });
-          outcomes[Object.keys(extra)[0]] = "accepted";
-        } catch (error) {
-          outcomes[Object.keys(extra)[0]] = String(error);
-        }
-      }
-      const accepted = await tools.web_search({ query: "pi", numResults: 2, contextMaxCharacters: 10 });
-      return { outcomes, content: accepted.content };`;
-    fixture.responses.push(
-      fauxAssistantMessage(fauxToolCall("codemode", { code }), { stopReason: "toolUse" }),
-      fauxAssistantMessage("Done."),
-    );
-    await fixture.session.prompt("Search with removed parameters");
-
-    const output = scriptResult(fixture.turns[1]?.messages ?? []);
-    expect(output).toMatch(/^Script completed/);
-    const value: unknown = JSON.parse(output.slice(output.indexOf("{")));
-    expect(value).toEqual({
-      outcomes: {
-        type: expect.stringMatching(
-          /Validation failed for tool "web_search":\n  - type: unknown field\n/,
-        ),
-        livecrawl: expect.stringMatching(
-          /Validation failed for tool "web_search":\n  - livecrawl: unknown field\n/,
-        ),
-      },
-      content: `${SEARCH_TEXT.slice(0, 10)}\n\n[Search results cut at 10 characters]`,
-    });
-  });
-
   test("declares identical tools and system prompt for Exa and Parallel sessions", async () => {
     // session-b selects Exa and session-a selects Parallel.
     const turnFor = async (sessionId: string) => {

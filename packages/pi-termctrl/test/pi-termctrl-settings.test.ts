@@ -68,7 +68,7 @@ describe("resolveTermctrlSettings", () => {
     ]);
   });
 
-  test("warns for unknown keys and non-object sections", () => {
+  test("warns for unknown keys and non-object sections, and for a non-object defaultViewport", () => {
     const settings = resolveTermctrlSettings(
       reader(
         { termctrl: { replaceBash: true, shell: "zsh", defaultViewport: { cols: 90, depth: 3 } } },
@@ -81,18 +81,16 @@ describe("resolveTermctrlSettings", () => {
       "global termctrl.defaultViewport.depth: unknown field",
       "project termctrl: expected a JSON object",
     ]);
+
+    const viewport = resolveTermctrlSettings(reader({ termctrl: { defaultViewport: [80, 24] } }));
+    expect(viewport.defaultViewport).toEqual({ cols: 120, rows: 40 });
+    expect(viewport.warnings).toEqual(["global termctrl.defaultViewport: expected a JSON object"]);
   });
 
-  test("warns when defaultViewport is not an object", () => {
-    const settings = resolveTermctrlSettings(reader({ termctrl: { defaultViewport: [80, 24] } }));
-    expect(settings.defaultViewport).toEqual({ cols: 120, rows: 40 });
-    expect(settings.warnings).toEqual(["global termctrl.defaultViewport: expected a JSON object"]);
-  });
-
-  describe.each([
-    { key: "bashTail", defaults: { maxLines: 300, maxBytes: 16_384 } },
-    { key: "scrollback", defaults: { maxLines: 100, maxBytes: 16_384 } },
-  ] as const)("$key", ({ key, defaults }) => {
+  // `scrollback` is read by the same parser as `bashTail`, so one of them carries the cases.
+  describe("bashTail", () => {
+    const key = "bashTail";
+    const defaults = { maxLines: 300, maxBytes: 16_384 };
     const resolve = (global: JsonValue, project?: JsonValue) =>
       resolveTermctrlSettings(
         reader(

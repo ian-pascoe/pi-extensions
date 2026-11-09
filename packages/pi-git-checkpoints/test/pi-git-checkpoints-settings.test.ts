@@ -33,27 +33,17 @@ afterEach(async () => {
 });
 
 describe("resolveGitCheckpointsSettings", () => {
-  test("uses a trusted project retention period instead of the global value", async () => {
-    const settings = resolveGitCheckpointsSettings(
-      await createSettingsManager(
-        { gitCheckpoints: { retentionDays: 14 } },
-        { gitCheckpoints: { retentionDays: 3 } },
-      ),
-    );
+  test("uses a trusted project retention period and ignores it when the project is untrusted", async () => {
+    const global = { gitCheckpoints: { retentionDays: 14 } };
+    const project = { gitCheckpoints: { retentionDays: 3 } };
 
-    expect(settings).toEqual({ retentionDays: 3, warnings: [] });
-  });
-
-  test("excludes project Git Checkpoints settings when the project is untrusted", async () => {
-    const settings = resolveGitCheckpointsSettings(
-      await createSettingsManager(
-        { gitCheckpoints: { retentionDays: 14 } },
-        { gitCheckpoints: { retentionDays: 3 } },
-        false,
-      ),
-    );
-
-    expect(settings).toEqual({ retentionDays: 14, warnings: [] });
+    expect(resolveGitCheckpointsSettings(await createSettingsManager(global, project))).toEqual({
+      retentionDays: 3,
+      warnings: [],
+    });
+    expect(
+      resolveGitCheckpointsSettings(await createSettingsManager(global, project, false)),
+    ).toEqual({ retentionDays: 14, warnings: [] });
   });
 
   test("falls back to the global retention period for an invalid project value", async () => {

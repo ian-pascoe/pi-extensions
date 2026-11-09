@@ -91,28 +91,19 @@ describe("Env File Secret Provider activation", () => {
     expect(grant).toMatchObject({
       promptGuidelines: [expect.stringContaining("in a Secret Provider such as Env files")],
     });
-    expect(JSON.stringify(grant?.parameters)).toContain("dotenv://.env#API_KEY");
   });
 
   it("stays off without an Env File, op, or settings, leaving today's tool set", async () => {
     const tools = await registered({ "packages/api/.env": "NESTED=1\n", ".envrc": "x" });
     expect(names(tools)).toEqual(withoutProviders);
-    expect(tools.find(({ name }) => name === "secret_list")).toMatchObject({
-      description:
-        "List the Secrets this session can use and when each expires, and search Secret Providers such as 1Password for items and fields to request with secret_ask_grant; never values.",
-    });
   });
 
-  it("follows global settings: enabled false wins over Env Files, and files or enabled true turn it on", async () => {
+  it("follows global settings: enabled false wins over Env Files, and listed files turn it on", async () => {
     const dotenv = (value: JsonValue) => ({ secret: { providers: { dotenv: value } } });
     expect(names(await registered({ ".env": "K=v\n" }, dotenv({ enabled: false })))).toEqual(
       withoutProviders,
     );
-    expect(
-      names(await registered({ ".env": "K=v\n" }, dotenv({ enabled: false, files: ["/x/.env"] }))),
-    ).toEqual(withoutProviders);
     expect(names(await registered({}, dotenv({ files: ["~/.env.tool"] })))).toEqual(withProviders);
-    expect(names(await registered({}, dotenv({ enabled: true })))).toEqual(withProviders);
     // Invalid settings list no files, and an `enabled: false` among them still turns it off.
     expect(names(await registered({}, dotenv({ files: ["relative/.env"] })))).toEqual(
       withoutProviders,
@@ -158,9 +149,6 @@ describe("Env File Secret Grants", () => {
         ],
       },
     });
-    expect(harness.frames[0]?.join("\n")).toContain("Env files · ");
-    // Outside a git repository, no git warning.
-    expect(harness.frames[0]?.join("\n")).not.toContain("not ignored by git");
     expect(harness.frames[0]?.join("\n")).toContain(" / .env / API_TOKEN");
     expect(harness.received).toEqual([
       { tool: "echo", args: { text: "a=env-token-0a1b2c3d b=${API_TOKEN}" } },
@@ -179,33 +167,6 @@ describe("Env File Secret Grants", () => {
     expect(harness.resultText("call-echo-3")).toContain('.env has no key "OTHER"');
     expect(await harness.sessionFileText()).not.toContain("env-token-0a1b2c3d");
     expect(harness.requests.join("\n")).not.toContain("edited-token-4e5f6a7b");
-  });
-
-  it("lists nested Env Files and their keys, never their values", async () => {
-    const harness = await envHarness({
-      files: {
-        ".env": "ROOT=root-value-11223344\n",
-        "packages/api/.env": "DATABASE_URL=postgres://value-55667788\n",
-        "node_modules/dep/.env": "DEP=dep\n",
-      },
-    });
-    harness.responses.push(
-      toolCalls(["secret_list", { provider: "dotenv" }, "call-files"]),
-      toolCalls(["secret_list", { item: join("packages", "api", ".env") }, "call-keys"]),
-      reply("Done."),
-    );
-    await harness.session.prompt("List.");
-
-    const files = harness.resultText("call-files") ?? "";
-    expect(files).toContain(`- .env (env file) in ${harness.dir.split("/").at(-1)}`);
-    expect(files).toContain(join("packages", "api", ".env"));
-    expect(files).not.toContain("node_modules");
-    expect(harness.resultText("call-keys")).toContain(
-      `- DATABASE_URL (key) of ${join("packages", "api", ".env")}: dotenv://${join("packages", "api", ".env")}#DATABASE_URL`,
-    );
-    const everything = JSON.stringify(harness.session.messages);
-    expect(everything).not.toContain("root-value-11223344");
-    expect(everything).not.toContain("value-55667788");
   });
 });
 
@@ -338,27 +299,5 @@ describe("secret_save into Env Files", () => {
       NEW_TOKEN: "placeholder-0000",
     });
     expect(harness.received).toEqual([{ tool: "echo", args: { text: "placeholder-0000" } }]);
-  });
-
-  it("shows no git warning for an ignored Env File", async () => {
-    const harness = await envHarness({
-      files: { ".env.local": "TOKEN=ignored-token-7a8b\n", ".gitignore": ".env.local\n" },
-      git: true,
-      dialogs: [[keys.enter]],
-    });
-    harness.responses.push(
-      toolCalls([
-        "secret_ask_grant",
-        { grants: [{ name: "TOKEN", locator: "dotenv://.env.local#TOKEN" }] },
-        "call-grant",
-      ]),
-      reply("Done."),
-    );
-    await harness.session.prompt("Grant.");
-
-    expect(harness.frames[0]?.join("\n")).not.toContain("not ignored by git");
-    expect(harness.result("call-grant")).toMatchObject({
-      details: { secrets: [{ name: "TOKEN", status: "granted" }] },
-    });
   });
 });

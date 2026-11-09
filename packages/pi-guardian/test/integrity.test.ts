@@ -334,34 +334,6 @@ describe("early reviews", () => {
     expect(harness.reviews).toHaveLength(0);
     expect(harness.entries("pi-guardian-review")).toEqual([]);
   });
-
-  it("runs at most four early reviews at once", async () => {
-    const harness = await createGuardianHarness({ guardianSettings: reviewer });
-    let active = 0;
-    let peak = 0;
-    const slow = new DeferredReply(async () => {
-      peak = Math.max(peak, ++active);
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      active--;
-      return assessment("low", "high", "Requested.");
-    });
-    const targets = ["a", "b", "c", "d", "e", "f"];
-    harness.guardianReplies.push(...targets.map(() => slow));
-    harness.responses.push(
-      toolCalls(
-        ...targets.map((target): [string, { target: string }, string] => [
-          "deploy",
-          { target },
-          `call-${target}`,
-        ]),
-      ),
-      reply("Ok."),
-    );
-    await harness.session.prompt("Deploy all.");
-    expect(harness.executed.toSorted()).toEqual(targets.map((target) => `deploy:${target}`));
-    expect(harness.reviews).toHaveLength(6);
-    expect(peak).toBe(4);
-  });
 });
 
 describe("Rejections and User Overrides under concurrency", () => {

@@ -121,18 +121,6 @@ describe("normalizeLspProtocolResult", () => {
       staleFiles: ["/short.ts"],
     });
   });
-
-  test("clamps an end-of-line sentinel character without naming the file", async () => {
-    const result = await normalizeLspProtocolResult(
-      [{ uri: "file:///a.ts", range: span(0, 0, 2147483647) }],
-      { encoding: "utf-16", readText: async () => "ab\n" },
-    );
-
-    expect(result).toMatchObject({
-      value: [{ range: span(1, 1, 3) }],
-      staleFiles: [],
-    });
-  });
 });
 
 describe("lspStalePositionsWarning", () => {
@@ -159,5 +147,13 @@ describe("lspApproximatePositionsWarning", () => {
     ).toBe(
       "jdtls: positions in src/a.ts, jdt://contents/A.class are approximate because their text could not be read; lines are exact, but columns may be off after non-ASCII text.",
     );
+    // At most five files are named; the rest are counted.
+    expect(
+      lspApproximatePositionsWarning(
+        "jdtls",
+        Array.from({ length: 7 }, (_, index) => `/repo/${index}.ts`),
+        "/repo",
+      ),
+    ).toContain("0.ts, 1.ts, 2.ts, 3.ts, 4.ts, and 2 more are approximate");
   });
 });

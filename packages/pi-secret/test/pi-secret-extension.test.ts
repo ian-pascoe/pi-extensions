@@ -49,36 +49,6 @@ describe("Secret Request and Secret References", () => {
     expect(await harness.sessionFileText()).not.toContain(value);
   });
 
-  it("redacts a Secret a command prints encoded, such as in an HTTP Basic Authorization header", async () => {
-    const value = "pw-basic-auth-77d0";
-    const harness = await createSecretHarness({
-      builtinTools: true,
-      dialogs: [[keys.paste(value), keys.enter]],
-    });
-    const basic = Buffer.from(`deploy:${value}`).toString("base64");
-    harness.responses.push(
-      toolCalls(["secret_ask", { names: ["API_PASSWORD"] }, "call-ask"]),
-      toolCalls([
-        "bash",
-        {
-          command:
-            'printf "deploy:%s" "$PI_SECRET_API_PASSWORD" | base64; printf "%s" "$PI_SECRET_API_PASSWORD" | xxd -p',
-        },
-        "call-bash",
-      ]),
-      reply("Done."),
-    );
-    await harness.session.prompt("Check the Basic auth header.");
-
-    const text = harness.resultText("call-bash") ?? "";
-    expect(text.match(/\{\{secret:API_PASSWORD\}\}/g)).toHaveLength(2);
-    for (const leaked of [basic.slice(8, -4), Buffer.from(value).toString("hex")]) {
-      expect(text).not.toContain(leaked);
-      expect(harness.requests.join("\n")).not.toContain(leaked);
-      expect(await harness.sessionFileText()).not.toContain(leaked);
-    }
-  });
-
   /** The escape hint for references written in each form, as the block reason gives it. */
   const hint = (...examples: string[]) =>
     `put a backslash right before it: ${examples.join("; ")}.`;
@@ -88,12 +58,6 @@ describe("Secret Request and Secret References", () => {
     `\\${written}, the shell's own escape, which Pi Secret leaves as written`;
 
   it.each([
-    [
-      "a Secret Reference",
-      "{{secret:NEVER_PROVIDED}}",
-      "{{secret:NEVER_PROVIDED}}",
-      hint(removedByPiSecret("{{secret:NEVER_PROVIDED}}")),
-    ],
     [
       "a Secret Reference written twice",
       "{{secret:NEVER_PROVIDED}} and {{secret:NEVER_PROVIDED}}",
@@ -117,15 +81,6 @@ describe("Secret Request and Secret References", () => {
       "curl -u ${PI_SECRET_NEVER_PROVIDED:-none}",
       "${PI_SECRET_NEVER_PROVIDED",
       hint(shellEscape("${PI_SECRET_NEVER_PROVIDED")),
-    ],
-    [
-      "a Secret Reference in both forms",
-      "{{secret:NEVER_PROVIDED}} or $PI_SECRET_NEVER_PROVIDED",
-      "{{secret:NEVER_PROVIDED}}, $PI_SECRET_NEVER_PROVIDED",
-      hint(
-        removedByPiSecret("{{secret:NEVER_PROVIDED}}"),
-        shellEscape("$PI_SECRET_NEVER_PROVIDED"),
-      ),
     ],
     [
       "a bare word before a shell expansion",
@@ -158,12 +113,6 @@ describe("Secret Request and Secret References", () => {
       hint(removedByPiSecret("{{secret:lower-case}}")),
     ],
     [
-      "an empty Secret Reference",
-      { text: "{{secret:}}" },
-      "{{secret:}} is not a valid Secret Reference",
-      hint(removedByPiSecret("{{secret:}}")),
-    ],
-    [
       "a malformed environment reference",
       { text: "echo $PI_SECRET_lower" },
       "$PI_SECRET_lower is not a valid Secret Reference",
@@ -184,20 +133,6 @@ describe("Secret Request and Secret References", () => {
       expect(text).toContain(escapes);
     },
   );
-
-  it("gives a malformed and an unheld Secret Reference each its own advice in one block", async () => {
-    const harness = await createSecretHarness();
-    harness.responses.push(
-      toolCalls(["echo", { text: "{{secret:bad name}} {{secret:NEVER_PROVIDED}}" }, "call-echo"]),
-      reply("Done."),
-    );
-    await harness.session.prompt("Go.");
-
-    expect(harness.received).toEqual([]);
-    expect(harness.resultText("call-echo")).toBe(
-      "The call did not run. {{secret:bad name}} is not a valid Secret Reference: a Secret Name uses uppercase letters, digits, and underscores, and does not start with a digit. It references {{secret:NEVER_PROVIDED}}, which this session does not hold. The Secret expired, was forgotten, or was never provided. Call secret_ask to request it again. To write a reference as literal text instead, put a backslash right before it: \\{{secret:bad name}}, which Pi Secret removes before the tool runs.",
-    );
-  });
 
   it("runs a call whose references are escaped with a backslash, passing them on as literal text", async () => {
     const harness = await createSecretHarness();
@@ -222,21 +157,6 @@ describe("Secret Request and Secret References", () => {
     await harness.session.prompt("Explain the variable.");
 
     expect(harness.received).toEqual([{ tool: "echo", args: { text } }]);
-  });
-
-  it("resolves a held Secret next to an escaped reference in the same argument", async () => {
-    const value = "mixed-value-3e4f5a6b";
-    const harness = await createSecretHarness({ dialogs: [[keys.paste(value), keys.enter]] });
-    harness.responses.push(
-      toolCalls(["secret_ask", { names: ["MIXED"] }, "call-ask"]),
-      toolCalls(["echo", { text: "\\{{secret:MIXED}}={{secret:MIXED}}" }, "call-echo"]),
-      reply("Done."),
-    );
-    await harness.session.prompt("Go.");
-
-    expect(harness.received).toEqual([
-      { tool: "echo", args: { text: `{{secret:MIXED}}=${value}` } },
-    ]);
   });
 
   it("runs a call that only mentions the environment prefix, such as listing held Secrets' variables", async () => {

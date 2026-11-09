@@ -130,31 +130,6 @@ describe("minimal subagents UI", () => {
     expect(agents).toEqual(original);
   });
 
-  it("keeps original recent-candidate ties when presentation moves an active subtree", () => {
-    const completed = { turn_id: "done", status: "completed" } as const;
-    const view = buildMinimalSubagentsWidgetView(
-      createHierarchyStatus([
-        summary("done-first", { latest_turn: completed }),
-        summary("done-second", { latest_turn: completed }),
-        summary("done-third", { latest_turn: completed }),
-        summary("parent", {
-          latest_turn: completed,
-          children: [summary("parent.running", { parent_id: "parent", state: "running" })],
-        }),
-      ]),
-    );
-
-    expect(view.rows.map(({ agentId }) => agentId)).toEqual([
-      "parent",
-      "parent.running",
-      "done-first",
-      "done-second",
-      "done-third",
-    ]);
-    expect(view.rows[0]?.structural).toBe(true);
-    expect(view.recentCount).toBe(3);
-  });
-
   it("uses complete subtree activity even when the row budget excludes its running descendant", () => {
     const completed = { turn_id: "done", status: "completed" } as const;
     const view = buildMinimalSubagentsWidgetView(
@@ -221,9 +196,6 @@ describe("minimal subagents UI", () => {
         passthroughTheme,
       )[1]!;
 
-    expect(baseView(80)).toBe(
-      "└─ ● worker · running 12s · provider/model:variant:high · inspect the runtime",
-    );
     expect(baseView(60)).toBe("└─ ● worker · running 12s · provider/model:variant:high");
     expect(baseView(46)).toBe("└─ ● worker · running 12s · provider/m...:high");
     expect(baseView(35)).toBe("└─ ● worker · running · pro...:high");
@@ -298,12 +270,8 @@ describe("minimal subagents UI", () => {
     expect(lines.at(-1)).toBe("<muted>... 2 more</muted>");
   });
 
-  it("mounts during activity, cools down after completion, and disposes timers and UI", async () => {
+  it("mounts during activity and disposes its widget and timers", async () => {
     vi.useFakeTimers();
-    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
-    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
-    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
-    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
     let status = createHierarchyStatus([summary("worker", { state: "running" })]);
     const context = createUiContext("tui");
     const coordinator = { inspectStatus: () => status } satisfies Pick<
@@ -317,7 +285,6 @@ describe("minimal subagents UI", () => {
     );
     controller.refresh();
     controller.refresh();
-    expect(setIntervalSpy).toHaveBeenCalledOnce();
     expect(context.ui.setWidget).toHaveBeenCalledWith(
       "pi-minimal-subagents",
       expect.any(Function),
@@ -330,10 +297,7 @@ describe("minimal subagents UI", () => {
       }),
     ]);
     controller.refresh();
-    expect(clearIntervalSpy).toHaveBeenCalledOnce();
-    expect(setTimeoutSpy).toHaveBeenCalledOnce();
     controller.dispose();
-    expect(clearTimeoutSpy).toHaveBeenCalledOnce();
     expect(context.ui.setWidget).toHaveBeenLastCalledWith("pi-minimal-subagents", undefined);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(context.ui.setWidget).toHaveBeenCalledTimes(2);

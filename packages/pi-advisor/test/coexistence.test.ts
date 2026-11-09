@@ -21,7 +21,11 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { createAdvisorSession, disposeAdvisorSession } from "../src/advisor-session.js";
+import {
+  createAdvisorSession,
+  disposeAdvisorSession,
+  isAdvisorSession,
+} from "../src/advisor-session.js";
 import { readAdvisorSettings } from "../src/advisor-settings.js";
 import { reply, toolCall, overflow } from "../../pi-context-management/test/sdk-harness.js";
 import "./fixtures/coexistence-extension.js";
@@ -182,6 +186,7 @@ it("keeps private Notes and History across durable Rollover and rejects observed
   expect(branch.filter((entry) => entry.type === "compaction")).toHaveLength(1);
   const file = f.advisor.session.sessionFile;
   if (!file) throw new Error("Private journal missing");
+  expect(isAdvisorSession(SessionManager.open(file))).toBe(true);
   expect(SessionManager.open(file).buildSessionContext().messages).toEqual(
     f.advisor.session.messages,
   );

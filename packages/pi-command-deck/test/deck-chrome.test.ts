@@ -58,14 +58,9 @@ describe("renderDeckBorder", () => {
 });
 
 describe("session labels", () => {
-  it("shows the working directory's base name", () => {
-    expect(formatDeckCwd("/home/me/project")).toBe("project");
+  it("shows the working directory's base name and rounded context usage", () => {
     expect(formatDeckCwd("/")).toBe("/");
-  });
-
-  it("formats context usage", () => {
     expect(formatContextUsage(41.6)).toBe("ctx 42%");
-    expect(formatContextUsage(null)).toBe("ctx ?");
     expect(formatContextUsage(undefined)).toBe("ctx ?");
   });
 

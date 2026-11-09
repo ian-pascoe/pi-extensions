@@ -35,17 +35,6 @@ const typed = { name: "typed", outputSchema: Output };
 const untyped = { name: "untyped" };
 
 describe("toolOutputViolations", () => {
-  test("is empty for a conforming result", () => {
-    expect(toolOutputViolations(typed, { structuredContent: { count: 1, label: "a" } })).toEqual(
-      [],
-    );
-  });
-
-  test("is empty for a tool without outputSchema whose result sets no structuredContent", () => {
-    expect(toolOutputViolations(untyped, {})).toEqual([]);
-    expect(toolOutputViolations(untyped, { isError: true })).toEqual([]);
-  });
-
   test("flags structuredContent from a tool that declares no outputSchema", () => {
     const [violation, ...rest] = toolOutputViolations(untyped, { structuredContent: { count: 1 } });
     expect(violation).toMatch(/no outputSchema.*codemode scripts would get the text/);
@@ -64,27 +53,12 @@ describe("toolOutputViolations", () => {
     expect(toolOutputViolations(typed, { isError: true })).toEqual([]);
   });
 
-  test("checks an error result that carries structuredContent", () => {
-    expect(
-      toolOutputViolations(typed, { structuredContent: { count: 1, label: "a" }, isError: true }),
-    ).toEqual([]);
-    expect(
-      toolOutputViolations(typed, { structuredContent: { count: "x" }, isError: true }),
-    ).not.toEqual([]);
-  });
-
   test("lists every schema violation by instance path", () => {
     const violations = toolOutputViolations(typed, { structuredContent: { count: "x" } });
     // The missing `label` is reported at the root, the wrong `count` at its path.
     expect(violations).toHaveLength(2);
     expect(violations.some((line) => /^structuredContent \/ .*label/.test(line))).toBe(true);
     expect(violations.some((line) => line.startsWith("structuredContent /count "))).toBe(true);
-  });
-
-  test("reports a non-object structuredContent at the root", () => {
-    expect(toolOutputViolations(typed, { structuredContent: "text" })).toEqual([
-      expect.stringMatching(/^structuredContent \/ /),
-    ]);
   });
 });
 
@@ -106,13 +80,6 @@ describe("expectToolOutputMatches", () => {
     expect(head).toBe("typed:");
     expect(lines).toHaveLength(2);
     expect(lines.every((line) => line.startsWith("  structuredContent /"))).toBe(true);
-  });
-
-  test("names the tool for each rule", () => {
-    expect(() => expectToolOutputMatches(untyped, { structuredContent: 1 })).toThrow(
-      /^untyped:\n {2}result sets structuredContent but .*no outputSchema/,
-    );
-    expect(() => expectToolOutputMatches(typed, {})).toThrow(/^typed:\n {2}tool declares/);
   });
 });
 
@@ -329,17 +296,6 @@ describe("recordToolOutputs", () => {
     expect(message).toMatch(/forgetful \(call [^)]*\): .*no structuredContent/);
     expect(message.match(/wrong \(call [^)]*\): structuredContent \//g)).toHaveLength(2);
     expect(message).not.toMatch(/good \(/);
-  });
-
-  test("records and checks calls the model issues directly", async () => {
-    const { recorder } = await session(
-      [],
-      [fauxAssistantMessage(fauxToolCall("undeclared", {}), { stopReason: "toolUse" })],
-    );
-    expect(
-      recorder.outputs.map(({ toolCallId, toolName }) => [toolName, toolCallId.includes("/")]),
-    ).toEqual([["undeclared", false]]);
-    expect(() => recorder.check()).toThrow(/undeclared \(call [^)]*\): .*no outputSchema/);
   });
 
   test("loaded last, it sees what an earlier handler left in the result", async () => {

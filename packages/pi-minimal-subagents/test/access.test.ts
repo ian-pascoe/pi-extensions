@@ -17,10 +17,6 @@ function accessEntry(data: JsonValue) {
 }
 
 describe("Subagent Access branch state", () => {
-  it("treats an absent branch record as inherited settings", () => {
-    expect(replaySubagentAccessBranch([])).toEqual({ override: "inherit", diagnostics: [] });
-  });
-
   it("replays only the latest valid selected-branch record", () => {
     const branch = [
       accessEntry(createSubagentAccessBranchRecord("enabled")),
@@ -39,15 +35,7 @@ describe("Subagent Access branch state", () => {
       ],
     });
     expect(replaySubagentAccessBranch(branch.slice(0, 3)).override).toBe("disabled");
-  });
-
-  it("keeps sibling branch overrides independent", () => {
-    const common = [accessEntry(createSubagentAccessBranchRecord("enabled"))];
-    const left = [...common, accessEntry(createSubagentAccessBranchRecord("disabled"))];
-    const right = [...common, accessEntry(createSubagentAccessBranchRecord("inherit"))];
-
-    expect(replaySubagentAccessBranch(left).override).toBe("disabled");
-    expect(replaySubagentAccessBranch(right).override).toBe("inherit");
+    expect(replaySubagentAccessBranch([])).toEqual({ override: "inherit", diagnostics: [] });
   });
 
   it("bounds invalid-record diagnostics without hiding the valid state", () => {
@@ -111,21 +99,6 @@ describe("Coordinator Tool access", () => {
       totalCount: 6,
       state: "enabled",
     });
-  });
-
-  it("preserves an already-enabled sequence with interleaved and late ordinary tools", () => {
-    const active = [
-      "read",
-      "subagent_status",
-      "mcp_early",
-      "subagent",
-      "agent_message",
-      "subagent_wait",
-      "subagent_cancel",
-      "subagent_delete",
-      "mcp_late",
-    ];
-    expect(reconcileCoordinatorToolAccess(active, true)).toEqual(active);
   });
 
   it("keeps first Coordinator Tool positions and ordinary duplicates, appending only missing tools", () => {

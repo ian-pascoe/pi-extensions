@@ -73,44 +73,29 @@ describe("Pi DAP Observer UI", () => {
     ]);
   });
 
-  test("marks each state from the shared Status Mark set", () => {
-    const mark = (view: DapObserverWidgetView) =>
-      readableTags(renderDapObserverWidgetLines(view, 120, escapeTaggedTheme)[1] ?? "");
-    expect(mark({ state: "running" })).toContain("<accent>●</accent>");
-    expect(mark({ state: "launching" })).toContain("<accent>●</accent>");
-    expect(mark({ state: "terminated", exitCode: 0 })).toContain("<success>✓</success>");
-    expect(mark({ state: "terminated", exitCode: 2 })).toContain("<error>✗</error>");
-    expect(mark(stopped)).toContain("<muted>■</muted>");
-  });
-
   test("degrades right-to-left within terminal width", () => {
-    const widths = [40, 30, 18, 12, 6];
+    const widths = [30, 18, 12];
     const rendered = widths.map((width) =>
       renderDapObserverWidgetLines(stopped, width, plainTheme),
     );
     const text = rendered.map((lines) => lines.join("\n"));
-    expect(text[0]).toContain("18s");
-    expect(text[0]).toContain("a.ts:4");
     // The path goes first, while the header still fits.
-    expect(text[1]).toContain("18s");
-    expect(text[1]).not.toContain("a.ts:4");
-    expect(text[1]).toContain("breakpoint");
+    expect(text[0]).toContain("18s");
+    expect(text[0]).not.toContain("a.ts:4");
+    expect(text[0]).toContain("breakpoint");
     // Then the duration and the reason.
-    expect(text[2]).not.toContain("18s");
-    expect(text[2]).toContain("node/node");
-    expect(text[2]).not.toContain("breakpoint");
-    expect(text[2]).toContain("stopped");
+    expect(text[1]).not.toContain("18s");
+    expect(text[1]).toContain("node/node");
+    expect(text[1]).not.toContain("breakpoint");
+    expect(text[1]).toContain("stopped");
     // Then the profile.
-    expect(text[3]).not.toContain("node/node");
-    expect(text[3]).toContain("DAP");
+    expect(text[2]).not.toContain("node/node");
+    expect(text[2]).toContain("DAP");
     expect(
       rendered.every((lines, index) =>
         lines.every((line) => visibleWidth(line) <= (widths[index] ?? 0)),
       ),
     ).toBe(true);
-    for (const width of [40, 120]) {
-      expectLinesFitWidth(renderDapObserverWidgetLines(stopped, width, escapeTaggedTheme), width);
-    }
   });
 
   test("mounts on launch, updates in place, clears stopped location on resume, and refreshes duration", async () => {

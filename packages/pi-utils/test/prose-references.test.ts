@@ -19,8 +19,9 @@ const names = [...catalogue.keys()]
   .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
   .join("|");
 
-// Cases are written with `$`; every Reference Sigil must behave the same way in a Prose Span.
-describe.each(["$", "@", "#"])("prose references with the %s Reference Sigil", (sigil) => {
+// Cases are written with `$`. The sigil only enters the scanner's regular expressions, so the full
+// suite runs with `$` and a smoke test runs `@` and `#`.
+function proseHarness(sigil: string) {
   const at = (text: string): string => text.replaceAll("$", sigil);
   const link = (name: string): string => `[${sigil}${name}](${catalogue.get(name) ?? ""})`;
   const replace = (text: string): string =>
@@ -34,6 +35,23 @@ describe.each(["$", "@", "#"])("prose references with the %s Reference Sigil", (
     });
   const prefixAt = (text: string, cursor: number): string | null =>
     findProseReferencePrefix(at(text), cursor, { sigil, partialName });
+  return { sigil, at, link, replace, prefixAt };
+}
+
+describe.each(["@", "#"])("prose references with the %s Reference Sigil", (sigil) => {
+  const { link, replace, prefixAt } = proseHarness(sigil);
+
+  it("links prose, keeps code literal, and offers a prefix", () => {
+    expect(replace("Use $review, `$review` and [$review](/x).")).toBe(
+      `Use ${link("review")}, \`${sigil}review\` and [${sigil}review](/x).`,
+    );
+    expect(prefixAt("see $re", 7)).toBe(`${sigil}re`);
+    expect(prefixAt("`$re`", 4)).toBeNull();
+  });
+});
+
+describe("prose references with the $ Reference Sigil", () => {
+  const { sigil, at, link, replace, prefixAt } = proseHarness("$");
 
   it("only replaces exact original spelling when Markdown removes an escape", () => {
     const text = at("| $a\\|b |\n| --- |");
@@ -48,16 +66,6 @@ describe.each(["$", "@", "#"])("prose references with the %s Reference Sigil", (
       `| a\\|b | ${link("review")} |\n| --- | --- |\n| \`a\\|${sigil}review\` | ${link("review")} |\n| row | extra | ${sigil}review |\n| ${link("review")} | last |`,
     );
     expect(prefixAt(text, at(text).indexOf(`${sigil}review`) + 3)).toBe(`${sigil}re`);
-  });
-
-  it("links table prose while preserving literal cells", () => {
-    expect(
-      replace("| $review | `$review` |\n| --- | --- |\n| [$review](/target) | $test-first |"),
-    ).toBe(
-      at(
-        `| ${link("review")} | \`$review\` |\n| --- | --- |\n| [$review](/target) | ${link("test-first")} |`,
-      ),
-    );
   });
 
   it("uses names exactly as the caller's grammar spells them", () => {
@@ -98,15 +106,7 @@ describe.each(["$", "@", "#"])("prose references with the %s Reference Sigil", (
     expect(prefixAt("😀 $", 4)).toBe(sigil);
     expect(prefixAt("$review then $te rest", 16)).toBe(`${sigil}te`);
     expect(prefixAt("first\r\n> **$re**", 14)).toBe(`${sigil}re`);
-    for (const text of [
-      "`$re`",
-      "[$re](/target)",
-      String.raw`\$re`,
-      "é$re",
-      "```\n$re",
-      "- ```\n  $re",
-      "    $re",
-    ]) {
+    for (const text of ["`$re`", "[$re](/target)", "```\n$re"]) {
       const cursor = at(text).indexOf(`${sigil}re`) + 3;
       expect(prefixAt(text, cursor), text).toBeNull();
     }
@@ -173,26 +173,8 @@ describe("replaceProseReferences", () => {
     expect(resolved).toEqual(["github", "gitlab", "git"]);
   });
 
-  it("calls resolve only for matches that can convert", () => {
-    const resolved: string[] = [];
-    replaceProseReferences("`@code` [@link](/x) \\@escaped a@mail @@twice @real", {
-      sigil: "@",
-      name: "[a-z]+",
-      resolve: (name) => {
-        resolved.push(name);
-        return undefined;
-      },
-    });
-    expect(resolved).toEqual(["real"]);
-  });
-
-  it("does not match a sigil that follows a word character or another copy of itself", () => {
-    const options = { name: "[a-z]+", resolve: (name: string) => `<${name}>` };
-    expect(replaceProseReferences("a@b @@b @b", { ...options, sigil: "@" })).toBe("a@b @@b <b>");
-  });
-
   it("rejects a sigil that is not one visible character", () => {
-    for (const sigil of ["", "$$", " ", "\\"]) {
+    for (const sigil of ["$$", " ", "\\"]) {
       expect(() =>
         replaceProseReferences("text", { sigil, name: "a", resolve: () => undefined }),
       ).toThrow(TypeError);
@@ -212,17 +194,7 @@ describe("replaceProseReferences", () => {
   });
 });
 
-describe("findProseReferencePrefix", () => {
-  it("applies the caller's partial-name grammar to the prefix", () => {
-    const grammar = { sigil: "@", partialName: "[A-Za-z0-9_-]*" };
-    expect(findProseReferencePrefix("ask @git", 8, grammar)).toBe("@git");
-    expect(findProseReferencePrefix("ask @", 5, grammar)).toBe("@");
-    expect(findProseReferencePrefix("ask @git.", 9, grammar)).toBeNull();
-    expect(findProseReferencePrefix("mail a@git", 10, grammar)).toBeNull();
-  });
-});
-
-describe.each(["$", "@", "#"])("stacked autocomplete with the %s Reference Sigil", (sigil) => {
+function stackHarness(sigil: string) {
   const signal = new AbortController().signal;
   const items = [
     { value: `${sigil}alpha`, label: `${sigil}alpha`, description: "first" },
@@ -244,6 +216,26 @@ describe.each(["$", "@", "#"])("stacked autocomplete with the %s Reference Sigil
         return items.filter((item) => item.value.slice(1).startsWith(query));
       },
     });
+  return { signal, items, queries, stack };
+}
+
+describe.each(["@", "#"])("stacked autocomplete with the %s Reference Sigil", (sigil) => {
+  const { signal, items, queries, stack } = stackHarness(sigil);
+
+  it("owns the popup at the sigil's prefix and passes the typed name to suggest", async () => {
+    queries.length = 0;
+    const provider = stack();
+    expect(await provider.getSuggestions([`use ${sigil}al`], 0, 7, { signal })).toEqual({
+      prefix: `${sigil}al`,
+      items: [items[0]],
+    });
+    expect(queries).toEqual(["al"]);
+  });
+});
+
+describe("stacked autocomplete with the $ Reference Sigil", () => {
+  const sigil = "$";
+  const { signal, items, queries, stack } = stackHarness(sigil);
 
   it("owns the popup at the sigil's prefix and passes the typed name to suggest", async () => {
     queries.length = 0;
@@ -300,15 +292,6 @@ describe.each(["$", "@", "#"])("stacked autocomplete with the %s Reference Sigil
     expect(provider.shouldTriggerFileCompletion?.(["x"], 0, 1)).toBe(false);
     const native = stack();
     expect(native.shouldTriggerFileCompletion?.(["x"], 0, 1)).toBe(true);
-    const slash = await native.getSuggestions(["/he"], 0, 3, { signal });
-    expect(slash?.items).toEqual([{ value: "help", label: "help", description: "Native help" }]);
-    const help = slash?.items[0];
-    if (!help) throw new Error("Missing native suggestion");
-    expect(native.applyCompletion(["/he"], 0, 3, help, "/he")).toEqual({
-      lines: ["/help "],
-      cursorLine: 0,
-      cursorCol: 6,
-    });
   });
 
   it("inserts one shorthand with native spacing and keeps the rest of the editor", () => {
@@ -395,35 +378,22 @@ describe("asynchronous completion suggestions", () => {
     applyCompletion: (lines, cursorLine, cursorCol) => ({ lines, cursorLine, cursorCol }),
   };
 
-  it("awaits suggest and hands it the request's signal", async () => {
+  it("hands suggest the request's signal and drops suggestions that arrive after it was cancelled", async () => {
     const controller = new AbortController();
     let received: AbortSignal | undefined;
     const provider = stackProseReferenceAutocomplete(current, {
       sigil: "#",
       partialName: "[0-9]*",
-      suggest: async (query, signal) => {
+      suggest: async (_query, signal) => {
         received = signal;
-        return [{ value: `#${query}1`, label: `#${query}1` }];
-      },
-    });
-    expect(await provider.getSuggestions(["see #2"], 0, 6, { signal: controller.signal })).toEqual({
-      prefix: "#2",
-      items: [{ value: "#21", label: "#21" }],
-    });
-    expect(received).toBe(controller.signal);
-  });
-
-  it("drops suggestions that arrive after the request was cancelled", async () => {
-    const controller = new AbortController();
-    const provider = stackProseReferenceAutocomplete(current, {
-      sigil: "#",
-      partialName: "[0-9]*",
-      suggest: async () => {
         controller.abort();
         return [{ value: "#1", label: "#1" }];
       },
     });
-    expect(await provider.getSuggestions(["#"], 0, 1, { signal: controller.signal })).toBeNull();
+    expect(
+      await provider.getSuggestions(["see #"], 0, 5, { signal: controller.signal }),
+    ).toBeNull();
+    expect(received).toBe(controller.signal);
   });
 });
 

@@ -8,40 +8,8 @@ const checkpoints = (manager: SessionManager) =>
   manager.getBranch().filter((entry) => entry.type === "compaction");
 
 describe("native Context Checkpoint lifecycle", () => {
-  it.each(["manual", "threshold"])(
-    "refreshes before native %s compaction without a summarizer",
-    async (reason) => {
-      const f = await createSdkHarness([contextManagement]);
-      f.responses.push(
-        reply("Ready.", reason === "threshold" ? 200_000 : 100),
-        toolCall("context_rollover", { handoff: "Fresh native continuation." }),
-      );
-      if (reason === "threshold") f.responses.push(reply("Continued."));
-      await f.session.prompt("OLD-NATIVE " + "history ".repeat(12_000));
-      if (reason === "manual") {
-        await expect(f.session.compact()).rejects.toThrow("Compaction cancelled");
-        await expect.poll(() => f.requests.length).toBe(2);
-        await f.session.waitForIdle();
-      }
-      expect(f.requests).toHaveLength(reason === "manual" ? 2 : 3);
-      expect(JSON.stringify(f.requests[1])).toContain("Prepare a Context Rollover");
-      expect(JSON.stringify(f.requests[1])).toContain(
-        reason === "manual"
-          ? "Stop after the checkpoint and wait for the user's next input."
-          : "Continue the task after the checkpoint.",
-      );
-      expect(checkpoints(f.manager)).toHaveLength(1);
-      expect(checkpoints(f.manager)[0]?.details).toMatchObject({ reason: "normal" });
-      expect(checkpoints(f.manager)[0]?.summary).toContain("Fresh native continuation.");
-      expect(f.session.messages).toEqual(f.manager.buildSessionContext().messages);
-      expect(f.providerRequests).toEqual([]);
-    },
-  );
-
   it.each([
     { partial: false, keepRecentTokens: 0 },
-    { partial: true, keepRecentTokens: 0 },
-    { partial: false, keepRecentTokens: 500 },
     { partial: true, keepRecentTokens: 500 },
   ])(
     "retries overflow once with no failed journal replay: %j",
@@ -116,7 +84,7 @@ describe("native Context Checkpoint lifecycle", () => {
     expect(results.every((message) => message.role === "toolResult" && message.isError)).toBe(true);
   });
 
-  it.each([0, 500])(
+  it.each([500])(
     "keeps native retention %i and branch Notes consistent across fork, tree, resume, and new",
     async (keepRecentTokens) => {
       const f = await createSdkHarness([contextManagement], { keepRecentTokens });

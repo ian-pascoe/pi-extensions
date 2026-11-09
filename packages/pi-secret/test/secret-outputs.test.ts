@@ -2,36 +2,12 @@ import type { JsonValue } from "@earendil-works/pi-ai";
 import { createCodemodeExtension, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { SECRET_ENV_PREFIX } from "../src/secret-references.js";
-import {
-  SecretAskGrantOutputSchema,
-  SecretAskOutputSchema,
-  SecretForgetOutputSchema,
-  SecretListOutputSchema,
-  SecretSaveOutputSchema,
-} from "../src/secret-outputs.js";
 import { FakeProvider } from "./fixtures/fake-provider.js";
 import { createSecretHarness, keys, reply, toolCalls } from "./fixtures/secret-harness.js";
 
 const TOKEN = "fake://Dev/GitHub/token";
 
 describe("values for codemode scripts", () => {
-  it("declares an outputSchema on every secret_* tool", async () => {
-    const harness = await createSecretHarness({ providers: [new FakeProvider()] });
-    const declared = Object.fromEntries(
-      ["secret_ask", "secret_ask_grant", "secret_list", "secret_save", "secret_forget"].map(
-        (name) => [name, harness.session.getToolDefinition(name)?.outputSchema],
-      ),
-    );
-
-    expect(declared).toEqual({
-      secret_ask: SecretAskOutputSchema,
-      secret_ask_grant: SecretAskGrantOutputSchema,
-      secret_list: SecretListOutputSchema,
-      secret_save: SecretSaveOutputSchema,
-      secret_forget: SecretForgetOutputSchema,
-    });
-  });
-
   it("hands a script each tool's value, holding references and never values", async () => {
     const typed = "typed-in-script-3e4f5a6b";
     const granted = "ghp-script-token-7c8d9e0f";

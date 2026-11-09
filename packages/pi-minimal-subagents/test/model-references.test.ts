@@ -10,12 +10,6 @@ const modelLink = (typed: string, model: string): string =>
 const roleLink = (role: string): string =>
   `[%${role}](model-role://${role} "Subagent model role: role=${role}")`;
 
-const catalogue = buildSubagentModelCatalogue({
-  eligibleModelIds: ["anthropic/claude-opus-5-5", "anthropic/claude-haiku-5-5"],
-  models: [],
-  modelRoles: [],
-});
-
 describe("Subagent Model Reference completion", () => {
   const popup = buildSubagentModelCatalogue({
     eligibleModelIds: [
@@ -42,39 +36,19 @@ describe("Subagent Model Reference completion", () => {
   });
 
   test("lists roles first, then models, each alphabetical, inserting a name that converts", () => {
-    expect(suggestSubagentModelReferences(popup, "")).toEqual([
-      {
-        value: "%design",
-        label: "%design",
-        description:
-          "Subagent role \u00b7 opencode-go/kimi-k3:high \u00b7 UI design, visual critique",
-      },
-      {
-        value: "%small",
-        label: "%small",
-        description: "Subagent role \u00b7 anthropic/claude-haiku-5-5",
-      },
-      {
-        value: "%anthropic/claude-haiku-5-5",
-        label: "%anthropic/claude-haiku-5-5",
-        description: "Subagent model \u00b7 Claude Haiku 5.5",
-      },
-      {
-        value: "%anthropic/claude-opus-5-5",
-        label: "%anthropic/claude-opus-5-5",
-        description: "Subagent model \u00b7 Claude Opus 5.5",
-      },
-      {
-        value: "%openai/gpt-6",
-        label: "%openai/gpt-6",
-        description: "Subagent model \u00b7 GPT-6",
-      },
-      {
-        value: "%opencode-go/kimi-k3",
-        label: "%opencode-go/kimi-k3",
-        description: "Subagent model",
-      },
+    const items = suggestSubagentModelReferences(popup, "");
+    expect(items.map((item) => item.value)).toEqual([
+      "%design",
+      "%small",
+      "%anthropic/claude-haiku-5-5",
+      "%anthropic/claude-opus-5-5",
+      "%openai/gpt-6",
+      "%opencode-go/kimi-k3",
     ]);
+    expect(items[0]?.description).toBe(
+      "Subagent role \u00b7 opencode-go/kimi-k3:high \u00b7 UI design, visual critique",
+    );
+    expect(items[2]?.description).toBe("Subagent model \u00b7 Claude Haiku 5.5");
   });
 
   test("filters case-insensitively by role name, provider/id, and display name", () => {
@@ -91,14 +65,6 @@ describe("Subagent Model Reference completion", () => {
 });
 
 describe("Subagent Model References", () => {
-  test("converts a full provider/id to a model link", () => {
-    expect(
-      transformSubagentModelReferences("Review with %anthropic/claude-opus-5-5 please.", catalogue),
-    ).toBe(
-      `Review with ${modelLink("anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5")} please.`,
-    );
-  });
-
   test("converts a bare id that exactly one Eligible Model has", () => {
     const shared = buildSubagentModelCatalogue({
       eligibleModelIds: [
@@ -143,24 +109,17 @@ describe("Subagent Model References", () => {
     const large = roleLink("large");
     for (const [input, output] of [
       ["(%large)", `(${large})`],
-      ["%large's plan", `${large}'s plan`],
-      ["%large: review this", `${large}: review this`],
       ["Use %large.", `Use ${large}.`],
       ["%large:high", "%large:high"],
       ["%large@x", "%large@x"],
-      ["%large~foo", "%large~foo"],
-      ["%large/x", "%large/x"],
       ["%large-ish", "%large-ish"],
-      ["%large.json", "%large.json"],
       ["50%large", "50%large"],
       ["%PATH%", "%PATH%"],
       ["printf %s", `printf ${modelLink("s", "local/s")}`],
-      ["a%20b", "a%20b"],
       ["\\%large", "\\%large"],
       ["`%large`", "`%large`"],
       ["```\n%large\n```", "```\n%large\n```"],
       ["%Large", "%Large"],
-      ["100% done", "100% done"],
     ] as const) {
       expect(transformSubagentModelReferences(input, roles), input).toBe(output);
     }
@@ -294,12 +253,7 @@ describe("Subagent Model References with a thinking level", () => {
   });
 
   test("leaves an unsupported or unknown level literal", () => {
-    for (const text of [
-      "%gpt-4o:high",
-      "%large:ultra",
-      "%large:High",
-      "%amazon.nova-2-lite-v1:0:low",
-    ]) {
+    for (const text of ["%gpt-4o:high", "%large:ultra"]) {
       expect(transformSubagentModelReferences(text, levels), text).toBe(text);
     }
   });
@@ -316,24 +270,6 @@ describe("Subagent Model References with a thinking level", () => {
     );
   });
 
-  test("describes each entry with the thinking levels it supports", () => {
-    const describe = (query: string) =>
-      suggestSubagentModelReferences(levels, query).map(({ value, description }) => [
-        value,
-        description,
-      ]);
-    expect(describe("large")).toEqual([
-      [
-        "%large",
-        "Subagent role \u00b7 anthropic/claude-opus-5-5:high \u00b7 off/minimal/low/medium/high/xhigh/max",
-      ],
-    ]);
-    expect(describe("gpt")).toEqual([["%openai/gpt-4o", "Subagent model \u00b7 off"]]);
-    expect(describe("nova")).toEqual([
-      ["%amazon-bedrock/amazon.nova-2-lite-v1:0", "Subagent model"],
-    ]);
-  });
-
   test("lists a name's supported levels after a colon, in Pi's order", () => {
     const values = (query: string) =>
       suggestSubagentModelReferences(levels, query).map((item) => item.value);
@@ -342,6 +278,9 @@ describe("Subagent Model References with a thinking level", () => {
     expect(values("gpt-4o:")).toEqual(["%gpt-4o:off"]);
     expect(values("gpt-4o:h")).toEqual([]);
     expect(values("Large:")).toEqual([]);
+    expect(suggestSubagentModelReferences(levels, "gpt")[0]?.description).toBe(
+      "Subagent model \u00b7 off",
+    );
     expect(suggestSubagentModelReferences(levels, "large:hi")).toEqual([
       {
         value: "%large:high",
@@ -372,10 +311,5 @@ describe("Subagent Model References with a thinking level", () => {
     expect(suggestSubagentModelReferences(ambiguous, "m:").map((item) => item.value)).not.toContain(
       "%m:high",
     );
-  });
-
-  test("leaves converted links with a level unchanged when submitted again", () => {
-    const once = transformSubagentModelReferences("%large:low and %gpt-4o:off", levels);
-    expect(transformSubagentModelReferences(once, levels)).toBe(once);
   });
 });

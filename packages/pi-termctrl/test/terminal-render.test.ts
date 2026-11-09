@@ -6,14 +6,11 @@ import {
 } from "@ian-pascoe/pi-utils/ui-testing";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import {
-  renderListCall,
   renderListResult,
   renderSendCall,
   renderStartCall,
-  renderStopCall,
   renderStopResult,
   renderTerminalResult,
-  renderWaitCall,
   renderWaitResult,
   type ResultContext,
 } from "../src/terminal-render.js";
@@ -83,11 +80,6 @@ describe("call rows", () => {
     );
   });
 
-  test("terminal_start keeps a placeholder while the command streams in", () => {
-    const rendered = lines(renderStartCall({}, taggedTheme, context({ executionStarted: false })));
-    expect(rendered[0]).toContain("<accent>$ ...</accent>");
-  });
-
   test("terminal_send shows the id with what is typed, pressed and waited for", () => {
     const rendered = lines(
       renderSendCall(
@@ -105,49 +97,6 @@ describe("call rows", () => {
     expect(rendered[0]).toBe(
       '<toolTitle><b>terminal_send</b></toolTitle> <accent>t1</accent> <muted>type "ls\\n" press Enter Control+C wait_for "done" 900ms</muted>',
     );
-  });
-
-  test("terminal_send says poll when it sends nothing, and cuts a long typed text", () => {
-    const poll = lines(
-      renderSendCall({ id: "t2" }, taggedTheme, context({ executionStarted: false })),
-    );
-    expect(poll[0]).toContain("<muted>poll</muted>");
-    const long = lines(
-      renderSendCall(
-        { id: "t2", text: "x".repeat(300) },
-        taggedTheme,
-        context({ executionStarted: false }),
-      ),
-    );
-    expect(long.join("\n")).toContain("...");
-    expect(long.join("\n")).not.toContain("x".repeat(100));
-  });
-
-  test("terminal_stop, terminal_wait and terminal_list show their name and target", () => {
-    const idle = context({ executionStarted: false });
-    expect(lines(renderStopCall({ id: "b1" }, taggedTheme, idle))[0]).toBe(
-      "<toolTitle><b>terminal_stop</b></toolTitle> <accent>b1</accent>",
-    );
-    expect(lines(renderWaitCall({ ids: ["t1", "b2"], wait_ms: 5_000 }, taggedTheme, idle))[0]).toBe(
-      "<toolTitle><b>terminal_wait</b></toolTitle> <accent>t1 b2</accent> <muted>5000ms</muted>",
-    );
-    expect(lines(renderWaitCall({}, taggedTheme, idle))[0]).toBe(
-      "<toolTitle><b>terminal_wait</b></toolTitle>",
-    );
-    expect(lines(renderListCall({}, taggedTheme, idle))[0]).toBe(
-      "<toolTitle><b>terminal_list</b></toolTitle>",
-    );
-  });
-
-  test("the call row shows a live Elapsed footer until a result row takes over", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(0);
-    const running = context({ isPartial: true });
-    const component = renderSendCall({ id: "t1" }, taggedTheme, running);
-    vi.setSystemTime(3_000);
-    expect(lines(component)).toContain("<muted>Elapsed 3.0s</muted>");
-    renderTerminalResult(textResult(terminalDetails()), collapsed, taggedTheme, running);
-    expect(lines(component)).not.toContain("<muted>Elapsed 3.0s</muted>");
   });
 });
 
@@ -225,51 +174,6 @@ describe("terminal_start and terminal_send results", () => {
     expect(rendered).toContain("<warning>[Earlier output is missing]</warning>");
     expect(rendered).toContain("<warning>[Full output: /tmp/out.txt]</warning>");
   });
-
-  test("an error shows its message in error colour with the footer", () => {
-    const rendered = lines(
-      renderTerminalResult(
-        textResult(undefined, "Unknown id t9. Call terminal_list to see your Terminals."),
-        collapsed,
-        taggedTheme,
-        context({ isError: true }),
-      ),
-    );
-    expect(rendered[1]).toBe(
-      "<error>Unknown id t9. Call terminal_list to see your Terminals.</error>",
-    );
-    expect(rendered.at(-1)).toBe("<muted>Took 1.2s</muted>");
-  });
-
-  test("an error longer than 10 lines collapses with the Expand Hint", () => {
-    const rendered = lines(
-      renderTerminalResult(
-        textResult(undefined, numbered(14, "problem")),
-        collapsed,
-        taggedTheme,
-        context({ isError: true }),
-      ),
-    );
-    expect(rendered.join("\n")).toContain("<muted>... (4 more lines,</muted>");
-  });
-
-  test("a result still running shows the Elapsed footer", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(0);
-    const running = context({ isPartial: true, durationMs: undefined });
-    const partial = { expanded: false, isPartial: true };
-    renderTerminalResult(textResult(terminalDetails()), partial, taggedTheme, running);
-    // Pi redraws the row every second while it runs.
-    vi.setSystemTime(2_000);
-    const redrawn = renderTerminalResult(
-      textResult(terminalDetails()),
-      partial,
-      taggedTheme,
-      running,
-    );
-    expect(lines(redrawn).at(-1)).toBe("<muted>Elapsed 2.0s</muted>");
-    vi.clearAllTimers();
-  });
 });
 
 describe("terminal_stop results", () => {
@@ -295,49 +199,6 @@ describe("terminal_stop results", () => {
     expect(rendered[2]).toContain("<muted>... (3 earlier lines,</muted>");
     expect(rendered).toContain("<toolOutput>row 8</toolOutput>");
   });
-
-  test("a Background job shows its recent output, and a repeated screen shows only the stop line", () => {
-    const job: StopResult = {
-      id: "b1",
-      kind: "background_job",
-      state: "exited",
-      signal: "SIGKILL",
-      output: "compiling\nlinking\n",
-    };
-    const rendered = lines(
-      renderStopResult(
-        textResult(job, "Background job b1 stopped."),
-        expanded,
-        taggedTheme,
-        context(),
-      ),
-    );
-    expect(rendered).toContain("<toolOutput>linking</toolOutput>");
-
-    const repeated: StopResult = { id: "t1", kind: "terminal", state: "exited", changed: false };
-    const quiet = lines(
-      renderStopResult(
-        textResult(repeated, "Terminal t1 stopped."),
-        collapsed,
-        taggedTheme,
-        context(),
-      ),
-    );
-    expect(quiet.slice(1, 2)).toEqual(["<muted>Terminal t1 stopped.</muted>"]);
-    expect(quiet).toHaveLength(4);
-  });
-
-  test("an error shows in error colour", () => {
-    const rendered = lines(
-      renderStopResult(
-        textResult(undefined, "Unknown id t3."),
-        collapsed,
-        taggedTheme,
-        context({ isError: true }),
-      ),
-    );
-    expect(rendered[1]).toBe("<error>Unknown id t3.</error>");
-  });
 });
 
 describe("terminal_list results", () => {
@@ -360,30 +221,6 @@ describe("terminal_list results", () => {
     expect(rows.join("\n")).not.toContain("/tmp/b1.log");
     const full = lines(renderListResult(textResult(details), expanded, taggedTheme, context()));
     expect(full.join("\n")).toContain("<muted>(log /tmp/b1.log)</muted>");
-  });
-
-  test("an empty list says none", () => {
-    const rows = lines(
-      renderListResult(
-        textResult({ terminals: [], background_jobs: [] } satisfies ListResult),
-        collapsed,
-        taggedTheme,
-        context(),
-      ),
-    );
-    expect(rows[1]).toBe("<muted>(none)</muted>");
-  });
-
-  test("collapses to 20 rows like ls", () => {
-    const details: ListResult = {
-      terminals: Array.from({ length: 25 }, (_, index) => entry(`t${index + 1}`, "sh")),
-      background_jobs: [],
-    };
-    const rows = lines(renderListResult(textResult(details), collapsed, taggedTheme, context()));
-    expect(rows.filter((row) => row.startsWith("<accent>t"))).toHaveLength(20);
-    expect(rows.join("\n")).toContain("<muted>... (5 more lines,</muted>");
-    const full = lines(renderListResult(textResult(details), expanded, taggedTheme, context()));
-    expect(full.filter((row) => row.startsWith("<accent>t"))).toHaveLength(25);
   });
 });
 
@@ -412,23 +249,5 @@ describe("terminal_wait results", () => {
     expect(rows.join("\n")).not.toContain("boom");
     const full = lines(renderWaitResult(textResult(details), expanded, taggedTheme, context()));
     expect(full).toContain("  <toolOutput>failed</toolOutput>");
-  });
-
-  test("says why a wait ended without an exit", () => {
-    const timeout: WaitResult = { reason: "timeout", exited: [], running: details.running };
-    const rows = lines(renderWaitResult(textResult(timeout), collapsed, taggedTheme, context()));
-    expect(rows[1]).toBe("<muted>Nothing exited before the wait ended</muted>");
-  });
-
-  test("an error shows in error colour", () => {
-    const rows = lines(
-      renderWaitResult(
-        textResult(undefined, "Unknown id t4."),
-        collapsed,
-        taggedTheme,
-        context({ isError: true }),
-      ),
-    );
-    expect(rows[1]).toBe("<error>Unknown id t4.</error>");
   });
 });

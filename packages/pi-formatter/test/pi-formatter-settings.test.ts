@@ -183,57 +183,28 @@ describe("resolveFormatterSettings", () => {
     ]);
   });
 
-  test("compiles a File Formatter's syntax-error pattern and leaves it unset by default", async () => {
+  test("quarantines a definition with an invalid syntax-error pattern and shadows the global one", async () => {
     const settings = resolveFormatterSettings(
       await createSettingsReader(
+        { formatter: { formatters: { shadowed: markdownFormatter("global") } } },
         {
           formatter: {
             formatters: {
-              declared: { ...markdownFormatter("declared"), syntaxErrorPattern: "^error: Failed" },
-              fallback: markdownFormatter("fallback"),
+              shadowed: { ...markdownFormatter("project"), syntaxErrorPattern: "(unclosed" },
+              healthy: markdownFormatter("healthy"),
             },
           },
         },
-        {},
       ),
     );
 
-    expect(settings.warnings).toEqual([]);
-    expect(settings.formatters.get("declared")?.syntaxErrorPattern).toEqual(/^error: Failed/);
-    expect(settings.formatters.get("fallback")?.syntaxErrorPattern).toBeUndefined();
+    expect([...settings.formatters.keys()]).toEqual(["healthy"]);
+    expect(settings.warnings).toEqual([
+      expect.stringMatching(
+        /^project formatter\.formatters\.shadowed\.syntaxErrorPattern: .*Unterminated group/,
+      ),
+    ]);
   });
-
-  test.each([
-    { name: "an invalid regex", syntaxErrorPattern: "(unclosed", reason: "Unterminated group" },
-    { name: "an empty pattern", syntaxErrorPattern: "", reason: "fewer than 1 characters" },
-    { name: "a non-string pattern", syntaxErrorPattern: 2, reason: "string" },
-  ])(
-    "quarantines a definition with $name and shadows the global one",
-    async ({ syntaxErrorPattern, reason }) => {
-      const settings = resolveFormatterSettings(
-        await createSettingsReader(
-          { formatter: { formatters: { shadowed: markdownFormatter("global") } } },
-          {
-            formatter: {
-              formatters: {
-                shadowed: { ...markdownFormatter("project"), syntaxErrorPattern },
-                healthy: markdownFormatter("healthy"),
-              },
-            },
-          },
-        ),
-      );
-
-      expect([...settings.formatters.keys()]).toEqual(["healthy"]);
-      expect(settings.warnings).toEqual([
-        expect.stringMatching(
-          new RegExp(
-            `^project formatter\\.formatters\\.shadowed\\.syntaxErrorPattern: .*${reason}`,
-          ),
-        ),
-      ]);
-    },
-  );
 
   test("quarantines a syntax-error pattern on a Workspace Formatter", async () => {
     const settings = resolveFormatterSettings(

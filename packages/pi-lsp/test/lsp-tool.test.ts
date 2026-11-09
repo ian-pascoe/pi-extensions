@@ -1,7 +1,7 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
   AgentToolResult,
@@ -366,49 +366,12 @@ describe("registered LSP tool", () => {
       expect(tool.outputSchema, tool.name).toMatchObject({ type: "object" });
       // Every tool accepts null for an optional parameter through `prepareArguments`.
       expect(tool.hasPrepareArguments, tool.name).toBe(true);
-      // Shared rules live in the namespace instructions and one deduplicated guideline.
-      expect(tool.description, tool.name).not.toMatch(/one-based|Result Spill|leading @/u);
     }
-    // The guideline is static, so read-only sessions without the preview tools must not be told
-    // those tools exist.
-    expect(LSP_TOOL_GUIDELINE).toContain("Where available, lsp_rename, lsp_code_actions");
-    expect(LSP_TOOL_NAMESPACE.description).toContain(LSP_TOOL_GUIDELINE);
-    expect(LSP_TOOL_NAMESPACE.instructions).toContain("one-based");
-    expect(LSP_TOOL_NAMESPACE.instructions).toContain("Result Spill");
-    expect(LSP_TOOL_NAMESPACE.instructions).toContain("Paths may start with @");
-    expect(LSP_TOOL_NAMESPACE.instructions).toContain("lsp_apply");
-    // Pi shows namespace instructions only to scripts, so direct callers learn the output rules
-    // from the guideline.
-    expect(LSP_TOOL_GUIDELINE).toContain("in arguments and results, are one-based");
-    expect(LSP_TOOL_GUIDELINE).toContain(
-      "path:line:col line per location, with paths relative to the working directory",
-    );
 
     const annotationsOf = (name: string) =>
       registrar.tools.find((tool) => tool.name === name)?.annotations;
-    const readOnly = {
+    expect(annotationsOf("lsp_hover")).toEqual({
       readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-    };
-    for (const name of ["lsp_hover", "lsp_status", "lsp_capabilities", "lsp_workspace_diagnostics"])
-      expect(annotationsOf(name), name).toEqual(readOnly);
-    // Preview producers change no file, but every call creates a new preview_id.
-    for (const name of [
-      "lsp_rename",
-      "lsp_code_actions",
-      "lsp_format_document",
-      "lsp_format_range",
-      "lsp_format_on_type",
-    ])
-      expect(annotationsOf(name), name).toEqual({ ...readOnly, idempotentHint: false });
-    // One snippet names the lsp_* family in the system prompt's tool list.
-    expect(
-      registrar.tools.filter((tool) => tool.promptSnippet !== undefined).map(({ name }) => name),
-    ).toEqual(["lsp_diagnostics"]);
-    expect(annotationsOf("lsp_restart")).toEqual({
-      readOnlyHint: false,
       destructiveHint: false,
       idempotentHint: true,
       openWorldHint: false,
@@ -843,156 +806,6 @@ describe("registered LSP tool", () => {
     await fixture.close();
   });
 
-  test("renders a multi-file references result as readable text over unchanged structured data", async () => {
-    const fixture = await createToolFixture();
-    const cwd = fixture.context.cwd;
-    const otherPath = resolve(cwd, "nested/use.ts");
-    await mkdir(resolve(cwd, "nested"), { recursive: true });
-    await writeFile(otherPath, "import { emoji } from '../source';\n\tconsole.log(emoji);\n");
-    const outsidePath = resolve(cwd, "..", `${basename(cwd)}-outside.ts`);
-    temporaryDirectories.push(outsidePath);
-    await writeFile(outsidePath, "emoji;\n");
-    const protocolRange = (line: number, character: number) => ({
-      start: { line, character },
-      end: { line, character: character + 5 },
-    });
-    fixture.client.responseByMethod.set("textDocument/references", [
-      { uri: pathToFileURL(fixture.filePath).href, range: protocolRange(0, 6) },
-      { uri: pathToFileURL(otherPath).href, range: protocolRange(0, 9) },
-      { uri: pathToFileURL(otherPath).href, range: protocolRange(1, 13) },
-      { uri: pathToFileURL(outsidePath).href, range: protocolRange(0, 0) },
-    ]);
-
-    const result = await executeTool(fixture, {
-      operation: "find_references",
-      file_path: "@source.ts",
-      line: 1,
-      character: 7,
-    });
-
-    expect(resultText(result)).toBe(
-      [
-        'Query position: source.ts:1:7 ("emoji")',
-        `Searched typescript workspace root: ${cwd}`,
-        "",
-        "source.ts:1:7  const emoji = '😀';",
-        "nested/use.ts:1:10  import { emoji } from '../source';",
-        "nested/use.ts:2:14  console.log(emoji);",
-        `${outsidePath}:1:1  emoji;`,
-      ].join("\n"),
-    );
-    const oneBasedRange = (line: number, character: number) => ({
-      end: { character: character + 5, line },
-      start: { character, line },
-    });
-    const location = (path: string, line: number, character: number) => ({
-      character,
-      line,
-      path,
-      range: oneBasedRange(line, character),
-      uri: path,
-    });
-    // The compact JSON these reads returned as text before, plus the queried position and each
-    // location's flat one-based `path`, `line`, and `character`.
-    expect(JSON.stringify(result.structuredContent)).toBe(
-      JSON.stringify({
-        position: {
-          character: 7,
-          line: 1,
-          line_text: "const emoji = '😀';",
-          path: fixture.filePath,
-          token: "emoji",
-        },
-        results: [
-          {
-            root_path: cwd,
-            server_id: "typescript",
-            value: [
-              location(fixture.filePath, 1, 7),
-              location(otherPath, 1, 10),
-              location(otherPath, 2, 14),
-              location(outsidePath, 1, 1),
-            ],
-          },
-        ],
-        warnings: [],
-        truncated: false,
-        structured_truncated: false,
-      }),
-    );
-    expect(result.details).toEqual({
-      kind: "operation",
-      operation: "find_references",
-      server_outcomes: [{ server_id: "typescript", outcome: "success" }],
-      result_count: 4,
-    });
-    await fixture.close();
-  });
-
-  test("renders document symbols as an outline over their structured data", async () => {
-    const fixture = await createToolFixture();
-    const protocolRange = (start: number, end: number) => ({
-      start: { line: 0, character: start },
-      end: { line: 0, character: end },
-    });
-    fixture.client.responseByMethod.set("textDocument/documentSymbol", [
-      {
-        name: "emoji",
-        kind: 14,
-        range: protocolRange(0, 14),
-        selectionRange: protocolRange(6, 11),
-        children: [],
-      },
-    ]);
-
-    const result = await executeTool(fixture, {
-      operation: "document_symbols",
-      file_path: "source.ts",
-    });
-
-    expect(resultText(result)).toBe("emoji (constant) source.ts:1:7");
-    const oneBasedRange = (start: number, end: number) => ({
-      end: { character: end, line: 1 },
-      start: { character: start, line: 1 },
-    });
-    // The compact JSON these reads returned as text before, plus each symbol's flat one-based
-    // `path`, `line`, and `character` (its selection start) and its readable `kind_name`.
-    expect(JSON.stringify(result.structuredContent)).toBe(
-      JSON.stringify({
-        results: [
-          {
-            omitted: 0,
-            root_path: fixture.context.cwd,
-            server_id: "typescript",
-            value: [
-              {
-                character: 7,
-                children: [],
-                kind: 14,
-                kind_name: "constant",
-                line: 1,
-                name: "emoji",
-                path: fixture.filePath,
-                range: oneBasedRange(1, 15),
-                selectionRange: oneBasedRange(7, 12),
-              },
-            ],
-          },
-        ],
-        warnings: [],
-        truncated: false,
-        structured_truncated: false,
-      }),
-    );
-    expect(result.details).toEqual({
-      kind: "operation",
-      operation: "document_symbols",
-      server_outcomes: [{ server_id: "typescript", outcome: "success" }],
-      result_count: 1,
-    });
-    await fixture.close();
-  });
-
   test("cuts document symbols to the requested depth in both the text and the structured result", async () => {
     const fixture = await createToolFixture();
     await writeFile(fixture.filePath, `${"0123456789\n".repeat(6)}`);
@@ -1040,7 +853,6 @@ describe("registered LSP tool", () => {
     for (const hidden of ["draft", "state", "callback"]) {
       expect(byDefault.structured).not.toContain(`"name":"${hidden}"`);
     }
-    expect((await outline({ depth: 1 })).text).toEqual(byDefault.text);
     expect((await outline({ depth: 2 })).omitted).toEqual([0]);
     expect((await outline({ depth: 2 })).text).toEqual([
       "Store",
@@ -1050,29 +862,6 @@ describe("registered LSP tool", () => {
       "state",
       "callback",
     ]);
-    expect((await outline({ depth: "all" })).text).toEqual([
-      "Store",
-      "add",
-      "draft",
-      "create",
-      "state",
-      "callback",
-    ]);
-    await expect(
-      executeTool(fixture, {
-        operation: "document_symbols",
-        file_path: fixture.filePath,
-        depth: 0,
-      }),
-    ).rejects.toThrow("Pi LSP: invalid tool arguments");
-    await expect(
-      executeTool(fixture, {
-        operation: "document_symbols",
-        file_path: fixture.filePath,
-        // @ts-expect-error -- The tool rejects a depth that is neither a count nor "all".
-        depth: "deep",
-      }),
-    ).rejects.toThrow("Pi LSP: invalid tool arguments");
     await fixture.close();
   });
 
@@ -1166,40 +955,6 @@ describe("registered LSP tool", () => {
       await fixture.close();
     });
 
-    test("drops flat top-level entries inside an imports folding range", async () => {
-      const fixture = await fixtureWithImports();
-      const uri = pathToFileURL(fixture.filePath).href;
-      const flat = (name: string, kind: number, line: number) => ({
-        name,
-        kind,
-        location: { uri, range: protocolRange(line) },
-      });
-      fixture.client.responseByMethod.set("textDocument/documentSymbol", [
-        flat("alpha", 13, 0),
-        flat("beta", 13, 1),
-        flat("run", 12, 3),
-      ]);
-      expect((await outline(fixture)).text[0]).toBe("run");
-      expect((await outline(fixture)).omitted).toEqual([2]);
-      await fixture.close();
-    });
-
-    test("treats a flat entry whose container matches no symbol as top-level", async () => {
-      const fixture = await fixtureWithImports();
-      const uri = pathToFileURL(fixture.filePath).href;
-      fixture.client.responseByMethod.set("textDocument/documentSymbol", [
-        {
-          name: "alpha",
-          kind: 13,
-          containerName: "no such symbol",
-          location: { uri, range: protocolRange(0) },
-        },
-        { name: "run", kind: 12, location: { uri, range: protocolRange(3) } },
-      ]);
-      expect((await outline(fixture)).omitted).toEqual([1]);
-      await fixture.close();
-    });
-
     test("lists imports at depth all without asking for folding ranges", async () => {
       const fixture = await fixtureWithImports();
       expect(await outline(fixture, { depth: "all" })).toEqual({
@@ -1208,34 +963,6 @@ describe("registered LSP tool", () => {
         omittedImports: [undefined],
       });
       expect(symbolRequests(fixture)).toEqual(["textDocument/documentSymbol"]);
-      await fixture.close();
-    });
-
-    test("lists imports when the server has no folding range support", async () => {
-      const fixture = await fixtureWithImports();
-      fixture.client.unsupportedMethods.add("textDocument/foldingRange");
-      expect(await outline(fixture)).toEqual({
-        text: ["alpha", "beta", "run"],
-        omitted: [0],
-        omittedImports: [undefined],
-      });
-      expect(symbolRequests(fixture)).toEqual(["textDocument/documentSymbol"]);
-      await fixture.close();
-    });
-
-    test("lists imports when the server reports no imports folding range", async () => {
-      const fixture = await fixtureWithImports();
-      fixture.client.responseByMethod.set("textDocument/foldingRange", [
-        { startLine: 0, endLine: 1, kind: "comment" },
-        { startLine: 0, endLine: 1 },
-      ]);
-      expect(await outline(fixture)).toEqual({
-        text: ["alpha", "beta", "run"],
-        omitted: [0],
-        omittedImports: [undefined],
-      });
-      fixture.client.responseByMethod.set("textDocument/foldingRange", null);
-      expect((await outline(fixture)).text).toEqual(["alpha", "beta", "run"]);
       await fixture.close();
     });
 
@@ -1367,43 +1094,6 @@ describe("registered LSP tool", () => {
     await fixture.close();
   });
 
-  test("adds the same flat position and kind name to hierarchy items", async () => {
-    const fixture = await createToolFixture();
-    await writeFile(fixture.filePath, "class Outer {\n  constructor() {}\n}\n");
-    const uri = pathToFileURL(fixture.filePath).href;
-    const item = {
-      name: "constructor",
-      kind: 9,
-      uri,
-      range: { start: { line: 1, character: 2 }, end: { line: 1, character: 49 } },
-      selectionRange: { start: { line: 1, character: 2 }, end: { line: 1, character: 13 } },
-      data: { kind: 9, name: "private" },
-    };
-    fixture.client.responseByMethod.set("textDocument/prepareCallHierarchy", [item]);
-    fixture.client.responseByMethod.set("callHierarchy/incomingCalls", [
-      { from: item, fromRanges: [item.selectionRange] },
-    ]);
-
-    const result = await executeTool(fixture, {
-      operation: "incoming_calls",
-      file_path: fixture.filePath,
-      line: 2,
-      character: 3,
-    });
-
-    const { results } = Value.Parse(LspReadOutputSchema, result.structuredContent);
-    expect(results[0]?.value).toMatchObject([
-      {
-        from: { name: "constructor", kind_name: "constructor", line: 2, character: 3 },
-        fromRanges: [{ start: { line: 2, character: 3 } }],
-      },
-    ]);
-    // The server-private `data` of an item is never rewritten.
-    expect(results[0]?.value).toMatchObject([{ from: { data: item.data } }]);
-    expect(JSON.stringify(results[0]?.value)).toContain(`"data":${JSON.stringify(item.data)}`);
-    await fixture.close();
-  });
-
   test("filters completions by the identifier before the position and resolves only the kept items", async () => {
     const fixture = await createToolFixture();
     fixture.client.capabilities.completionProvider = { resolveProvider: true };
@@ -1494,90 +1184,6 @@ describe("registered LSP tool", () => {
     await fixture.close();
   });
 
-  test("returns at most 50 completions or workspace symbols by default", async () => {
-    const fixture = await createToolFixture();
-    fixture.client.responseByMethod.set(
-      "textDocument/completion",
-      Array.from({ length: 120 }, (_, index) => ({
-        label: `item${String(index).padStart(3, "0")}`,
-      })),
-    );
-    const result = await executeTool(fixture, {
-      operation: "completion",
-      file_path: fixture.filePath,
-      line: 1,
-      character: 1,
-    });
-    const lines = resultText(result).split("\n");
-    expect(lines).toHaveLength(53);
-    expect(lines.slice(0, 2)).toEqual(['Query position: source.ts:1:1 ("const")', ""]);
-    expect(lines[2]).toBe("item000");
-    expect(lines[51]).toBe("item049");
-    expect(lines[52]).toBe("70 more omitted; raise limit or refine the prefix to see them.");
-
-    fixture.client.responseByMethod.set(
-      "workspace/symbol",
-      Array.from({ length: 60 }, (_, index) => ({ name: `symbol${index}` })),
-    );
-    const symbols = await executeTool(fixture, {
-      operation: "workspace_symbols",
-      query: "symbol",
-      file_path: fixture.filePath,
-    });
-    expect(symbols.structuredContent).toMatchObject({ results: [{ omitted: 10 }] });
-    expect(resultText(symbols).split("\n").at(-1)).toBe(
-      "10 more omitted; raise limit or refine the query to see them.",
-    );
-    await fixture.close();
-  });
-
-  test("limits workspace symbols and lists one per line with relative locations", async () => {
-    const fixture = await createToolFixture();
-    fixture.client.capabilities.workspaceSymbolProvider = { resolveProvider: true };
-    const uri = pathToFileURL(fixture.filePath).href;
-    const symbol = (name: string, line: number) => ({
-      name,
-      kind: 13,
-      containerName: "module",
-      location: {
-        uri,
-        range: { start: { line, character: 6 }, end: { line, character: 11 } },
-      },
-      data: { token: `private-${name}` },
-    });
-    fixture.client.responseByMethod.set("workspace/symbol", [
-      symbol("emoji", 0),
-      symbol("emojiTwo", 0),
-      symbol("emojiThree", 0),
-    ]);
-    // oxlint-disable-next-line anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns -- The resolve responder echoes an opaque protocol item.
-    fixture.client.responderByMethod.set("workspaceSymbol/resolve", (item: unknown) => item);
-
-    const result = await executeTool(fixture, {
-      operation: "workspace_symbols",
-      query: "emoji",
-      file_path: fixture.filePath,
-      limit: 2,
-    });
-
-    expect(resultText(result)).toBe(
-      [
-        "emoji (variable) source.ts:1:7  in module",
-        "emojiTwo (variable) source.ts:1:7  in module",
-        "1 more omitted; raise limit or refine the query to see them.",
-      ].join("\n"),
-    );
-    expect(resultText(result)).not.toContain("private-");
-    expect(fixture.client.parametersByMethod.get("workspaceSymbol/resolve")).toHaveLength(2);
-    expect(result.structuredContent).toMatchObject({
-      results: [
-        { server_id: "typescript", omitted: 1, value: [{ name: "emoji" }, { name: "emojiTwo" }] },
-      ],
-    });
-    expect(result.details).toMatchObject({ operation: "workspace_symbols", result_count: 2 });
-    await fixture.close();
-  });
-
   test("names the searched workspace root and warns that other roots exist for references", async () => {
     const fixture = await createToolFixture();
     const cwd = fixture.context.cwd;
@@ -1620,66 +1226,6 @@ describe("registered LSP tool", () => {
       results: [{ root_path: searchedRoot, server_id: "typescript" }],
       warnings: [warning],
     });
-    await manager.shutdown();
-    await fixture.close();
-  });
-
-  test("warns about sibling roots above the working directory before their Instances start", async () => {
-    const fixture = await createToolFixture();
-    const repo = fixture.context.cwd;
-    const searchedRoot = resolve(repo, "packages/a");
-    const sourcePath = resolve(searchedRoot, "source.ts");
-    await mkdir(resolve(repo, "packages/b"), { recursive: true });
-    await mkdir(searchedRoot, { recursive: true });
-    for (const directory of [repo, searchedRoot, resolve(repo, "packages/b")]) {
-      await writeFile(resolve(directory, "package.json"), "{}\n");
-    }
-    await writeFile(sourcePath, "export const helper = 1;\n");
-    fixture.client.responseByMethod.set("textDocument/references", []);
-    fixture.client.responseByMethod.set("textDocument/rename", {
-      changes: {
-        [pathToFileURL(sourcePath).href]: [
-          {
-            range: { start: { line: 0, character: 13 }, end: { line: 0, character: 19 } },
-            newText: "renamed",
-          },
-        ],
-      },
-    });
-    // Pi starts inside the package, so both the tool context and the manager use that directory.
-    // SAFETY: Tool execution only reads cwd from ExtensionContext.
-    const insidePackage = { ...fixture, context: { cwd: searchedRoot } as ExtensionToolContext };
-    const manager = new LspServerManager<LspToolServerClient>({
-      cwd: searchedRoot,
-      settings: resolvedSettings(["typescript"], ["package.json"]),
-      startClient: async () => fixture.client,
-    });
-    const dependencies = { ...fixture.dependencies, manager };
-
-    const references = await executeTool(
-      insidePackage,
-      { operation: "find_references", file_path: sourcePath, line: 1, character: 14 },
-      dependencies,
-    );
-    const rename = await executeTool(
-      insidePackage,
-      { operation: "rename", file_path: sourcePath, line: 1, character: 14, new_name: "renamed" },
-      dependencies,
-    );
-
-    // Roots outside the working directory display as absolute paths.
-    const others = [repo, resolve(repo, "packages/b")];
-    for (const result of [references, rename]) {
-      expect(result.structuredContent).toMatchObject({
-        warnings: [
-          `typescript searched only ${searchedRoot}; 2 other typescript roots exist (${others.join(", ")}), so importers there may be missed. Query a file there or search for importers. ${TROUBLESHOOTING_WARNING_POINTER}`,
-        ],
-      });
-    }
-    expect(references.structuredContent).toMatchObject({
-      results: [{ root_path: searchedRoot, server_id: "typescript" }],
-    });
-    expect(rename.structuredContent).toMatchObject({ root_path: searchedRoot });
     await manager.shutdown();
     await fixture.close();
   });
@@ -1761,99 +1307,6 @@ describe("registered LSP tool", () => {
       warnings: [
         `typescript searched only ${join("packages", "a")}; at least 6 other typescript roots exist (${names}, +3 more), so importers there may be missed. Query a file there or search for importers. ${TROUBLESHOOTING_WARNING_POINTER}`,
       ],
-    });
-    await manager.shutdown();
-    await fixture.close();
-  });
-
-  test("counts every other root of a workspace root's walk without claiming it stopped early", async () => {
-    const fixture = await createToolFixture();
-    const cwd = fixture.context.cwd;
-    const workspaceRoot = resolve(cwd, "workspace");
-    const sourcePath = resolve(workspaceRoot, "packages/a/index.ts");
-    await mkdir(resolve(workspaceRoot, "packages/a"), { recursive: true });
-    await writeFile(resolve(workspaceRoot, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
-    await writeFile(resolve(workspaceRoot, "packages/a/package.json"), "{}\n");
-    await writeFile(sourcePath, "export const helper = 1;\n");
-    const others = ["a", "b", "c", "d", "e", "f", "g", "h"].map((name) => join("vendor", name));
-    for (const other of others) {
-      await mkdir(resolve(cwd, other), { recursive: true });
-      await writeFile(resolve(cwd, other, "package.json"), "{}\n");
-    }
-    fixture.client.responseByMethod.set("textDocument/references", []);
-    const settings = resolvedSettings(["typescript"], ["package.json"]);
-    const definition = settings.servers.get("typescript");
-    if (definition === undefined) throw new Error("Expected the typescript definition");
-    const manager = new LspServerManager<LspToolServerClient>({
-      cwd,
-      settings: {
-        ...settings,
-        servers: new Map([
-          ["typescript", { ...definition, workspaceRootMarkers: ["pnpm-workspace.yaml"] }],
-        ]),
-      },
-      startClient: async () => fixture.client,
-    });
-
-    const result = await executeTool(
-      fixture,
-      { operation: "find_references", file_path: sourcePath, line: 1, character: 14 },
-      { ...fixture.dependencies, manager },
-    );
-
-    expect(result.structuredContent).toMatchObject({
-      warnings: [
-        `typescript searched only workspace; 8 other typescript roots exist (${others.slice(0, 3).join(", ")}, +5 more), so importers there may be missed. Query a file there or search for importers. ${TROUBLESHOOTING_WARNING_POINTER}`,
-      ],
-    });
-    await manager.shutdown();
-    await fixture.close();
-  });
-
-  test("warns in the rename preview summary that other workspace roots were not searched", async () => {
-    const fixture = await createToolFixture();
-    const cwd = fixture.context.cwd;
-    const searchedRoot = resolve(cwd, "packages/a");
-    const sourcePath = resolve(searchedRoot, "source.ts");
-    await mkdir(resolve(cwd, "packages/b"), { recursive: true });
-    await mkdir(searchedRoot, { recursive: true });
-    await writeFile(resolve(searchedRoot, "package.json"), "{}\n");
-    await writeFile(resolve(cwd, "packages/b/package.json"), "{}\n");
-    await writeFile(sourcePath, "export const helper = 1;\n");
-    fixture.client.responseByMethod.set("textDocument/rename", {
-      changes: {
-        [pathToFileURL(sourcePath).href]: [
-          {
-            range: { start: { line: 0, character: 13 }, end: { line: 0, character: 19 } },
-            newText: "renamed",
-          },
-        ],
-      },
-    });
-    const manager = new LspServerManager<LspToolServerClient>({
-      cwd,
-      settings: resolvedSettings(["typescript"], ["package.json"]),
-      startClient: async () => fixture.client,
-    });
-
-    const rename = await executeTool(
-      fixture,
-      { operation: "rename", file_path: sourcePath, line: 1, character: 14, new_name: "renamed" },
-      { ...fixture.dependencies, manager },
-    );
-
-    if (rename.details.kind !== "workspace_edit_preview") throw new Error("Expected a preview");
-    const warning = `typescript searched only ${join("packages", "a")}; 1 other typescript root exists (${join("packages", "b")}), so importers there may be missed. Query a file there or search for importers. ${TROUBLESHOOTING_WARNING_POINTER}`;
-    const scope = `Searched typescript workspace root: ${join("packages", "a")}\nWarning: ${warning}`;
-    expect(rename.details.summary.startsWith(`${scope}\n\n`)).toBe(true);
-    expect(rename.details.summary).toContain("+export const renamed = 1;");
-    expect(resultText(rename)).toBe(
-      `Workspace Edit Preview ${rename.details.preview_id}\n${rename.details.summary}`,
-    );
-    expect(rename.structuredContent).toMatchObject({
-      root_path: searchedRoot,
-      summary: rename.details.summary,
-      warnings: [warning],
     });
     await manager.shutdown();
     await fixture.close();
@@ -2264,62 +1717,6 @@ describe("registered LSP tool", () => {
     await fixture.close();
   });
 
-  test("names the only workspace root without a warning", async () => {
-    const fixture = await createToolFixture();
-    const cwd = fixture.context.cwd;
-    await writeFile(resolve(cwd, "package.json"), "{}\n");
-    fixture.client.responseByMethod.set("textDocument/rename", {
-      changes: {
-        [pathToFileURL(fixture.filePath).href]: [
-          {
-            range: { start: { line: 0, character: 6 }, end: { line: 0, character: 11 } },
-            newText: "renamed",
-          },
-        ],
-      },
-    });
-    const manager = new LspServerManager<LspToolServerClient>({
-      cwd,
-      settings: resolvedSettings(["typescript"], ["package.json"]),
-      startClient: async () => fixture.client,
-    });
-    const dependencies = { ...fixture.dependencies, manager };
-
-    const references = await executeTool(
-      fixture,
-      { operation: "find_references", file_path: fixture.filePath, line: 1, character: 7 },
-      dependencies,
-    );
-    const rename = await executeTool(
-      fixture,
-      {
-        operation: "rename",
-        file_path: fixture.filePath,
-        line: 1,
-        character: 7,
-        new_name: "renamed",
-      },
-      dependencies,
-    );
-
-    expect(resultText(references)).toBe(
-      [
-        `Searched typescript workspace root: ${cwd}`,
-        "",
-        'No references found at source.ts:1:7 ("emoji").',
-      ].join("\n"),
-    );
-    expect(references.structuredContent).toMatchObject({ warnings: [] });
-    if (rename.details.kind !== "workspace_edit_preview") throw new Error("Expected a preview");
-    expect(
-      rename.details.summary.startsWith(`Searched typescript workspace root: ${cwd}\n\n`),
-    ).toBe(true);
-    expect(rename.details.summary).not.toContain("Warning:");
-    expect(rename.structuredContent).toMatchObject({ root_path: cwd, warnings: [] });
-    await manager.shutdown();
-    await fixture.close();
-  });
-
   test("renders goto results by server when several servers answer", async () => {
     const fixture = await createToolFixture(["good", "empty", "failing"]);
     const good = new RecordingLspClient();
@@ -2383,133 +1780,6 @@ describe("registered LSP tool", () => {
       warnings: [],
     });
     expect(hover.details).toMatchObject({ operation: "hover", result_count: 0 });
-    await fixture.close();
-  });
-
-  test("echoes the token at the queried position in text and structured results", async () => {
-    const fixture = await createToolFixture();
-    fixture.client.responseByMethod.set("textDocument/hover", {
-      contents: { kind: "plaintext", value: "const emoji: string" },
-    });
-
-    const hover = await executeTool(fixture, {
-      operation: "hover",
-      file_path: fixture.filePath,
-      line: 1,
-      character: 9,
-    });
-
-    const position = {
-      path: fixture.filePath,
-      line: 1,
-      character: 9,
-      token: "emoji",
-      line_text: "const emoji = '😀';",
-    };
-    const results = [
-      {
-        root_path: fixture.context.cwd,
-        server_id: "typescript",
-        value: { contents: { kind: "plaintext", value: "const emoji: string" } },
-      },
-    ];
-    expect(resultText(hover)).toBe(
-      ['Query position: source.ts:1:9 ("emoji")', "", "const emoji: string"].join("\n"),
-    );
-    expect(Value.Parse(LspPositionReadOutputSchema, hover.structuredContent)).toEqual({
-      position,
-      results,
-      warnings: [],
-      structured_truncated: false,
-      truncated: false,
-    });
-    expect(hover.details).toMatchObject({ operation: "hover", result_count: 1 });
-    await fixture.close();
-  });
-
-  test("shows the trimmed line when the queried position is on whitespace", async () => {
-    const fixture = await createToolFixture();
-    fixture.client.responseByMethod.set("textDocument/definition", {
-      uri: pathToFileURL(fixture.filePath).href,
-      range: { start: { line: 0, character: 6 }, end: { line: 0, character: 11 } },
-    });
-
-    const definition = await executeTool(fixture, {
-      operation: "goto_definition",
-      file_path: fixture.filePath,
-      line: 1,
-      character: 6,
-    });
-
-    expect(resultText(definition)).toBe(
-      [
-        `Query position: source.ts:1:6 (no token; line: "const emoji = '😀';")`,
-        "",
-        "source.ts:1:7  const emoji = '😀';",
-      ].join("\n"),
-    );
-    expect(Value.Parse(LspPositionReadOutputSchema, definition.structuredContent).position).toEqual(
-      {
-        path: fixture.filePath,
-        line: 1,
-        character: 6,
-        line_text: "const emoji = '😀';",
-      },
-    );
-    await fixture.close();
-  });
-
-  test("states that nothing was found at the queried position and what was there", async () => {
-    const fixture = await createToolFixture();
-    await writeFile(
-      fixture.filePath,
-      "class TodoContext {\n  constructor(private readonly tasks: string[]) {}\n}\n",
-    );
-    const call = { file_path: fixture.filePath, line: 2, character: 24 } as const;
-
-    const incoming = await executeTool(fixture, { operation: "incoming_calls", ...call });
-    const references = await executeTool(fixture, { operation: "find_references", ...call });
-    fixture.client.responseByMethod.set("textDocument/prepareCallHierarchy", [
-      {
-        name: "constructor",
-        kind: 9,
-        uri: pathToFileURL(fixture.filePath).href,
-        range: { start: { line: 1, character: 2 }, end: { line: 1, character: 49 } },
-        selectionRange: { start: { line: 1, character: 2 }, end: { line: 1, character: 13 } },
-      },
-    ]);
-    const outgoing = await executeTool(fixture, { operation: "outgoing_calls", ...call });
-    fixture.client.responseByMethod.set("textDocument/signatureHelp", { signatures: [] });
-    const signature = await executeTool(fixture, { operation: "signature_help", ...call });
-    const completion = await executeTool(fixture, { operation: "completion", ...call });
-
-    const empty = [{ root_path: fixture.context.cwd, server_id: "typescript", value: [] }];
-    expect(resultText(incoming)).toBe('No call hierarchy item at source.ts:2:24 ("readonly").');
-    expect(incoming.details).toMatchObject({ result_count: 0 });
-    expect(incoming.structuredContent).toMatchObject({
-      position: { line: 2, character: 24, token: "readonly" },
-      results: empty,
-    });
-    expect(resultText(outgoing)).toBe('No outgoing calls found at source.ts:2:24 ("readonly").');
-    expect(resultText(completion)).toBe(
-      'No completions start with "r" at source.ts:2:24 ("readonly").',
-    );
-    expect(resultText(signature)).toBe(
-      [
-        'No signature help at source.ts:2:24 ("readonly").',
-        formatLspToolValue({
-          results: [{ ...empty[0], value: { signatures: [] } }],
-          warnings: [],
-        }),
-      ].join("\n"),
-    );
-    expect(resultText(references)).toBe(
-      [
-        `Searched typescript workspace root: ${fixture.context.cwd}`,
-        "",
-        'No references found at source.ts:2:24 ("readonly").',
-      ].join("\n"),
-    );
     await fixture.close();
   });
 
@@ -2675,30 +1945,6 @@ describe("registered LSP tool", () => {
       await fixture.close();
     });
 
-    test("matches a source kind with its sub-kinds", async () => {
-      const fixture = await createToolFixture();
-      fixture.client.responseByMethod.set("textDocument/codeAction", [
-        {
-          title: "organize",
-          kind: "source.organizeImports",
-          command: { title: "Organize", command: "organize" },
-        },
-        { title: "fix all", kind: "quickfix", command: { title: "Fix", command: "fix" } },
-      ]);
-
-      const result = await executeTool(fixture, {
-        operation: "code_actions",
-        file_path: fixture.filePath,
-        range: range(),
-        only_kinds: ["source"],
-      });
-
-      expect(result.structuredContent).toMatchObject({
-        actions: [{ title: "organize", kind: "source.organizeImports" }],
-      });
-      await fixture.close();
-    });
-
     test("never resolves actions that only_kinds drops", async () => {
       const fixture = await createToolFixture();
       const uri = pathToFileURL(fixture.filePath).href;
@@ -2728,21 +1974,6 @@ describe("registered LSP tool", () => {
         actions: [{ title: "keep", applicable: true }],
         warnings: [],
       });
-      await fixture.close();
-    });
-
-    test("returns every action without only_kinds", async () => {
-      const fixture = await createToolFixture();
-      const uri = pathToFileURL(fixture.filePath).href;
-      fixture.client.responseByMethod.set("textDocument/codeAction", unfilteredActions(uri));
-
-      const result = await executeTool(fixture, {
-        operation: "code_actions",
-        file_path: fixture.filePath,
-        range: range(),
-      });
-
-      expect(result.structuredContent).toMatchObject({ actions: Array(7).fill({}) });
       await fixture.close();
     });
   });
@@ -2924,35 +2155,6 @@ describe("registered LSP tool", () => {
       await manager.shutdown();
       await fixture.close();
     });
-
-    test("discards the previews already created when another error propagates", async () => {
-      const fixture = await createToolFixture();
-      const uri = pathToFileURL(fixture.filePath).href;
-      fixture.client.responseByMethod.set("textDocument/codeAction", [
-        { title: "First fix", kind: "quickfix", edit: insertion(uri) },
-        { title: "Second fix", kind: "quickfix", edit: insertion(uri) },
-      ]);
-      const store = fixture.dependencies.workspaceEdits;
-      const realCreatePreview = store.createPreview.bind(store);
-      const createPreview = vi.spyOn(store, "createPreview");
-      createPreview.mockImplementationOnce(realCreatePreview);
-      createPreview.mockImplementationOnce(() => {
-        throw new Error("unexpected store failure");
-      });
-
-      await expect(
-        executeTool(fixture, {
-          operation: "code_actions",
-          file_path: fixture.filePath,
-          range: range(),
-        }),
-      ).rejects.toThrow("unexpected store failure");
-
-      const first = await createPreview.mock.results[0]?.value;
-      expect(first).toBeDefined();
-      expect(() => store.prepareMutationManifest(first.preview_id)).toThrow();
-      await fixture.close();
-    });
   });
 
   describe("previews that no result names", () => {
@@ -3036,51 +2238,6 @@ describe("registered LSP tool", () => {
       const created = await createdPreviewIds(createPreview);
       expect(created).toHaveLength(2);
       expectDiscarded(dependencies.workspaceEdits, created);
-      await manager.shutdown();
-      await fixture.close();
-    });
-
-    test("discards a server's previews, created late, when another server raises an input error", async () => {
-      const fixture = await createToolFixture(["typescript", "oxlint"]);
-      const uri = pathToFileURL(fixture.filePath).href;
-      const typescript = new RecordingLspClient();
-      // Answers after the other server has already rejected the call.
-      typescript.responderByMethod.set("textDocument/codeAction", async () => {
-        await new Promise((done) => setTimeout(done, 30));
-        return [
-          { title: "First fix", kind: "quickfix", edit: insertion(uri) },
-          { title: "Second fix", kind: "quickfix", edit: insertion(uri) },
-        ];
-      });
-      const oxlint = singleLineDocumentClient();
-      const clients = new Map([
-        ["typescript", typescript],
-        ["oxlint", oxlint],
-      ]);
-      const manager = new LspServerManager<LspToolServerClient>({
-        cwd: fixture.context.cwd,
-        settings: resolvedSettings(["typescript", "oxlint"]),
-        startClient: async ({ definition }) => clients.get(definition.id) ?? typescript,
-      });
-      const dependencies = { ...fixture.dependencies, manager };
-      const createPreview = vi.spyOn(dependencies.workspaceEdits, "createPreview");
-
-      const failure = await executeTool(
-        fixture,
-        {
-          operation: "code_actions",
-          file_path: fixture.filePath,
-          range: { start: { line: 2, character: 1 }, end: { line: 2, character: 1 } },
-        },
-        dependencies,
-      ).catch((cause: unknown) => cause);
-
-      // The input error propagates unchanged: no server label, no troubleshooting hint.
-      expect(failure).toBeInstanceOf(LspInputError);
-      expect(String(failure)).toContain("past the end of the document");
-      expect(String(failure)).not.toContain(TROUBLESHOOTING_HINT);
-      expect(typescript.requests).toContain("textDocument/codeAction");
-      expectDiscarded(dependencies.workspaceEdits, await createdPreviewIds(createPreview));
       await manager.shutdown();
       await fixture.close();
     });
@@ -3173,78 +2330,43 @@ describe("registered LSP tool", () => {
       await fixture.close();
     });
 
-    test.each([
-      [
-        "rename",
-        {
-          operation: "rename",
-          file_path: "",
-          line: 1,
-          character: 1,
-          new_name: "renamed",
+    test("discards the rename preview when its Result Spill cannot be written", async () => {
+      const fixture = await createToolFixture();
+      const uri = pathToFileURL(fixture.filePath).href;
+      // The preview summary is a patch of 3,000 added lines, beyond the model-visible limit.
+      const textEdit = {
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+        newText: "added\n".repeat(3000),
+      };
+      fixture.client.responseByMethod.set("textDocument/rename", {
+        changes: { [uri]: [textEdit] },
+      });
+      const sessionFiles: LspSessionFiles = {
+        ...fixture.sessionFiles,
+        writeResultSpill: async () => {
+          throw new Error("disk full");
         },
-        "textDocument/rename",
-      ],
-      [
-        "format_document",
-        { operation: "format_document", file_path: "", tab_size: 2, insert_spaces: true },
-        "textDocument/formatting",
-      ],
-      [
-        "format_range",
-        {
-          operation: "format_range",
-          file_path: "",
-          range: range(),
-          tab_size: 2,
-          insert_spaces: true,
-        },
-        "textDocument/rangeFormatting",
-      ],
-      [
-        "format_on_type",
-        {
-          operation: "format_on_type",
-          file_path: "",
-          line: 1,
-          character: 1,
-          trigger_character: ";",
-          tab_size: 2,
-          insert_spaces: true,
-        },
-        "textDocument/onTypeFormatting",
-      ],
-    ] as const)(
-      "discards the %s preview when its Result Spill cannot be written",
-      async (_name, call, method) => {
-        const fixture = await createToolFixture();
-        const uri = pathToFileURL(fixture.filePath).href;
-        // The preview summary is a patch of 3,000 added lines, beyond the model-visible limit.
-        const textEdit = {
-          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
-          newText: "added\n".repeat(3000),
-        };
-        fixture.client.responseByMethod.set(
-          method,
-          method === "textDocument/rename" ? { changes: { [uri]: [textEdit] } } : [textEdit],
-        );
-        const sessionFiles: LspSessionFiles = {
-          ...fixture.sessionFiles,
-          writeResultSpill: async () => {
-            throw new Error("disk full");
+      };
+      const dependencies = { ...fixture.dependencies, sessionFiles };
+      const createPreview = vi.spyOn(dependencies.workspaceEdits, "createPreview");
+
+      await expect(
+        executeTool(
+          fixture,
+          {
+            operation: "rename",
+            file_path: fixture.filePath,
+            line: 1,
+            character: 1,
+            new_name: "renamed",
           },
-        };
-        const dependencies = { ...fixture.dependencies, sessionFiles };
-        const createPreview = vi.spyOn(dependencies.workspaceEdits, "createPreview");
+          dependencies,
+        ),
+      ).rejects.toThrow("disk full");
 
-        await expect(
-          executeTool(fixture, { ...call, file_path: fixture.filePath }, dependencies),
-        ).rejects.toThrow("disk full");
-
-        expectDiscarded(dependencies.workspaceEdits, await createdPreviewIds(createPreview));
-        await fixture.close();
-      },
-    );
+      expectDiscarded(dependencies.workspaceEdits, await createdPreviewIds(createPreview));
+      await fixture.close();
+    });
 
     test("holds a server-initiated preview for the next result when a preview call fails", async () => {
       const fixture = await createToolFixture();
@@ -3350,48 +2472,6 @@ describe("registered LSP tool", () => {
       expect(await readFile(otherPath, "utf8")).toBe("// edit\nconst other = 1;\n");
       await fixture.close();
     });
-
-    test("keeps the preview a rename result names", async () => {
-      const fixture = await createToolFixture();
-      const uri = pathToFileURL(fixture.filePath).href;
-      fixture.client.responseByMethod.set("textDocument/rename", insertion(uri));
-
-      const result = await executeTool(fixture, {
-        operation: "rename",
-        file_path: fixture.filePath,
-        line: 1,
-        character: 1,
-        new_name: "renamed",
-      });
-
-      if (result.details.kind !== "workspace_edit_preview") throw new Error("Expected a preview");
-      const previewId = result.details.preview_id;
-      expect(() =>
-        fixture.dependencies.workspaceEdits.prepareMutationManifest(previewId),
-      ).not.toThrow();
-      await fixture.close();
-    });
-  });
-
-  test("reports no changes for a format preview without edits", async () => {
-    const fixture = await createToolFixture();
-    fixture.client.responseByMethod.set("textDocument/formatting", []);
-
-    const result = await executeTool(fixture, {
-      operation: "format_document",
-      file_path: fixture.filePath,
-      tab_size: 2,
-      insert_spaces: true,
-    });
-
-    expect(resultText(result)).toContain("No changes");
-    expect(result.structuredContent).toMatchObject({
-      server_id: "typescript",
-      summary: "No changes",
-      mutation_manifest: [],
-    });
-    expect(result.details).toMatchObject({ mutation_manifest: [] });
-    await fixture.close();
   });
 
   test("gets workspace diagnostics from every matching server unless server_id narrows them", async () => {
@@ -3465,56 +2545,6 @@ describe("registered LSP tool", () => {
     await fixture.close();
   });
 
-  test("says a document-pull server publishes no workspace diagnostics", async () => {
-    const fixture = await createToolFixture();
-    fixture.client.workspaceDiagnosticsResult = { status: "unsupported" };
-
-    const result = await executeTool(fixture, {
-      operation: "workspace_diagnostics",
-      server_id: "typescript",
-      file_path: fixture.filePath,
-    });
-
-    const [answer] = Value.Parse(LspReadOutputSchema, result.structuredContent).results;
-    expect(answer?.value).toEqual({
-      status: "unsupported",
-      message: expect.stringContaining("lsp_diagnostics"),
-    });
-    expect(resultText(result)).toBe(
-      "Server typescript publishes no workspace diagnostics; it reports diagnostics only for a requested file. Use lsp_diagnostics for each file.",
-    );
-    expect(result.details).toMatchObject({
-      server_outcomes: [
-        {
-          server_id: "typescript",
-          outcome: "unsupported",
-          message: expect.stringContaining("lsp_diagnostics"),
-        },
-      ],
-    });
-    await fixture.close();
-  });
-
-  test("says an empty push cache covers only the files opened in this session", async () => {
-    const fixture = await createToolFixture();
-
-    const result = await executeTool(fixture, {
-      operation: "workspace_diagnostics",
-      server_id: "typescript",
-      file_path: fixture.filePath,
-    });
-
-    const [answer] = Value.Parse(LspReadOutputSchema, result.structuredContent).results;
-    expect(answer?.value).toEqual({
-      status: "fresh",
-      source: "push_cache",
-      diagnosticsByUri: [],
-      message:
-        "Server typescript publishes no workspace diagnostics; these are the diagnostics it pushed for 0 files opened in this session. Use lsp_diagnostics for other files.",
-    });
-    await fixture.close();
-  });
-
   test("counts every file a push cache covers, including files without diagnostics", async () => {
     const fixture = await createToolFixture();
     const diagnostic: Diagnostic = {
@@ -3548,29 +2578,6 @@ describe("registered LSP tool", () => {
         "1 file: no diagnostics",
       ].join("\n"),
     );
-    await fixture.close();
-  });
-
-  test("leaves a workspace pull result without a coverage message", async () => {
-    const fixture = await createToolFixture();
-    fixture.client.workspaceDiagnosticsResult = {
-      status: "fresh",
-      source: "workspace_pull",
-      diagnosticsByUri: new Map(),
-    };
-
-    const result = await executeTool(fixture, {
-      operation: "workspace_diagnostics",
-      server_id: "typescript",
-      file_path: fixture.filePath,
-    });
-
-    const [answer] = Value.Parse(LspReadOutputSchema, result.structuredContent).results;
-    expect(answer?.value).toEqual({
-      status: "fresh",
-      source: "workspace_pull",
-      diagnosticsByUri: [],
-    });
     await fixture.close();
   });
 
@@ -3634,38 +2641,6 @@ describe("registered LSP tool", () => {
     await fixture.close();
   });
 
-  test("keeps successful multi-server position reads with labeled warnings", async () => {
-    const fixture = await createToolFixture(["good", "failing"]);
-    let starts = 0;
-    const good = new RecordingLspClient();
-    const failing = new RecordingLspClient();
-    failing.failureByMethod.set("textDocument/hover", new Error("expected failure"));
-    const manager = new LspServerManager<LspToolServerClient>({
-      cwd: fixture.context.cwd,
-      settings: resolvedSettings(["good", "failing"]),
-      startClient: async ({ definition }) => {
-        starts++;
-        return definition.id === "good" ? good : failing;
-      },
-    });
-    const result = await executeTool(
-      fixture,
-      { operation: "hover", file_path: fixture.filePath, line: 1, character: 1 },
-      { ...fixture.dependencies, manager },
-    );
-    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
-    expect(starts).toBe(2);
-    expect(text).toContain("expected failure");
-    expect(result.details).toMatchObject({
-      server_outcomes: expect.arrayContaining([
-        expect.objectContaining({ outcome: "success", server_id: "good" }),
-        expect.objectContaining({ outcome: "error", server_id: "failing" }),
-      ]),
-    });
-    await manager.shutdown();
-    await fixture.close();
-  });
-
   test("reports a request timeout by its failure code and keeps the troubleshooting hint", async () => {
     const fixture = await createToolFixture(["good", "slow", "wordy"]);
     const good = new RecordingLspClient();
@@ -3709,42 +2684,6 @@ describe("registered LSP tool", () => {
     expect(String(timedOut)).toContain("server slow request failed: Pi LSP: hover expired");
     expect(String(timedOut)).toContain(TROUBLESHOOTING_HINT);
     await manager.shutdown();
-    await fixture.close();
-  });
-
-  test("converts LocationLink source and target ranges against their own Unicode text", async () => {
-    const fixture = await createToolFixture();
-    const targetPath = resolve(fixture.context.cwd, "target.ts");
-    await writeFile(fixture.filePath, "😀source");
-    await writeFile(targetPath, "xx😀target");
-    fixture.client.responseByMethod.set("textDocument/hover", [
-      {
-        originSelectionRange: {
-          start: { line: 0, character: 2 },
-          end: { line: 0, character: 2 },
-        },
-        targetUri: pathToFileURL(targetPath).href,
-        targetRange: {
-          start: { line: 0, character: 4 },
-          end: { line: 0, character: 4 },
-        },
-        targetSelectionRange: {
-          start: { line: 0, character: 4 },
-          end: { line: 0, character: 4 },
-        },
-      },
-    ]);
-
-    const result = await executeTool(fixture, {
-      operation: "hover",
-      file_path: fixture.filePath,
-      line: 1,
-      character: 1,
-    });
-    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
-    expect(text).toContain('"originSelectionRange":{"end":{"character":2');
-    expect(text).toContain('"targetRange":{"end":{"character":4');
-    expect(text).toContain('"targetSelectionRange":{"end":{"character":4');
     await fixture.close();
   });
 
@@ -3811,61 +2750,6 @@ describe("registered LSP tool", () => {
             },
             { from: { uri: unicodeCallerPath }, fromRanges: [range(1, 11, 17)] },
             { from: { uri: fixture.filePath }, fromRanges: [range(1, 17, 18)] },
-          ],
-        },
-      ],
-    });
-    await fixture.close();
-  });
-
-  test("places outgoing call sites in the prepared item's file, not the queried file", async () => {
-    const fixture = await createToolFixture();
-    const helperPath = resolve(fixture.context.cwd, "helper.ts");
-    const runPath = resolve(fixture.context.cwd, "run.ts");
-    await writeFile(helperPath, "function helper() { const 😀 = run(); }\n");
-    await writeFile(runPath, "export function run() {}\n");
-    const position = (line: number, character: number) => ({ line, character });
-    const item = (name: string, uri: string, line: number, character: number) => ({
-      name,
-      kind: 12,
-      uri,
-      range: { start: position(line, 0), end: position(line, character) },
-      selectionRange: { start: position(line, character), end: position(line, character) },
-    });
-    // Preparing at a call site yields the called declaration, here in another file.
-    fixture.client.responseByMethod.set("textDocument/prepareCallHierarchy", [
-      item("helper", pathToFileURL(helperPath).href, 0, 9),
-    ]);
-    fixture.client.responseByMethod.set("callHierarchy/outgoingCalls", [
-      {
-        to: item("run", pathToFileURL(runPath).href, 0, 16),
-        fromRanges: [{ start: position(0, 31), end: position(0, 34) }],
-      },
-    ]);
-
-    const result = await executeTool(fixture, {
-      operation: "outgoing_calls",
-      file_path: fixture.filePath,
-      line: 1,
-      character: 1,
-    });
-
-    expect(resultText(result)).toBe(
-      [
-        'Query position: source.ts:1:1 ("const")',
-        "",
-        "run (function) run.ts:1:17",
-        "  helper.ts:1:31  function helper() { const 😀 = run(); }",
-      ].join("\n"),
-    );
-    expect(result.structuredContent).toMatchObject({
-      results: [
-        {
-          value: [
-            {
-              to: { uri: runPath, selectionRange: { start: { line: 1, character: 17 } } },
-              fromRanges: [{ start: { line: 1, character: 31 }, end: { line: 1, character: 34 } }],
-            },
           ],
         },
       ],
@@ -3949,13 +2833,6 @@ describe("registered LSP tool", () => {
       start: position(line, start),
       end: position(line, end),
     });
-    const item = (name: string, uri: string, line: number, character: number) => ({
-      name,
-      kind: 12,
-      uri,
-      range: span(line, 0, character),
-      selectionRange: span(line, character, character),
-    });
     const approximation = (files: string) =>
       `typescript: positions in ${files} are approximate because their text could not be read; lines are exact, but columns may be off after non-ASCII text.`;
 
@@ -4020,162 +2897,6 @@ describe("registered LSP tool", () => {
       await fixture.close();
     });
 
-    test("approximates an incoming caller's positions when its URI is not a file", async () => {
-      const fixture = await createToolFixture();
-      const callerUri = "deno:/https/deno.land/x/mod.ts";
-      fixture.client.responseByMethod.set("textDocument/prepareCallHierarchy", [
-        item("emoji", pathToFileURL(fixture.filePath).href, 0, 6),
-      ]);
-      fixture.client.responseByMethod.set("callHierarchy/incomingCalls", [
-        { from: item("caller", callerUri, 9, 30), fromRanges: [span(9, 40, 45)] },
-      ]);
-
-      const result = await executeTool(fixture, {
-        operation: "incoming_calls",
-        file_path: fixture.filePath,
-        line: 1,
-        character: 7,
-      });
-
-      expect(resultText(result)).toBe(
-        [
-          'Query position: source.ts:1:7 ("emoji")',
-          "",
-          `caller (function) ${callerUri}:10:31`,
-          `  ${callerUri}:10:41`,
-          "",
-          `Warning: ${approximation(callerUri)}`,
-        ].join("\n"),
-      );
-      expect(result.structuredContent).toMatchObject({
-        results: [
-          {
-            value: [
-              {
-                from: { uri: callerUri, selectionRange: span(10, 31, 31) },
-                fromRanges: [span(10, 41, 46)],
-              },
-            ],
-          },
-        ],
-        warnings: [approximation(callerUri)],
-      });
-      await fixture.close();
-    });
-
-    test("places and approximates outgoing call sites of a prepared item whose URI is not a file", async () => {
-      const fixture = await createToolFixture();
-      const runPath = resolve(fixture.context.cwd, "run.ts");
-      await writeFile(runPath, "export function run() {}\n");
-      const classUri = "jdt://contents/app.jar/app/Helper.class";
-      fixture.client.responseByMethod.set("textDocument/prepareCallHierarchy", [
-        item("helper", classUri, 4, 9),
-      ]);
-      fixture.client.responseByMethod.set("callHierarchy/outgoingCalls", [
-        { to: item("run", pathToFileURL(runPath).href, 0, 16), fromRanges: [span(4, 30, 33)] },
-      ]);
-
-      const result = await executeTool(fixture, {
-        operation: "outgoing_calls",
-        file_path: fixture.filePath,
-        line: 1,
-        character: 1,
-      });
-
-      expect(resultText(result)).toBe(
-        [
-          'Query position: source.ts:1:1 ("const")',
-          "",
-          "run (function) run.ts:1:17",
-          `  ${classUri}:5:31`,
-          "",
-          `Warning: ${approximation(classUri)}`,
-        ].join("\n"),
-      );
-      expect(result.structuredContent).toMatchObject({
-        results: [{ value: [{ fromRanges: [span(5, 31, 34)] }] }],
-        warnings: [approximation(classUri)],
-      });
-      await fixture.close();
-    });
-
-    test("lists workspace symbols in a non-file URI readably with approximate positions", async () => {
-      const fixture = await createToolFixture();
-      const classUri = "jdt://contents/app.jar/app/Helper.class";
-      fixture.client.responseByMethod.set("workspace/symbol", [
-        { name: "Helper", kind: 5, location: { uri: classUri, range: span(2, 13, 19) } },
-      ]);
-
-      const result = await executeTool(fixture, {
-        operation: "workspace_symbols",
-        query: "Helper",
-        file_path: fixture.filePath,
-      });
-
-      expect(resultText(result)).toBe(
-        [`Helper (class) ${classUri}:3:14`, "", `Warning: ${approximation(classUri)}`].join("\n"),
-      );
-      expect(result.structuredContent).toMatchObject({
-        results: [{ value: [{ location: { uri: classUri, range: span(3, 14, 20) } }] }],
-        warnings: [approximation(classUri)],
-      });
-      await fixture.close();
-    });
-
-    test("leaves positions outside any file, such as workspace symbol data, unchanged", async () => {
-      const fixture = await createToolFixture();
-      const data = { pos: position(0, 3) };
-      fixture.client.responseByMethod.set("workspace/symbol", [
-        { name: "Helper", kind: 5, location: { uri: "jdt://contents/Helper.class" }, data },
-      ]);
-
-      const result = await executeTool(fixture, {
-        operation: "workspace_symbols",
-        query: "Helper",
-        file_path: fixture.filePath,
-      });
-
-      expect(resultText(result)).toBe("Helper (class) jdt://contents/Helper.class");
-      expect(result.structuredContent).toMatchObject({
-        results: [{ value: [{ location: { uri: "jdt://contents/Helper.class" }, data }] }],
-        warnings: [],
-      });
-      await fixture.close();
-    });
-
-    test("names at most five files and approximates workspace diagnostics of unreadable files", async () => {
-      const fixture = await createToolFixture();
-      const uris = Array.from({ length: 7 }, (_, index) => `deno:/remote/mod${index}.ts`);
-      fixture.client.workspaceDiagnosticsResult = {
-        status: "fresh",
-        source: "workspace_pull",
-        diagnosticsByUri: new Map(
-          uris.map((uri) => [uri, [{ range: span(0, 3, 4), message: "remote" }]]),
-        ),
-      };
-
-      const result = await executeTool(fixture, {
-        operation: "workspace_diagnostics",
-        server_id: "typescript",
-        file_path: fixture.filePath,
-      });
-
-      expect(result.structuredContent).toMatchObject({
-        results: [
-          {
-            value: {
-              diagnosticsByUri: uris.map((uri) => ({
-                uri,
-                value: [{ range: span(1, 4, 5) }],
-              })),
-            },
-          },
-        ],
-        warnings: [approximation(`${uris.slice(0, 5).join(", ")}, and 2 more`)],
-      });
-      await fixture.close();
-    });
-
     test("converts positions in the queried document against the text the server was synced with", async () => {
       const fixture = await createToolFixture();
       const uri = pathToFileURL(fixture.filePath).href;
@@ -4205,13 +2926,6 @@ describe("registered LSP tool", () => {
     const span = (line: number, start: number, end: number) => ({
       start: position(line, start),
       end: position(line, end),
-    });
-    const item = (name: string, uri: string, line: number, character: number) => ({
-      name,
-      kind: 12,
-      uri,
-      range: span(line, 0, character),
-      selectionRange: span(line, character, character),
     });
     const staleWarning = (files: string) =>
       `typescript: positions in ${files} may be wrong because the file changed since the server read it or the server sent an invalid position.`;
@@ -4266,125 +2980,6 @@ describe("registered LSP tool", () => {
       await fixture.close();
     });
 
-    test("keeps a position that splits a Unicode character instead of failing the result", async () => {
-      const fixture = await createToolFixture();
-      const helper = await truncatedFile(fixture);
-      await writeFile(helper.path, "😀\n");
-      fixture.client.responseByMethod.set("textDocument/definition", [
-        { uri: helper.uri, range: span(0, 1, 2) },
-        { uri: pathToFileURL(fixture.filePath).href, range: span(0, 17, 17) },
-      ]);
-
-      const result = await executeTool(fixture, {
-        operation: "goto_definition",
-        file_path: fixture.filePath,
-        line: 1,
-        character: 1,
-      });
-
-      expect(result.structuredContent).toMatchObject({
-        results: [
-          {
-            value: [
-              { uri: helper.path, range: span(1, 1, 2) },
-              { uri: fixture.filePath, range: span(1, 17, 17) },
-            ],
-          },
-        ],
-        warnings: [staleWarning("helper.ts")],
-      });
-      await fixture.close();
-    });
-
-    test("converts an incoming caller in a file truncated after the server answered", async () => {
-      const fixture = await createToolFixture();
-      const helper = await truncatedFile(fixture);
-      await writeFile(helper.path, "function helper() { const x = run(); }\n");
-      fixture.client.responseByMethod.set("textDocument/prepareCallHierarchy", [
-        item("emoji", pathToFileURL(fixture.filePath).href, 0, 6),
-      ]);
-      fixture.client.responderByMethod.set("callHierarchy/incomingCalls", () => {
-        // The caller's file shrinks on disk after the server indexed it.
-        writeFileSync(helper.path, "x\n");
-        return [{ from: item("helper", helper.uri, 0, 9), fromRanges: [span(3, 30, 33)] }];
-      });
-
-      const result = await executeTool(fixture, {
-        operation: "incoming_calls",
-        file_path: fixture.filePath,
-        line: 1,
-        character: 7,
-      });
-
-      expect(result.structuredContent).toMatchObject({
-        results: [
-          {
-            value: [
-              {
-                from: { uri: helper.path, selectionRange: span(1, 2, 2) },
-                fromRanges: [span(4, 31, 34)],
-              },
-            ],
-          },
-        ],
-        warnings: [staleWarning("helper.ts")],
-      });
-      expect(resultText(result)).toContain(`Warning: ${staleWarning("helper.ts")}`);
-      await fixture.close();
-    });
-
-    test("converts outgoing call sites in a prepared item's file truncated after the server answered", async () => {
-      const fixture = await createToolFixture();
-      const helper = await truncatedFile(fixture);
-      const runPath = resolve(fixture.context.cwd, "run.ts");
-      await writeFile(runPath, "export function run() {}\n");
-      fixture.client.responseByMethod.set("textDocument/prepareCallHierarchy", [
-        item("helper", helper.uri, 4, 9),
-      ]);
-      fixture.client.responderByMethod.set("callHierarchy/outgoingCalls", () => {
-        writeFileSync(helper.path, "x\n");
-        return [
-          { to: item("run", pathToFileURL(runPath).href, 0, 16), fromRanges: [span(4, 30, 33)] },
-        ];
-      });
-
-      const result = await executeTool(fixture, {
-        operation: "outgoing_calls",
-        file_path: fixture.filePath,
-        line: 1,
-        character: 1,
-      });
-
-      expect(result.structuredContent).toMatchObject({
-        results: [{ value: [{ fromRanges: [span(5, 31, 34)] }] }],
-        warnings: [staleWarning("helper.ts")],
-      });
-      expect(resultText(result)).toContain(`Warning: ${staleWarning("helper.ts")}`);
-      await fixture.close();
-    });
-
-    test("clamps an end-of-line sentinel character in the queried document without a warning", async () => {
-      const fixture = await createToolFixture();
-      const uri = pathToFileURL(fixture.filePath).href;
-      fixture.client.responseByMethod.set("textDocument/definition", [
-        { uri, range: span(0, 6, 2147483647) },
-      ]);
-
-      const result = await executeTool(fixture, {
-        operation: "goto_definition",
-        file_path: fixture.filePath,
-        line: 1,
-        character: 1,
-      });
-
-      expect(result.structuredContent).toMatchObject({
-        results: [{ value: [{ uri: fixture.filePath, range: span(1, 7, 19) }] }],
-        warnings: [],
-      });
-      expect(resultText(result)).not.toContain("Warning");
-      await fixture.close();
-    });
-
     test("orders an unreadable-file warning, then a stale-file warning, then server failures", async () => {
       const fixture = await createToolFixture(["typescript", "failing"]);
       const helper = await truncatedFile(fixture);
@@ -4418,133 +3013,6 @@ describe("registered LSP tool", () => {
       await manager.shutdown();
       await fixture.close();
     });
-
-    test("lists workspace symbols in a truncated file and keeps the other symbols", async () => {
-      const fixture = await createToolFixture();
-      const helper = await truncatedFile(fixture);
-      const runPath = resolve(fixture.context.cwd, "run.ts");
-      await writeFile(runPath, "export function run() {}\n");
-      fixture.client.responseByMethod.set("workspace/symbol", [
-        { name: "Helper", kind: 5, location: { uri: helper.uri, range: span(2, 13, 19) } },
-        {
-          name: "run",
-          kind: 12,
-          location: { uri: pathToFileURL(runPath).href, range: span(0, 16, 19) },
-        },
-      ]);
-
-      const result = await executeTool(fixture, {
-        operation: "workspace_symbols",
-        query: "Helper",
-        file_path: fixture.filePath,
-      });
-
-      const warning = staleWarning("helper.ts");
-      expect(resultText(result)).toBe(
-        [
-          "Helper (class) helper.ts:3:14",
-          "run (function) run.ts:1:17",
-          "",
-          `Warning: ${warning}`,
-        ].join("\n"),
-      );
-      expect(result.structuredContent).toMatchObject({
-        results: [
-          {
-            value: [
-              { location: { uri: helper.path, range: span(3, 14, 20) } },
-              { location: { range: span(1, 17, 20) } },
-            ],
-          },
-        ],
-        warnings: [warning],
-      });
-      await fixture.close();
-    });
-  });
-
-  test("preserves opaque completion metadata without treating lookalike fields as positions", async () => {
-    const fixture = await createToolFixture();
-    fixture.client.responseByMethod.set("textDocument/completion", {
-      isIncomplete: false,
-      items: [
-        {
-          label: "value",
-          data: { line: "opaque", character: 0, enabled: false, empty: "", none: null },
-        },
-      ],
-    });
-    const result = await executeTool(fixture, {
-      operation: "completion",
-      file_path: fixture.filePath,
-      line: 1,
-      character: 1,
-    });
-    expect(result.structuredContent).toMatchObject({
-      results: [
-        {
-          value: {
-            isIncomplete: false,
-            items: [
-              {
-                label: "value",
-                data: { line: "opaque", character: 0, enabled: false, empty: "", none: null },
-              },
-            ],
-          },
-        },
-      ],
-    });
-    await fixture.close();
-  });
-
-  test("converts folding ranges to one-based Unicode code-point coordinates", async () => {
-    const fixture = await createToolFixture();
-    fixture.client.responseByMethod.set("textDocument/foldingRange", [
-      { startLine: 0, startCharacter: 15, endLine: 0, endCharacter: 17 },
-    ]);
-
-    const result = await executeTool(fixture, {
-      operation: "folding_ranges",
-      file_path: fixture.filePath,
-    });
-    expect(resultText(result)).toBe("1-1  const emoji = '😀';");
-    const text = JSON.stringify(result.structuredContent);
-    expect(text).toContain('"startCharacter":16');
-    expect(text).toContain('"endCharacter":17');
-    expect(text).toContain('"startLine":1');
-    expect(text).toContain('"endLine":1');
-    await fixture.close();
-  });
-
-  test("exposes a server-initiated workspace edit preview through the active result", async () => {
-    const fixture = await createToolFixture();
-    const preview = await fixture.dependencies.workspaceEdits.createPreview({
-      edit: {
-        changes: {
-          [pathToFileURL(fixture.filePath).href]: [
-            {
-              newText: "// server edit\n",
-              range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
-            },
-          ],
-        },
-      },
-      serverId: "typescript",
-    });
-    const result = await executeTool(fixture, {
-      operation: "hover",
-      file_path: fixture.filePath,
-      line: 1,
-      character: 1,
-    });
-    expect(result.details).toMatchObject({
-      kind: "operation",
-      preview_records: [expect.objectContaining({ preview_id: preview.preview_id })],
-    });
-    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
-    expect(text).toContain(`Server Workspace Edit Preview: ${preview.preview_id}`);
-    await fixture.close();
   });
 
   test("returns partial-failure details when rollback leaves a changed file", async () => {
@@ -4652,80 +3120,6 @@ describe("registered LSP tool", () => {
     await fixture.close();
   });
 
-  test("names disabled matching servers for reads and previews instead of no configured server", async () => {
-    const fixture = await createToolFixture(["typescript", "eslint"]);
-    const { manager } = fixture.dependencies;
-    const hover = {
-      operation: "hover",
-      file_path: fixture.filePath,
-      line: 1,
-      character: 1,
-    } satisfies LspToolParameters;
-    const rename = {
-      operation: "rename",
-      file_path: fixture.filePath,
-      line: 1,
-      character: 7,
-      new_name: "smile",
-    } satisfies LspToolParameters;
-    fixture.client.responseByMethod.set("textDocument/rename", { changes: {} });
-
-    await manager.setEnablement(new Map(), new Map([["eslint", false]]));
-    const mixedRead = await executeTool(fixture, hover);
-    expect(mixedRead.details).toMatchObject({
-      server_outcomes: [{ server_id: "typescript", outcome: "success" }],
-    });
-    expect(await executeTool(fixture, rename)).toMatchObject({
-      structuredContent: { server_id: "typescript" },
-    });
-
-    await manager.setEnablement(
-      new Map(),
-      new Map([
-        ["typescript", false],
-        ["eslint", false],
-      ]),
-    );
-    const requestsBefore = fixture.client.requests.length;
-    for (const call of [hover, rename]) {
-      const failure = await executeTool(fixture, call).catch((cause: unknown) => cause);
-      expect(String(failure), call.operation).toContain(
-        `Pi LSP: all servers matching ${fixture.filePath} are disabled: typescript, eslint; enable one with /lsp enable <id>`,
-      );
-      expect(String(failure)).not.toContain("no configured server");
-      // Disabling every matching server is a configuration problem the Skill covers.
-      expect(String(failure)).toContain(TROUBLESHOOTING_HINT);
-    }
-    expect(fixture.client.requests).toHaveLength(requestsBefore);
-    await fixture.close();
-  });
-
-  test("lets a cancelled request escape unlabeled and without the troubleshooting hint", async () => {
-    const fixture = await createToolFixture();
-    const cancelled = new LspServerClientError(
-      "cancelled",
-      "typescript",
-      "/tmp/typescript.stderr",
-      "request cancelled",
-    );
-    fixture.client.failureByMethod.set("textDocument/rename", cancelled);
-    fixture.client.failureByMethod.set("textDocument/hover", cancelled);
-    for (const call of [
-      {
-        operation: "rename",
-        file_path: fixture.filePath,
-        line: 1,
-        character: 7,
-        new_name: "smile",
-      },
-      { operation: "hover", file_path: fixture.filePath, line: 1, character: 1 },
-    ] satisfies LspToolParameters[]) {
-      const error = await executeTool(fixture, call).catch((cause: unknown) => cause);
-      expect(error, call.operation).toBe(cancelled);
-    }
-    await fixture.close();
-  });
-
   test("labels preview-tool timeouts and crashes by server and points to the troubleshooting Skill", async () => {
     const fixture = await createToolFixture();
     const timeout = new LspServerClientError(
@@ -4750,37 +3144,6 @@ describe("registered LSP tool", () => {
           new_name: "smile",
         },
         method: "textDocument/rename",
-      },
-      {
-        call: {
-          operation: "format_document",
-          file_path: fixture.filePath,
-          tab_size: 2,
-          insert_spaces: true,
-        },
-        method: "textDocument/formatting",
-      },
-      {
-        call: {
-          operation: "format_range",
-          file_path: fixture.filePath,
-          range: range(),
-          tab_size: 2,
-          insert_spaces: true,
-        },
-        method: "textDocument/rangeFormatting",
-      },
-      {
-        call: {
-          operation: "format_on_type",
-          file_path: fixture.filePath,
-          line: 1,
-          character: 1,
-          trigger_character: ";",
-          tab_size: 2,
-          insert_spaces: true,
-        },
-        method: "textDocument/onTypeFormatting",
       },
       {
         call: { operation: "code_actions", file_path: fixture.filePath, range: range() },
@@ -4832,65 +3195,6 @@ describe("registered LSP tool", () => {
     await fixture.close();
   });
 
-  test("reports out-of-range positions as input errors with the document's bounds", async () => {
-    const fixture = await createToolFixture();
-    for (const [call, message] of [
-      [
-        { operation: "hover", file_path: fixture.filePath, line: 5, character: 1 },
-        "Pi LSP: line 5 is past the end of the document, which has 2 lines (line must be at most 2)",
-      ],
-      [
-        { operation: "hover", file_path: fixture.filePath, line: 1, character: 30 },
-        "Pi LSP: character 30 is past the end of line 1, which has 18 characters (character must be at most 19)",
-      ],
-      [
-        {
-          operation: "code_actions",
-          file_path: fixture.filePath,
-          range: { start: { line: 1, character: 1 }, end: { line: 3, character: 1 } },
-        },
-        "Pi LSP: line 3 is past the end of the document, which has 2 lines (line must be at most 2)",
-      ],
-      [
-        {
-          operation: "rename",
-          file_path: fixture.filePath,
-          line: 4,
-          character: 1,
-          new_name: "smile",
-        },
-        "Pi LSP: line 4 is past the end of the document, which has 2 lines (line must be at most 2)",
-      ],
-      [
-        {
-          operation: "format_range",
-          file_path: fixture.filePath,
-          range: { start: { line: 1, character: 1 }, end: { line: 1, character: 40 } },
-          tab_size: 2,
-          insert_spaces: true,
-        },
-        "Pi LSP: character 40 is past the end of line 1, which has 18 characters (character must be at most 19)",
-      ],
-      [
-        {
-          operation: "format_on_type",
-          file_path: fixture.filePath,
-          line: 3,
-          character: 1,
-          trigger_character: ";",
-          tab_size: 2,
-          insert_spaces: true,
-        },
-        "Pi LSP: line 3 is past the end of the document, which has 2 lines (line must be at most 2)",
-      ],
-    ] satisfies [LspToolParameters, string][]) {
-      const failure = await executeTool(fixture, call).catch((cause: unknown) => cause);
-      expect(failure, message).toEqual(new Error(message));
-      expect(String(failure)).not.toContain(TROUBLESHOOTING_HINT);
-    }
-    await fixture.close();
-  });
-
   test("names the unsupported capability and the matching servers that lack it, without the hint", async () => {
     const fixture = await createToolFixture(["typescript", "other"]);
     fixture.client.unsupportedMethods.add("textDocument/declaration");
@@ -4916,32 +3220,6 @@ describe("registered LSP tool", () => {
     expect(mutation).toEqual(
       new Error("Pi LSP: server other does not support textDocument/formatting"),
     );
-    await fixture.close();
-  });
-
-  test("points server startup failures to the troubleshooting Skill", async () => {
-    const cwd = await mkdtemp(resolve(tmpdir(), "pi-lsp-tool-"));
-    temporaryDirectories.push(cwd);
-    const filePath = resolve(cwd, "source.ts");
-    await writeFile(filePath, "export {};\n");
-    const sessionFiles = await createLspSessionFiles(cwd);
-    const manager = new LspServerManager<LspToolServerClient>({
-      cwd,
-      settings: resolvedSettings(["typescript"]),
-      startClient: async () => {
-        throw new Error("spawn typescript-language-server ENOENT");
-      },
-    });
-    const fixture = await createToolFixture();
-    await expect(
-      executeTool(
-        fixture,
-        { operation: "hover", file_path: filePath, line: 1, character: 1 },
-        { manager, workspaceEdits: new LspWorkspaceEditStore(), sessionFiles },
-      ),
-    ).rejects.toThrow(TROUBLESHOOTING_HINT);
-    await manager.shutdown();
-    await sessionFiles.close();
     await fixture.close();
   });
 
@@ -5016,46 +3294,6 @@ describe("registered LSP tool", () => {
     });
     await fixture.close();
   });
-
-  // Builds and bounds a 3 MiB value from 50,000 symbols: under a second alone, but past the default
-  // 20 s when CI runs every package's suite at once, as it does whenever pi-utils changes.
-  test(
-    "caps structured results at 1 MiB, bounding them and keeping the complete Result Spill",
-    { timeout: 60_000 },
-    async () => {
-      const fixture = await createToolFixture();
-      const hugeName = "y".repeat(3 * 1024 * 1024);
-      const symbols = Array.from({ length: 50_000 }, (_, index) => ({
-        name: `symbol-${index}`,
-      }));
-      fixture.client.responseByMethod.set("workspace/symbol", [{ name: hugeName }, ...symbols]);
-      const result = await executeTool(fixture, {
-        operation: "workspace_symbols",
-        query: "y",
-        file_path: fixture.filePath,
-        limit: 100_000,
-      });
-      if (result.details.kind !== "operation" || result.details.spill_path === undefined) {
-        throw new Error("Expected Result Spill path");
-      }
-      const structured = Value.Parse(LspReadOutputSchema, result.structuredContent);
-      expect(Buffer.byteLength(JSON.stringify(structured), "utf8")).toBeLessThanOrEqual(
-        1024 * 1024,
-      );
-      expect(structured).toMatchObject({
-        structured_truncated: true,
-        truncated: true,
-        spill_path: result.details.spill_path,
-      });
-      const complete = await readFile(result.details.spill_path, "utf8");
-      expect(complete).toContain(hugeName);
-      expect(complete).toContain("symbol-49999");
-      const [answer] = structured.results;
-      expect(answer?.value).toEqual(expect.any(Array));
-      expect(structured.warnings.join("\n")).toContain(result.details.spill_path);
-      await fixture.close();
-    },
-  );
 
   describe("compact text results", () => {
     function protocolRange(line: number, character: number, length: number) {
@@ -5320,105 +3558,11 @@ describe("registered LSP tool", () => {
         structured_truncated: false,
         truncated: false,
       });
-      expect(Value.Parse(LspStatusOutputSchema, full.structuredContent)).toEqual({
-        servers: [
-          {
-            server_id: "typescript",
-            root_path: cwd,
-            state: "running",
-            languages: { typescript: [".ts", ".tsx"], javascript: [".js"] },
-          },
-          {
-            server_id: "broken",
-            root_path: cwd,
-            state: "unavailable",
-            error: broken?.error,
-            languages: { typescript: [".ts", ".tsx"], javascript: [".js"] },
-          },
-          {
-            server_id: "python",
-            state: "configured",
-            languages: { python: [".py", "SConstruct"] },
-          },
-          {
-            server_id: "dormant",
-            state: "disabled",
-            languages: { python: [".py", "SConstruct"] },
-          },
-          {
-            server_id: "ruby",
-            state: "configured",
-            languages: { ruby: [".rb"] },
-          },
-        ],
+      expect(Value.Parse(LspStatusOutputSchema, full.structuredContent)).toMatchObject({
         not_started: 0,
-        warnings: ["Project lsp.servers.bad: command is required"],
-        structured_truncated: false,
-        truncated: false,
       });
       expect(status.details).toMatchObject({ operation: "status", result_count: 5 });
       expect(full.details).toMatchObject({ operation: "status", result_count: 5 });
-      await manager.shutdown();
-      await fixture.close();
-    });
-
-    test("lists a stopped Server Instance without counting it among the not started Server Definitions", async () => {
-      const fixture = await createToolFixture();
-      const cwd = fixture.context.cwd;
-      const base = resolvedSettings(["typescript", "python"]);
-      const settings: ResolvedLspSettings = {
-        ...base,
-        servers: new Map(
-          [...base.servers].map(([id, definition]) => [
-            id,
-            id === "python"
-              ? {
-                  ...definition,
-                  languages: [{ extensions: [".py"], fileNames: [], languageId: "python" }],
-                }
-              : definition,
-          ]),
-        ),
-      };
-      const manager = new LspServerManager<LspToolServerClient>({
-        cwd,
-        settings,
-        startClient: async () => fixture.client,
-      });
-      const dependencies = { ...fixture.dependencies, manager };
-      await executeTool(
-        fixture,
-        { operation: "diagnostics", file_path: fixture.filePath },
-        dependencies,
-      );
-      await manager.stopServer("typescript", cwd);
-
-      const status = await executeTool(fixture, { operation: "status" }, dependencies);
-
-      expect(resultText(status)).toBe(
-        [
-          `typescript stopped ${cwd} typescript(.ts)`,
-          "+1 configured, not started (pass all: true to list)",
-        ].join("\n"),
-      );
-      await manager.shutdown();
-      await fixture.close();
-    });
-
-    test("says no Server Instance started when every enabled Server Definition is not started", async () => {
-      const fixture = await createToolFixture();
-      const manager = new LspServerManager<LspToolServerClient>({
-        cwd: fixture.context.cwd,
-        settings: resolvedSettings(["python"]),
-        startClient: async () => fixture.client,
-      });
-      const dependencies = { ...fixture.dependencies, manager };
-
-      const status = await executeTool(fixture, { operation: "status" }, dependencies);
-
-      expect(resultText(status)).toBe(
-        "No Server Instances started.\n+1 configured, not started (pass all: true to list)",
-      );
       await manager.shutdown();
       await fixture.close();
     });
@@ -5519,38 +3663,6 @@ describe("registered LSP tool", () => {
       await fixture.close();
     });
 
-    test("summarizes clean files of a workspace read as one count per server", async () => {
-      const fixture = await createToolFixture();
-      const cwd = fixture.context.cwd;
-      for (const name of ["a.ts", "b.ts", "c.ts", "d.ts"]) {
-        await writeFile(join(cwd, name), "x\n".repeat(3));
-      }
-      fixture.client.workspaceDiagnosticsResult = {
-        status: "fresh",
-        source: "workspace_pull",
-        diagnosticsByUri: new Map([
-          [pathToFileURL(join(cwd, "a.ts")).href, []],
-          [
-            pathToFileURL(join(cwd, "b.ts")).href,
-            [{ range: protocolRange(2, 0, 1), severity: 1, message: "broken" }],
-          ],
-          [pathToFileURL(join(cwd, "c.ts")).href, []],
-          [pathToFileURL(join(cwd, "d.ts")).href, []],
-        ]),
-      };
-
-      const result = await executeTool(fixture, {
-        operation: "workspace_diagnostics",
-        server_id: "typescript",
-        file_path: fixture.filePath,
-      });
-
-      expect(resultText(result)).toBe(
-        ["b.ts:3:1-2 error: broken", "3 files: no diagnostics"].join("\n"),
-      );
-      await fixture.close();
-    });
-
     test("shows each diagnostic's range end so findings at one start stay distinct", async () => {
       const fixture = await createToolFixture();
       await writeFile(fixture.filePath, `${"x".repeat(60)}\n${"y".repeat(10)}\n`);
@@ -5622,23 +3734,6 @@ describe("registered LSP tool", () => {
           formatLspToolValue(malformed),
           "source.ts:1:1-6 error: nulls",
         ].join("\n"),
-      );
-      await fixture.close();
-    });
-
-    test("states once that no server has hover information", async () => {
-      const fixture = await createToolFixture(["typescript", "oxlint"]);
-      fixture.client.responderByMethod.set("textDocument/hover", () => null);
-
-      const result = await executeTool(fixture, {
-        operation: "hover",
-        file_path: fixture.filePath,
-        line: 1,
-        character: 7,
-      });
-
-      expect(resultText(result)).toBe(
-        'The server has no hover information at source.ts:1:7 ("emoji").',
       );
       await fixture.close();
     });

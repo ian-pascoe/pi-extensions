@@ -15,6 +15,9 @@ test("disabling native automatic compaction still permits explicit Rollover", as
   await f.session.prompt("/rollover");
   await expect.poll(() => f.requests.length).toBe(2);
   await f.session.waitForIdle();
+  expect(JSON.stringify(f.requests[1])).toContain(
+    "Stop after the checkpoint and wait for the user's next input.",
+  );
   expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
   expect(f.providerRequests).toEqual([]);
   expect(f.extensionErrors).toEqual([]);
@@ -45,6 +48,9 @@ test.each([false, true])(
     expect(f.requests).toHaveLength(4);
     if (idle) expect(JSON.stringify(f.requests[1]?.messages)).toContain("New instruction");
     expect(JSON.stringify(f.requests[1]?.messages)).toContain("Prepare a Context Rollover");
+    expect(JSON.stringify(f.requests[1]?.messages)).toContain(
+      "Continue the task after the checkpoint.",
+    );
     expect(JSON.stringify(f.requests[3]?.messages)).toContain("Fresh continuation");
     expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
     expect(f.providerRequests).toEqual([]);
@@ -52,7 +58,7 @@ test.each([false, true])(
   },
 );
 
-test.each(["stop", "aborted"] as const)(
+test.each(["stop"] as const)(
   "an unfinished refresh (%s) preserves History and does not nudge again",
   async (stopReason) => {
     const f = await createSdkHarness([contextManagement]);

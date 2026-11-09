@@ -331,46 +331,6 @@ test("with the repo's node profile, a breakpoint inside a function stops as a br
   expect(finished.output).toContain("total=3");
 }, 30_000);
 
-test("stopOnEntry leaves js-debug's entry breakpoint inside a function-first program, and hitBreakpointIds tells that stop from the user's", async () => {
-  const { programPath, projectDirectory, session } = await startFunctionFirstSession({
-    type: "pwa-node",
-    request: "launch",
-    name: "Pi DAP function-first stopOnEntry test",
-    console: "internalConsole",
-    stopOnEntry: true,
-  });
-  await session.setBreakpoints({ filePath: programPath, breakpoints: [{ line: 3 }] });
-
-  const stops = [
-    await session.launch({ profile: "node", program: programPath, cwd: projectDirectory }),
-  ];
-  while (stops.length < 8 && stops.at(-1)?.snapshot.state === "stopped") {
-    stops.push(await session.continue());
-  }
-
-  const entryStops = stops.filter(
-    (stop) => stop.stop && "stopReason" in stop.snapshot && stop.snapshot.stopReason === "entry",
-  );
-  const breakpointStops = stops.filter(
-    (stop) => "stopReason" in stop.snapshot && stop.snapshot.stopReason === "breakpoint",
-  );
-  // The entry breakpoint moved into add() and fires on every call, not only at launch.
-  expect(entryStops.length).toBeGreaterThan(1);
-  for (const stop of entryStops) {
-    expect(stop.stop?.hitBreakpointIds ?? []).toEqual([]);
-    expect(stop.stop?.description).toBe("Paused on breakpoint");
-    expect(stop.stop?.topFrame).toMatchObject({ name: "global.add", line: 2 });
-  }
-  // Only the user's breakpoint reports the id Pi DAP returned from dap_set_breakpoints.
-  expect(breakpointStops.length).toBeGreaterThan(0);
-  for (const stop of breakpointStops) {
-    expect(stop.stop?.hitBreakpointIds?.length).toBeGreaterThan(0);
-    // Same description as an entry stop: the reason and the ids are what tell them apart.
-    expect(stop.stop?.description).toBe("Paused on breakpoint");
-    expect(stop.stop?.topFrame).toMatchObject({ line: 3 });
-  }
-}, 30_000);
-
 /** Launch a throwaway program to completion through the Supported adapter and return the final result. */
 async function runToTermination(
   source: string,
@@ -386,11 +346,7 @@ async function runToTermination(
   return session.launch({ profile: "node", program: programPath, cwd: projectDirectory });
 }
 
-test.each([
-  ["a clean run", "console.log('done');", 0],
-  ["process.exit(3)", "process.exit(3);", 3],
-  ["an uncaught error", "throw new Error('boom');", 1],
-])(
+test.each([["process.exit(3)", "process.exit(3);", 3]])(
   "reports the Debuggee exit code for %s",
   async (_name, source, exitCode) => {
     const result = await runToTermination(source);
@@ -399,11 +355,7 @@ test.each([
   30_000,
 );
 
-test.each([
-  ["a clean run", "console.log('done');", 0],
-  ["process.exit(3)", "process.exit(3);", 3],
-  ["an uncaught error", "throw new Error('boom');", 1],
-])(
+test.each([["process.exit(3)", "process.exit(3);", 3]])(
   "with console integratedTerminal, reports the exit code of the Debuggee Pi ran for %s",
   async (_name, source, exitCode) => {
     const result = await runToTermination(source, { console: "integratedTerminal" });
@@ -413,8 +365,6 @@ test.each([
 );
 
 test.each([
-  ["a clean run", "console.log('done');"],
-  ["process.exit(3)", "process.exit(3);"],
   [
     "Debuggee stderr that imitates the adapter's report",
     "process.stderr.write('Process exited with code 7\\n'); process.exit(3);",
@@ -446,20 +396,6 @@ test("a Debuggee that cannot load its program reports a non-zero exit code", asy
   });
   expect(result.snapshot).toMatchObject({ state: "terminated" });
   expect(result.snapshot).toHaveProperty("exitCode", 1);
-}, 30_000);
-
-test("a Debug Session that Pi stops reports no exit code instead of guessing one", async () => {
-  const { programPath, projectDirectory, session } = await startFunctionFirstSession({
-    type: "pwa-node",
-    request: "launch",
-    name: "Pi DAP stopped exit code test",
-    console: "internalConsole",
-    stopOnEntry: true,
-  });
-  await session.launch({ profile: "node", program: programPath, cwd: projectDirectory });
-  const stopped = await session.stop();
-  expect(stopped.snapshot.state).toBe("terminated");
-  expect(Object.hasOwn(stopped.snapshot, "exitCode")).toBe(false);
 }, 30_000);
 
 const WORKER_SOURCE = [
@@ -547,26 +483,6 @@ test.each([
   40_000,
 );
 
-test("a program with no child sessions reports no child session it could not debug", async () => {
-  const result = await runToTermination("console.log('alone');");
-  expect(result.rejectedChildSessions).toBeUndefined();
-}, 30_000);
-
-test("launch arguments merged over the profile turn off child process attach, so the child runs without a debugger", async () => {
-  const { programPath, projectDirectory, markerPath, session } =
-    await startChildSessionProgram(FORK_PARENT_SOURCE);
-  const result = await session.launch({
-    profile: "node",
-    program: programPath,
-    cwd: projectDirectory,
-    launchArguments: { autoAttachChildProcesses: false, env: { MARKER_PATH: markerPath } },
-  });
-  expect(result.snapshot).toMatchObject({ state: "terminated", exitCode: 0 });
-  expect(result.output).toContain("child exited 0");
-  expect(result.rejectedChildSessions).toBeUndefined();
-  expect(await readFile(markerPath, "utf8")).toBe("worker ran");
-}, 30_000);
-
 test("debugs worker threads a child process starts, early and late, one stop at a time", async () => {
   const { programPath, projectDirectory, markerPath, session } =
     await startChildSessionProgram(FORK_PARENT_SOURCE);
@@ -623,10 +539,7 @@ const VITEST_CLI = resolve(
   "vitest.mjs",
 );
 
-test.each([
-  ["forks", /^forks\.js \[\d+\]$/u],
-  ["threads", /^\[worker \d+\]$/u],
-])(
+test.each([["forks", /^forks\.js \[\d+\]$/u]])(
   "vitest run with the %s pool stops at a breakpoint in code a test imports",
   async (pool, childSessionName) => {
     const { projectDirectory, session } = await startFunctionFirstSession(

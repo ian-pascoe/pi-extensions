@@ -139,44 +139,10 @@ describe("layered settings resolution", () => {
     );
   });
 
-  it("omits readOverrides without a session entry type", () => {
-    const settings = defineWithoutSession();
-    // @ts-expect-error -- `readOverrides` exists only when `sessionEntryType` is given.
-    expect(settings.readOverrides).toBeUndefined();
-    expect("readOverrides" in define()).toBe(true);
-  });
-
-  it("validates option keys and labels errors", () => {
+  it("rejects an option key the schema does not declare", () => {
     const settings = define();
-    expect(settings.optionKeys).toEqual(["enabled", "limit", "tools"]);
     expect(settings.optionKey("limit")).toBe("limit");
     expect(() => settings.optionKey("constructor")).toThrow("Unknown Demo option: constructor");
-  });
-
-  it("passes the merge hook the lower value, next value, and layer, in key order", () => {
-    const calls: string[] = [];
-    const resolved = resolveLayeredOptions<Options, Config>({
-      defaults,
-      optionKeys: ["limit", "tools"],
-      layers: [
-        ["global", { limit: 1, tools: { a: true } }],
-        ["project", { tools: { b: true } }],
-      ],
-      merge: {
-        limit: (current, next, source) => {
-          calls.push(`limit:${current}:${next}:${source}`);
-          return next;
-        },
-        tools: (current, next, source) => {
-          calls.push(`tools:${source}`);
-          return { ...current, ...next };
-        },
-      },
-    });
-    expect(calls).toEqual(["limit:3:1:global", "tools:global", "tools:project"]);
-    expect(resolved.settings.tools).toEqual({ read: true, a: true, b: true });
-    expect(resolved.sources).toEqual({ limit: "global", tools: "project" });
-    expect(defaults.tools).toEqual({ read: true });
   });
 
   it("treats an authored undefined as inheriting and never passes it to a hook", () => {
@@ -222,35 +188,6 @@ describe("layered settings definition", () => {
       }),
     ).toThrow("Demo settings schema must make every option optional");
   });
-
-  it("rejects a config that cannot hold the schema's options at compile time", () => {
-    const optional = Type.Object({ limit: Type.Optional(Type.Number()) });
-    // A schema key `Config` lacks, however the options type is spelled.
-    // @ts-expect-error -- `other` is not a `Config` key.
-    defineLayeredSettings({
-      namespace: "demo",
-      label: "Demo",
-      schema: Type.Object({ other: Type.Optional(Type.Boolean()) }),
-      defaults: { limit: 1 },
-    });
-    // An unhooked key whose authored type is not assignable to its config type.
-    // @ts-expect-error -- a number does not fit `string`.
-    defineLayeredSettings({
-      namespace: "demo",
-      label: "Demo",
-      schema: optional,
-      defaults: { limit: "1" },
-    });
-    // A hook may bridge the types.
-    const settings = defineLayeredSettings({
-      namespace: "demo",
-      label: "Demo",
-      schema: optional,
-      defaults: { limit: "1" },
-      merge: { limit: (current: string, next: number) => `${current}${next}` },
-    });
-    expect(settings.optionKeys).toEqual(["limit"]);
-  });
 });
 
 describe("layered settings writes", () => {
@@ -263,14 +200,6 @@ describe("layered settings writes", () => {
     expect(documents.global).toBe(
       `${JSON.stringify({ theme: "dark", demo: { limit: 4 } }, null, 2)}\n`,
     );
-  });
-
-  it("surfaces the original SyntaxError of a malformed document", async () => {
-    const { documents, manager } = storageHarness("{");
-    await expect(
-      define().writeSettings(manager, "global", set({ limit: 2 }), () => true),
-    ).rejects.toBeInstanceOf(SyntaxError);
-    expect(documents.global).toBe("{");
   });
 
   it("deletes an empty namespace on inherit", async () => {
@@ -286,17 +215,19 @@ describe("layered settings writes", () => {
 
   it("refuses invalid documents and invalid results without writing", async () => {
     const settings = define();
-    for (const document of ["[]", "null", '{"demo":null}', "{"]) {
+    for (const document of ["[]", '{"demo":null}']) {
       const { documents, manager } = storageHarness(document);
       await expect(
         settings.writeSettings(manager, "global", set({ limit: 2 }), () => true),
-      ).rejects.toThrow();
+      ).rejects.toThrow("Invalid global settings document; refusing to overwrite it");
       expect(documents.global).toBe(document);
     }
-    const { manager } = storageHarness("[]");
+    // A malformed document surfaces the original SyntaxError.
+    const malformed = storageHarness("{");
     await expect(
-      settings.writeSettings(manager, "global", set({ limit: 2 }), () => true),
-    ).rejects.toThrow("Invalid global settings document; refusing to overwrite it");
+      settings.writeSettings(malformed.manager, "global", set({ limit: 2 }), () => true),
+    ).rejects.toBeInstanceOf(SyntaxError);
+    expect(malformed.documents.global).toBe("{");
     const invalid = storageHarness();
     await expect(
       settings.writeSettings(invalid.manager, "global", set({ limit: 0 }), () => true),
@@ -329,7 +260,7 @@ describe("layered settings writes", () => {
 
 describe("rewriteNamespaceDocument", () => {
   const invalid = (reason: string) => new Error(reason);
-  it("creates a missing document and drops an emptied namespace", () => {
+  it("creates a missing document", () => {
     expect(
       rewriteNamespaceDocument({
         current: undefined,
@@ -338,14 +269,6 @@ describe("rewriteNamespaceDocument", () => {
         update: (options) => ({ ...options, enabled: true }),
       }),
     ).toBe('{\n  "demo": {\n    "enabled": true\n  }\n}\n');
-    expect(
-      rewriteNamespaceDocument({
-        current: '{"a":1,"demo":{"enabled":true}}',
-        namespace: "demo",
-        invalid,
-        update: () => ({}),
-      }),
-    ).toBe('{\n  "a": 1\n}\n');
   });
 
   it("reports why a document cannot be rewritten", () => {

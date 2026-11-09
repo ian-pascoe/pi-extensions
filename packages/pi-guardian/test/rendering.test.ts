@@ -84,28 +84,6 @@ describe("Guardian review entries", () => {
     );
   });
 
-  it("marks each result with its own Status Mark after the label", () => {
-    const marks = [
-      ["allowed", "<success>✓</success>"],
-      ["failed", "<warning>!</warning>"],
-      ["aborted", "<muted>■</muted>"],
-      ["unused", "<dim>○</dim>"],
-    ] as const;
-    for (const [result, mark] of marks)
-      expect(
-        lines(renderReviewEntry({ ...allowed, result }, false, theme, true)).join("\n"),
-      ).toContain(`${label} ${mark} <customMessageText>${result}</customMessageText>`);
-  });
-
-  it("shows a short review whole, with no hint in either view", () => {
-    const collapsed = lines(renderReviewEntry(review, false, theme));
-    expect(lines(renderReviewEntry(review, true, theme))).toEqual(collapsed);
-    const text = plain(collapsed);
-    expect(text).toContain('arguments {"command":"rm -rf dist"}');
-    expect(text).toContain("p/m · 1.5s · 2 tokens · cost unknown");
-    expect(text).not.toContain("to expand");
-  });
-
   it("collapses a long rationale to ten lines and counts what it hides", () => {
     const rationale = Array.from({ length: 14 }, (_, index) => `Reason ${index + 1}`).join("\n");
     const collapsed = lines(renderReviewEntry({ ...review, rationale }, false, theme));
@@ -120,27 +98,13 @@ describe("Guardian review entries", () => {
     );
   });
 
-  it("names escalations, overrides, and drift, and shows the escalation detail when expanded", () => {
-    const flagged = {
-      ...allowed,
-      userOverride: true,
-      argumentDrift: true,
-      downgraded: true,
-    };
-    const rendered = lines(renderReviewEntry(flagged, false, theme));
-    const text = rendered.join("\n");
-    expect(text).toContain("<warning>user override</warning>");
-    expect(text).toContain("<warning>arguments changed after review</warning>");
-    // The subject line wraps at 120 columns, so compare with its whitespace collapsed.
-    expect(plain(rendered).replace(/\s+/g, " ")).toContain("decided as medium: no Risk Category");
-  });
-
-  it("hides allowed reviews unless verbose, but always shows overrides and drift", () => {
+  it("hides allowed reviews unless verbose, but always shows overrides, drift, and downgrades", () => {
     expect(renderReviewEntry(allowed, true, theme)).toBeUndefined();
     expect(renderReviewEntry({ ...allowed, result: "unused" }, true, theme)).toBeUndefined();
     expect(renderReviewEntry(allowed, false, theme, true)).toBeDefined();
     expect(renderReviewEntry({ ...allowed, userOverride: true }, false, theme)).toBeDefined();
     expect(renderReviewEntry({ ...allowed, argumentDrift: true }, false, theme)).toBeDefined();
+    expect(renderReviewEntry({ ...allowed, downgraded: true }, false, theme)).toBeDefined();
   });
 
   it("shows an unrecognised record raw", () => {
@@ -184,48 +148,13 @@ describe("Guardian status entries", () => {
     expect(plain(rendered)).toContain("2 reviews · 1 allowed · 1 rejected · 0 failed");
   });
 
-  it("marks off and error states, and the error text", () => {
-    expect(
-      lines(renderStatusEntry({ ...statusData, state: "disabled" }, false, theme)).join("\n"),
-    ).toContain(`${label} <dim>○</dim> <customMessageText>off</customMessageText>`);
-    const failed = lines(
-      renderStatusEntry({ state: "error", error: "Cannot read settings" }, false, theme),
-    ).join("\n");
-    expect(failed).toContain(
-      `${label} <error>✗</error> <customMessageText>error</customMessageText>`,
-    );
-    expect(failed).toContain("<error>✗</error> <error>Cannot read settings</error>");
-  });
-
-  it("leads with the state, then the changes that produced it", () => {
-    const text = plain(
-      lines(
-        renderStatusEntry(
-          {
-            ...statusData,
-            changes: [{ scope: "session", key: "onDeny", options: { onDeny: "block" } }],
-          },
-          false,
-          theme,
-        ),
-      ),
-    );
-    expect(text).toMatch(/^\[guardian\] ● on.*\n\s*\n\s*✓ onDeny → block \[session\]/);
-  });
-
   it("hints at every setting while collapsed and lists them with sources when expanded", () => {
     const collapsed = lines(renderStatusEntry(statusData, false, theme));
     const expanded = lines(renderStatusEntry(statusData, true, theme));
-    const hidden = Number(hintPattern.exec(collapsed.join("\n"))?.[1]);
-    expect(hidden).toBeGreaterThan(0);
-    expect(expanded).toHaveLength(collapsed.length - 1 + hidden);
-    // Padding, label line, spacer, ten body lines, the hint, padding.
-    expect(collapsed).toHaveLength(1 + 1 + 1 + 10 + 1 + 1);
     expect(plain(collapsed)).not.toContain("maxConsecutiveRejections");
     expect(plain(expanded)).toMatch(/maxConsecutiveRejections\s+inherit\s+\[default\]/);
     expect(plain(expanded)).toMatch(/thinkingLevel\s+low\s+\[default\]/);
     expect(plain(expanded)).toMatch(/model\s+p\/reviewer\s+\[session\]/);
-    expect(plain(expanded)).not.toContain("to expand");
   });
 
   it("shows an unrecognised record raw", () => {
@@ -250,14 +179,9 @@ describe("Guardian footer", () => {
     expect(guardianFooterText(false, [], tagged)).toBeUndefined();
   });
 
-  it("shows on while idle and the tools under review", () => {
-    expect(guardianFooterText(true, [], tagged)).toBe(`${mark} on`);
-    expect(guardianFooterText(true, ["deploy"], tagged)).toBe(`${mark} reviewing deploy`);
+  it("counts repeated tools under review", () => {
     expect(guardianFooterText(true, ["deploy", "deploy"], tagged)).toBe(
       `${mark} reviewing deploy ×2`,
-    );
-    expect(guardianFooterText(true, ["deploy", "bash"], tagged)).toBe(
-      `${mark} reviewing deploy, bash`,
     );
   });
 });

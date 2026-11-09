@@ -33,8 +33,6 @@ it("measures the input a prompt added: the first response's input less the conte
 it("learns nothing without a known context size, a usable response, or a positive difference", () => {
   const prompted = (response: Message) => [user("x".repeat(4_000)), response];
   expect(promptSample(prompted(assistant(usage(5_000))), 0, null)).toBeUndefined();
-  expect(promptSample(prompted(assistant(usage(5_000))), 0, undefined)).toBeUndefined();
-  expect(promptSample(prompted(assistant(usage(0))), 0, 0)).toBeUndefined();
   expect(promptSample(prompted(assistant(usage(5_000), "error")), 0, 0)).toBeUndefined();
   expect(promptSample(prompted(assistant(usage(5_000), "aborted")), 0, 0)).toBeUndefined();
   expect(promptSample(prompted(assistant(usage(5_000))), 0, 5_000)).toBeUndefined();

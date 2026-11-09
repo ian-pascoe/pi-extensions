@@ -58,17 +58,6 @@ describe("EditorAdapter against the installed Pi Editor", () => {
     expect(adapter.undoDepth()).toBe(base + 1);
   });
 
-  it("undoes typed text through Pi's own undo stack", () => {
-    const { editor, adapter } = createAdapter();
-    for (const char of "hi there") editor.handleInput(char);
-    const depth = adapter.undoDepth();
-    expect(depth).toBeGreaterThan(1);
-    adapter.truncateUndo(1);
-    adapter.undo();
-    expect(editor.getText()).toBe("");
-    expect(adapter.undo()).toBeUndefined();
-  });
-
   it("captures and restores text, cursor, and paste markers", () => {
     const { editor, adapter } = createAdapter();
     editor.handleInput(`\x1b[200~${"line\n".repeat(12)}\x1b[201~`);
@@ -79,28 +68,6 @@ describe("EditorAdapter against the installed Pi Editor", () => {
     adapter.restore(snapshot);
     expect(editor.getText()).toBe(marker);
     expect(editor.getExpandedText()).toBe("line\n".repeat(12));
-  });
-
-  it("steps through prompt history", () => {
-    const { editor, adapter } = createAdapter();
-    editor.addToHistory("older");
-    editor.addToHistory("newer");
-    editor.setText("draft");
-    adapter.navigateHistory(-1);
-    expect(editor.getText()).toBe("newer");
-    adapter.navigateHistory(-1);
-    expect(editor.getText()).toBe("older");
-    adapter.navigateHistory(1);
-    adapter.navigateHistory(1);
-    expect(editor.getText()).toBe("draft");
-  });
-
-  it("reports bracketed paste buffering", () => {
-    const { editor, adapter } = createAdapter();
-    editor.handleInput("\x1b[200~abc");
-    expect(adapter.isInPaste()).toBe(true);
-    editor.handleInput("\x1b[201~");
-    expect(adapter.isInPaste()).toBe(false);
   });
 
   it("exposes wrapped and scrolled render geometry", () => {

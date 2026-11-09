@@ -12,7 +12,7 @@ import {
   SessionManager,
   type ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
-import { stripTerminalSequences, visibleWidth, type EditorComponent } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, type EditorComponent } from "@earendil-works/pi-tui";
 import { footerStatus } from "@ian-pascoe/pi-utils/ui";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createKeybindings, createTui, editorTheme } from "./vim-pi-fixture.js";
@@ -209,17 +209,11 @@ describe("Command Deck extension", { timeout: 30_000 }, () => {
       ["guardian", footerStatus(theme, { mark: "done", name: "guardian", value: "allowed" })],
       ["advisor", footerStatus(theme, { mark: "idle", name: "advisor", value: "watching" })],
     ]);
-    const component = harness.renderFooter(statuses);
-
-    const wide = component.render(120);
+    // Sorting, joining, and truncation are covered by deck-chrome.test.ts; this checks the wiring.
+    const wide = harness.renderFooter(statuses).render(120);
     expect(wide.map((line) => stripTerminalSequences(line))).toEqual([
       "\u25cb advisor watching \u2713 guardian allowed \u25cf termctrl 2 running tps 42.0 tok/s",
     ]);
-    const narrow = component.render(40);
-    expect(narrow).toHaveLength(1);
-    expect(visibleWidth(narrow[0] ?? "")).toBeLessThanOrEqual(40);
-    expect(narrow[0]).toContain(theme.fg("dim", "..."));
-    expect(harness.renderFooter(new Map()).render(40)).toEqual([]);
     await harness.shutdown();
   });
 

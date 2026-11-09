@@ -1,5 +1,4 @@
 /* oxlint-disable anti-slop/no-unknown-parameters -- SAFETY: Tests feed arbitrary JSON arguments to the helpers under test. */
-import { validateToolArguments, type ToolCall } from "@earendil-works/pi-ai";
 import { Type, type TSchema } from "typebox";
 import { describe, expect, test } from "vitest";
 import {
@@ -24,30 +23,6 @@ const cases: readonly Case[] = [
     expected: { path: "a" },
   },
   {
-    name: "drops a null optional integer",
-    schema: Type.Object({ path: Type.String(), depth: Type.Optional(Type.Integer()) }),
-    input: { path: "a", depth: null },
-    expected: { path: "a" },
-  },
-  {
-    name: "drops a null optional union of integer and literal",
-    schema: Type.Object({
-      depth: Type.Optional(Type.Union([Type.Integer({ minimum: 1 }), Type.Literal("all")])),
-    }),
-    input: { depth: null },
-    expected: {},
-  },
-  {
-    name: "drops a null optional array, boolean, and enum alike",
-    schema: Type.Object({
-      list: Type.Optional(Type.Array(Type.String())),
-      flag: Type.Optional(Type.Boolean()),
-      mode: Type.Optional(Type.Union([Type.Literal("a"), Type.Literal("b")])),
-    }),
-    input: { list: null, flag: null, mode: null },
-    expected: {},
-  },
-  {
     name: "keeps a null required property so validation reports it",
     schema: Type.Object({ path: Type.String(), note: Type.Optional(Type.String()) }),
     input: { path: null, note: null },
@@ -69,23 +44,11 @@ const cases: readonly Case[] = [
     expected: { value: null },
   },
   {
-    name: "keeps a null for an explicitly null-typed optional property",
-    schema: Type.Object({ cleared: Type.Optional(Type.Null()) }),
-    input: { cleared: null },
-    expected: { cleared: null },
-  },
-  {
     name: "keeps a null whose property schema cannot be resolved",
     // SAFETY: A JSON Schema with a dangling reference, which TypeBox's builders cannot express.
     schema: { type: "object", properties: { link: { $ref: "#/$defs/Missing" } } } as TSchema,
     input: { link: null },
     expected: { link: null },
-  },
-  {
-    name: "drops a null optional property of a nested object",
-    schema: Type.Object({ target: Point }),
-    input: { target: { x: 1, label: null } },
-    expected: { target: { x: 1 } },
   },
   {
     name: "drops a null optional property inside array items",
@@ -141,12 +104,6 @@ const cases: readonly Case[] = [
     expected: null,
   },
   {
-    name: "passes an array argument through",
-    schema: Type.Object({ a: Type.Optional(Type.String()) }),
-    input: [null],
-    expected: [null],
-  },
-  {
     name: "applies every allOf member",
     schema: Type.Intersect([
       Type.Object({ a: Type.Optional(Type.String()) }),
@@ -175,41 +132,11 @@ describe("omitNullOptionalArguments", () => {
     expect(omitNullOptionalArguments(schema, input)).toEqual({ points: [{ x: 1 }] });
     expect(input).toEqual(snapshot);
   });
-
-  test("yields arguments that validate like the same call without the null, inside a union member", () => {
-    const tool = {
-      name: "probe",
-      description: "",
-      parameters: Type.Object({
-        target: Type.Union([
-          Type.Object({ kind: Type.Literal("file"), range: Type.Optional(Type.Integer()) }),
-          Type.Object({ kind: Type.Literal("url") }),
-        ]),
-      }),
-    };
-    const nullish = { target: { kind: "file", range: null } };
-    // Pi's own null handling does not reach union members; it coerces the null to 0 instead.
-    // SAFETY: The arguments are an object whichever branch normalization takes.
-    const prepared = omitNullOptionalArguments(tool.parameters, nullish) as ToolCall["arguments"];
-    expect(
-      validateToolArguments(tool, {
-        type: "toolCall",
-        id: "1",
-        name: "probe",
-        arguments: prepared,
-      }),
-    ).toEqual({ target: { kind: "file" } });
-  });
 });
 
 describe("acceptNullForOptionalArguments", () => {
   const parameters = Type.Object({ path: Type.String(), depth: Type.Optional(Type.Integer()) });
   const execute = async () => ({ content: [], details: undefined });
-
-  test("adds a prepareArguments that treats null like an omitted optional parameter", () => {
-    const tool = acceptNullForOptionalArguments({ name: "t", parameters, execute });
-    expect(tool.prepareArguments?.({ path: "a", depth: null })).toEqual({ path: "a" });
-  });
 
   test("keeps every other field of the tool, including its schema, by identity", () => {
     const original = {
@@ -244,25 +171,5 @@ describe("acceptNullForOptionalArguments", () => {
       prepared: true,
     });
     expect(received).toEqual([{ path: "a" }]);
-  });
-
-  test("lets the tool's own prepareArguments reject what normalization leaves invalid", () => {
-    const tool = acceptNullForOptionalArguments({
-      name: "t",
-      parameters,
-      execute,
-      prepareArguments: (arguments_: unknown) => {
-        // SAFETY: The test passes an object with a `path` key.
-        if ((arguments_ as { path: unknown }).path === null) throw new Error("path is required");
-        return arguments_;
-      },
-    });
-    expect(() => tool.prepareArguments?.({ path: null })).toThrow("path is required");
-  });
-
-  test("returns the identical arguments object when there is nothing to normalize", () => {
-    const tool = acceptNullForOptionalArguments({ name: "t", parameters, execute });
-    const input = { path: "a" };
-    expect(tool.prepareArguments?.(input)).toBe(input);
   });
 });

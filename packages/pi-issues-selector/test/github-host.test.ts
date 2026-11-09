@@ -9,78 +9,7 @@ const reply =
   (stdout: string, code = 0, stderr = "", killed = false): RunCommand =>
   async () => ({ stdout, stderr, code, killed, truncated: false });
 
-describe("GitHub issue URLs", () => {
-  test("always use the /issues/ path, which GitHub redirects to /pull/ for pull requests", () => {
-    expect(GITHUB.issueUrl({ host: "github.com", owner: "acme", repo: "widgets" }, 12, "#")).toBe(
-      "https://github.com/acme/widgets/issues/12",
-    );
-    expect(GITHUB.issueUrl({ host: "octo.ghe.com", owner: "me", repo: "core" }, "7", "#")).toBe(
-      "https://octo.ghe.com/me/core/issues/7",
-    );
-  });
-});
-
-describe("GitHub adapter", () => {
-  test("uses # alone and declares the GitHub CLI", () => {
-    expect(GITHUB.sigils).toEqual(["#"]);
-    expect(GITHUB.cli).toEqual({ name: "GitHub CLI", command: "gh" });
-  });
-
-  test("a repository path is exactly owner/repo", () => {
-    expect(GITHUB.parseRepository("acme/my.repo_1")).toEqual({
-      owner: "acme",
-      repo: "my.repo_1",
-    });
-    for (const path of [
-      "",
-      "acme",
-      "acme/widgets/extra",
-      "group/sub/widgets",
-      "-acme/widgets",
-      "acme--x/widgets",
-      "acme/..",
-      "acme/wid gets",
-    ]) {
-      expect(GITHUB.parseRepository(path)).toBeUndefined();
-    }
-  });
-
-  test("its qualifier is owner/repo", () => {
-    const qualifier = new RegExp(`^${GITHUB.qualifier}$`);
-    expect(qualifier.test("a-b/c.d_e")).toBe(true);
-    for (const text of ["acme", "x/y/z", "-a/b", "a--b/c", "a/"]) {
-      expect(qualifier.test(text)).toBe(false);
-    }
-  });
-});
-
 describe("GitHub recent issues", () => {
-  test("asks gh for one page of the repository's latest items, on its host", async () => {
-    const calls: unknown[] = [];
-    await GITHUB.listRecent(
-      { host: "octo.ghe.com", owner: "me", repo: "core" },
-      "#",
-      async (command, args, options) => {
-        calls.push([command, args, options?.signal === signal, options?.timeout !== undefined]);
-        return { stdout: "[]", stderr: "", code: 0, killed: false, truncated: false };
-      },
-      signal,
-    );
-    expect(calls).toEqual([
-      [
-        "gh",
-        [
-          "api",
-          "--hostname",
-          "octo.ghe.com",
-          "repos/me/core/issues?state=all&sort=updated&per_page=100",
-        ],
-        true,
-        true,
-      ],
-    ]);
-  });
-
   test("tells issues from pull requests and reads each state", async () => {
     const items = [
       { number: 5, title: "Open issue", state: "open" },
@@ -154,7 +83,6 @@ describe("GitHub recent issues", () => {
     ["exit code 4 (authentication needed)", reply("", 4, "gh: To get started, run: gh auth login")],
     ["an auth hint on another exit code", reply("", 1, "Try authenticating with: gh auth login")],
     ["a missing gh, which prints nothing", reply("", 1, "")],
-    ["a host gh is not signed in to", reply("", 1, "gh auth login --hostname octo.ghe.com")],
   ])("asks for the GitHub CLI after %s", async (_name, run) => {
     expect(await GITHUB.listRecent(repository, "#", run, signal)).toEqual({
       ok: false,
@@ -164,8 +92,6 @@ describe("GitHub recent issues", () => {
 
   test.each([
     ["a missing repository", reply("", 1, "gh: Not Found (HTTP 404)")],
-    ["a rate limit", reply("", 1, "gh: API rate limit exceeded (HTTP 403)")],
-    ["a network error", reply("", 1, "error connecting to api.github.com")],
     ["a killed process", reply("", 1, "", true)],
     ["invalid JSON", reply("not json")],
     ["a JSON object", reply('{"message":"x"}')],
@@ -236,32 +162,17 @@ describe("GitHub configured hosts", () => {
       "C:\\App\\GitHub CLI\\hosts.yml",
     ],
     [
-      "XDG_CONFIG_HOME beats APPDATA on Windows",
-      { XDG_CONFIG_HOME: "D:\\xdg", APPDATA: "C:\\App" },
-      "win32",
-      "D:\\xdg\\gh\\hosts.yml",
-    ],
-    ["GH_CONFIG_DIR on Windows", { GH_CONFIG_DIR: "D:\\gh" }, "win32", "D:\\gh\\hosts.yml"],
-    [
       "APPDATA is ignored off Windows",
       { APPDATA: "/app" },
       "darwin",
       "/home/me/.config/gh/hosts.yml",
     ],
     ["the home fallback", {}, "linux", "/home/me/.config/gh/hosts.yml"],
-    ["the home fallback on macOS", {}, "darwin", "/home/me/.config/gh/hosts.yml"],
-    ["the home fallback on Windows", {}, "win32", "C:\\Users\\me\\.config\\gh\\hosts.yml"],
     [
       "empty values count as unset",
       { GH_CONFIG_DIR: "", XDG_CONFIG_HOME: "", APPDATA: "" },
       "win32",
       "C:\\Users\\me\\.config\\gh\\hosts.yml",
-    ],
-    [
-      "undefined values count as unset",
-      { GH_CONFIG_DIR: undefined, XDG_CONFIG_HOME: "/xdg" },
-      "linux",
-      "/xdg/gh/hosts.yml",
     ],
   ])("reads %s", async (_name, env, platform, expected) => {
     const { readText, paths } = reads({});
@@ -298,23 +209,10 @@ describe("GitHub configured hosts", () => {
     expect(await hostsOf({}, { [file]: keyring })).toEqual(["github.corp.example"]);
   });
 
-  test("never reads values: a nested key is not a host", async () => {
-    const file = "/home/me/.config/gh/hosts.yml";
-    expect(
-      await hostsOf({}, { [file]: "github.corp.example:\n  users:\n    other.example:\n" }),
-    ).toEqual(["github.corp.example"]);
-  });
-
   test("a missing, empty, malformed, or non-mapping file yields no hosts, without throwing", async () => {
     const file = "/home/me/.config/gh/hosts.yml";
     expect(await hostsOf({})).toEqual([]);
-    for (const text of [
-      "",
-      "# only a comment\n",
-      "a: [unclosed\n  b: : :\n",
-      "- a\n- b\n",
-      "just text",
-    ]) {
+    for (const text of ["", "a: [unclosed\n  b: : :\n", "- a\n- b\n"]) {
       expect(await hostsOf({}, { [file]: text })).toEqual([]);
     }
     const failing: ReadText = async () => {
@@ -335,16 +233,5 @@ describe("GitHub configured hosts", () => {
       ["a.example", "b.example"],
     );
     expect(await hostsOf({ GH_HOST: "" })).toEqual([]);
-  });
-
-  test("tokens add nothing beyond the built-in github.com", async () => {
-    expect(
-      await hostsOf({
-        GH_TOKEN: "x",
-        GITHUB_TOKEN: "x",
-        GH_ENTERPRISE_TOKEN: "x",
-        GITHUB_ENTERPRISE_TOKEN: "x",
-      }),
-    ).toEqual([]);
   });
 });

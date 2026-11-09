@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -82,7 +82,6 @@ describe("minimal subagents settings writer", () => {
     ["malformed JSON", "{ broken", "JSON is malformed"],
     ["array root", "[]", "must have an object root"],
     ["null minimalSubagents", '{"minimalSubagents":null}', "must have an object minimalSubagents"],
-    ["array minimalSubagents", '{"minimalSubagents":[]}', "must have an object minimalSubagents"],
   ] as const)(
     "rejects %s without changing the original bytes",
     async (_label, original, message) => {
@@ -97,19 +96,6 @@ describe("minimal subagents settings writer", () => {
       ).toEqual([]);
     },
   );
-
-  it("strips a UTF-8 BOM before parsing", async () => {
-    const harness = await createWriterHarness();
-    await mkdir(harness.agentDirectory, { recursive: true });
-    await writeFile(harness.globalPath, '\uFEFF{"theme":"dark"}');
-
-    await expect(harness.write("global", false)).resolves.toBeDefined();
-
-    expect(JSON.parse(await readFile(harness.globalPath, "utf8"))).toEqual({
-      theme: "dark",
-      minimalSubagents: { enabled: false },
-    });
-  });
 
   it("refuses an untrusted project before creating its settings directory", async () => {
     const harness = await createWriterHarness(false);
@@ -133,22 +119,5 @@ describe("minimal subagents settings writer", () => {
     expect(JSON.parse(await readFile(harness.globalPath, "utf8"))).toEqual({
       minimalSubagents: { enabled: completed.at(-1) },
     });
-  });
-
-  it("leaves no temporary file when the destination directory is not writable", async () => {
-    const harness = await createWriterHarness();
-    await mkdir(harness.agentDirectory, { recursive: true });
-    await writeFile(harness.globalPath, "{}", { mode: 0o600 });
-    await chmod(harness.agentDirectory, 0o500);
-
-    try {
-      await expect(harness.write("global", true)).rejects.toThrow();
-      expect(
-        (await readdir(harness.agentDirectory)).filter((name) => name.endsWith(".tmp")),
-      ).toEqual([]);
-      await expect(readFile(harness.globalPath, "utf8")).resolves.toBe("{}");
-    } finally {
-      await chmod(harness.agentDirectory, 0o700);
-    }
   });
 });

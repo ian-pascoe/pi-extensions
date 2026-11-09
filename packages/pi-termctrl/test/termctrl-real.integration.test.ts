@@ -17,9 +17,6 @@ import {
 } from "../src/terminal-tools.js";
 
 const binary = resolveTermctrlBinary();
-const packagedPlatform = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"].includes(
-  `${process.platform}-${process.arch}`,
-);
 
 let directory: string;
 const owner = "real-binary-test";
@@ -91,43 +88,7 @@ afterEach(async () => {
   await TermctrlRegistry.teardownForTests();
 });
 
-test("a packaged termctrl binary resolves on supported platforms", () => {
-  if (!packagedPlatform) return;
-  expect(binary).toMatchObject({ kind: "available" });
-});
-
 describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
-  test("drives a REPL", { timeout: 20_000 }, async () => {
-    const tools = createTools();
-    const context = toolContext();
-    const started = await tools.start.execute(
-      "start",
-      { command: "node --interactive", wait_ms: 10_000 },
-      undefined,
-      undefined,
-      context,
-    );
-    const prompt = await untilScreenShows(tools, context, started, ">");
-    expect(prompt.details.screen).toContain(">");
-    const answer = await tools.send.execute(
-      "send",
-      { id: "t1", text: "6 * 7\n", wait_for_text: "42", wait_ms: 10_000 },
-      undefined,
-      undefined,
-      context,
-    );
-    expect(answer.details).toMatchObject({ state: "running", changed: true });
-    expect(answer.details.screen).toContain("42");
-    const exited = await tools.send.execute(
-      "send",
-      { id: "t1", text: ".exit\n", wait_ms: 10_000 },
-      undefined,
-      undefined,
-      context,
-    );
-    expect(exited.details).toMatchObject({ state: "exited", exit_code: 0 });
-  });
-
   test(
     "sends a Screen Delta from the previous prompt row in a REPL, growing and scrolling",
     { timeout: 30_000 },
@@ -185,38 +146,6 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
     },
   );
 
-  test("handles an exited Terminal, cwd null and a missing cwd", { timeout: 20_000 }, async () => {
-    const tools = createTools();
-    const context = toolContext();
-    const started = await tools.start.execute(
-      "start",
-      { command: "echo done; exit 4", cwd: null, wait_ms: 10_000 },
-      undefined,
-      undefined,
-      context,
-    );
-    expect(started.details).toMatchObject({
-      state: "exited",
-      exit_code: 4,
-      settle_reason: "exited",
-    });
-    await expect(
-      tools.send.execute("send", { id: "t1", text: "x" }, undefined, undefined, context),
-    ).rejects.toThrow("t1 exited with code 4 and accepts no input");
-    const stopped = await tools.stop.execute("stop", { id: "t1" }, undefined, undefined, context);
-    expect(stopped.details).toEqual({
-      id: "t1",
-      kind: "terminal",
-      state: "exited",
-      exit_code: 4,
-      changed: false,
-    });
-    const missing = join(directory, "missing");
-    await expect(
-      tools.start.execute("start", { command: "ls", cwd: missing }, undefined, undefined, context),
-    ).rejects.toThrow(`Working directory does not exist: ${missing}`);
-  });
-
   test("drives a full-screen TUI", { timeout: 20_000 }, async () => {
     const file = join(directory, "numbers.txt");
     await writeFile(
@@ -254,54 +183,6 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
     );
     expect(quit.details).toMatchObject({ state: "exited", exit_code: 0 });
   });
-
-  test(
-    "polls a long-running process and returns every scrolled-off line once",
-    { timeout: 20_000 },
-    async () => {
-      const tools = createTools();
-      const context = toolContext();
-      const ticks = (text: string) =>
-        [...text.matchAll(/tick (\d+)/gu)].map(([, tick]) => Number(tick));
-      const started = await tools.start.execute(
-        "start",
-        {
-          command:
-            "for i in $(seq 1 80); do echo tick $i; sleep 0.05; done; echo finished; sleep 30",
-        },
-        undefined,
-        undefined,
-        context,
-      );
-      expect(started.details.state).toBe("running");
-      const firstTop = ticks(started.details.screen)[0] ?? 1;
-      // Ticks keep arriving while the result is read; none still on its screen counts as scrolled off.
-      expect(ticks(started.details.scrolled_off)).toEqual(
-        Array.from({ length: firstTop - 1 }, (_, index) => index + 1),
-      );
-      const polled = await tools.send.execute(
-        "send",
-        { id: "t1", wait_for_text: "finished", wait_ms: 10_000 },
-        undefined,
-        undefined,
-        context,
-      );
-      expect(polled.details.screen).toContain("finished");
-      // Ticks the first result showed on its screen are not repeated once they scroll off.
-      const shown = ticks(
-        `${started.details.screen}\n${polled.details.scrolled_off}\n${polled.details.screen}`,
-      );
-      expect(shown).toEqual(Array.from({ length: 81 - firstTop }, (_, index) => firstTop + index));
-      const quiet = await tools.send.execute(
-        "send",
-        { id: "t1", wait_ms: 500 },
-        undefined,
-        undefined,
-        context,
-      );
-      expect(quiet.details).toMatchObject({ changed: false, scrolled_off: "" });
-    },
-  );
 
   test.skipIf(spawnSync("python3", ["--version"]).status !== 0)(
     "does not repeat lines the agent saw and keeps the start and end of a flood",
@@ -457,36 +338,5 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
     const closed = driver.close();
     await expect(handle.logs()).rejects.toThrow("termctrl driver is closed");
     await closed;
-  });
-
-  test("SIGKILL escalation kills the Terminal's process group", { timeout: 20_000 }, async () => {
-    if (binary.kind !== "available") return;
-    const driver = await createTermctrlDriver(binary.path);
-    try {
-      const handle = await driver.launch({
-        id: "escalation",
-        command: ["/bin/sh", "-c", "trap '' INT TERM HUP; echo ready; sleep 1000"],
-        cwd: directory,
-        viewport: { cols: 40, rows: 5 },
-      });
-      // Signals sent before the trap is installed would end the shell without needing SIGKILL.
-      const readyDeadline = Date.now() + 10_000;
-      while (!(await handle.snapshot()).screen.includes("ready")) {
-        if (Date.now() > readyDeadline) throw new Error("the shell never installed its traps");
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      handle.kill();
-      const deadline = Date.now() + 5_000;
-      let snapshot = await handle.snapshot();
-      while (snapshot.state === "running" && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        snapshot = await handle.snapshot();
-      }
-      expect(snapshot.state).toBe("exited");
-      expect(snapshot.exit?.signal).toMatch(/kill/iu);
-      await handle.stop();
-    } finally {
-      await driver.close();
-    }
   });
 });

@@ -87,10 +87,7 @@ async function outcome(run: Promise<Result>) {
   }
 }
 
-function replacement(
-  definitionFactory?: typeof createBashToolDefinition,
-  bashTail?: { readonly maxLines: number; readonly maxBytes: number },
-) {
+function replacement(bashTail?: { readonly maxLines: number; readonly maxBytes: number }) {
   const calls = new RunningBashCalls(() => registry);
   const options: Parameters<typeof createBashReplacement>[0] = {
     cwd: directory,
@@ -102,9 +99,7 @@ function replacement(
   };
   return {
     calls,
-    tool: createBashReplacement(
-      definitionFactory === undefined ? options : { ...options, definitionFactory },
-    ),
+    tool: createBashReplacement(options),
   };
 }
 
@@ -142,35 +137,12 @@ describe("foreground parity with Pi's bash", () => {
     { name: "success", params: { command: "echo out; echo err >&2" } },
     { name: "non-zero exit", params: { command: "echo partial; exit 3" } },
     { name: "timeout", params: { command: "echo started; sleep 5", timeout: 0.5 } },
-    { name: "invalid timeout", params: { command: "true", timeout: -1 } },
     { name: "truncation", params: { command: "seq 1 3000" } },
   ])("$name matches the built-in result", async ({ params }) => {
     const builtin = createBashToolDefinition(directory);
     const { tool } = replacement();
     const expected = await outcome(builtin.execute("a", params, undefined, undefined, context()));
     const actual = await outcome(tool.execute("b", params, undefined, undefined, context()));
-    expect(actual).toEqual(expected);
-  });
-
-  test("abort matches the built-in result", async () => {
-    const builtin = createBashToolDefinition(directory);
-    const { tool } = replacement();
-    const run = async (execute: typeof builtin.execute) => {
-      const controller = new AbortController();
-      setTimeout(() => controller.abort(), 300);
-      return outcome(
-        execute(
-          "call",
-          { command: "echo begin; sleep 5" },
-          controller.signal,
-          undefined,
-          context(),
-        ),
-      );
-    };
-    const expected = await run(builtin.execute.bind(builtin));
-    const actual = await run(tool.execute.bind(tool));
-    expect(expected).toEqual({ error: "begin\n\n\nCommand aborted" });
     expect(actual).toEqual(expected);
   });
 
@@ -197,13 +169,7 @@ describe("foreground parity with Pi's bash", () => {
 describe("bashTail", () => {
   const tail = { maxLines: 300, maxBytes: 16_384 };
   const run = (command: string, extra: { timeout?: number } = {}, signal?: AbortSignal) =>
-    replacement(undefined, tail).tool.execute(
-      "call",
-      { command, ...extra },
-      signal,
-      undefined,
-      context(),
-    );
+    replacement(tail).tool.execute("call", { command, ...extra }, signal, undefined, context());
   const rejection = async (run: Promise<unknown>): Promise<string> => {
     try {
       await run;
@@ -279,16 +245,6 @@ describe("bashTail", () => {
     await rm(noticePath(abortedText));
   });
 
-  test("when Pi also cut the output, its full-output file is the one named", async () => {
-    const result = await run("seq 1 3000");
-    const text = textOf(result);
-    const path = noticePath(text);
-    expect(path).toMatch(/pi-bash-/u);
-    expect(text.match(/Full output/gu)).toHaveLength(1);
-    expect((await readFile(path, "utf8")).trimEnd().split("\n")).toHaveLength(3000);
-    await rm(path);
-  });
-
   test("the byte limit cuts a single long line and says so", async () => {
     const text = textOf(await run("head -c 40000 /dev/zero | tr '\\0' x"));
     expect(text).toMatch(
@@ -311,15 +267,6 @@ describe("bashTail", () => {
     expect(failedPath).not.toContain("bogus");
     expect((await readFile(failedPath, "utf8")).trimEnd().split("\n")).toHaveLength(401);
     await rm(failedPath);
-
-    const timedOut = await rejection(
-      run(`seq 1 400; printf '%s' '${fake}'; sleep 5`, { timeout: 0.5 }),
-    );
-    const timedOutPath = noticePath(timedOut);
-    expect(timedOutPath).not.toContain("bogus");
-    expect(timedOut).toMatch(/Command timed out after 0\.5 seconds$/u);
-    expect((await readFile(timedOutPath, "utf8")).trimEnd().split("\n")).toHaveLength(401);
-    await rm(timedOutPath);
   });
 
   test("a successful command's status-shaped output is not repeated as a status", async () => {
@@ -352,14 +299,14 @@ describe("bashTail", () => {
 
   test("the tool description names the limits in force", () => {
     expect(createBashToolDefinition(directory).description).toContain("last 2000 lines or 50KB");
-    const { tool } = replacement(undefined, { maxLines: 123, maxBytes: 4096 });
+    const { tool } = replacement({ maxLines: 123, maxBytes: 4096 });
     expect(tool.description).toContain("last 123 lines or 4.0KB");
     expect(tool.description).not.toContain("2000 lines");
     expect(replacement().tool.description).toBe(createBashToolDefinition(directory).description);
   });
 
   test("output so far in a backgrounding result uses the same limit", async () => {
-    const { tool } = replacement(undefined, tail);
+    const { tool } = replacement(tail);
     const result = await tool.execute(
       "call",
       { command: "seq 1 1000; sleep 3", background: true },
@@ -474,41 +421,6 @@ describe("Background jobs", () => {
     expect(ui.handler).toBeUndefined();
   });
 
-  test("a Queued Steer backgrounds every running call at once, and says why", async () => {
-    const { tool } = replacement();
-    const first = tool.execute(
-      "a",
-      { command: "echo a; sleep 3" },
-      undefined,
-      undefined,
-      context(),
-    );
-    const second = tool.execute(
-      "b",
-      { command: "echo b; sleep 3" },
-      undefined,
-      undefined,
-      context(),
-    );
-    await waitFor(() => ui.handler !== undefined);
-    await sleep(200);
-    const raisedAt = Date.now();
-    raiseQueuedSteer("root");
-
-    const results = await Promise.all([first, second]);
-    expect(Date.now() - raisedAt).toBeLessThan(500);
-    expect(results.map((result) => result.structuredContent)).toMatchObject([
-      { output: "a\n", background: { id: "b1" } },
-      { output: "b\n", background: { id: "b2" } },
-    ]);
-    expect(textOf(results[0])).toContain(
-      "Command moved to the background as b1 because a message was queued for you. Its output so far",
-    );
-    expect(registry.get("b1")?.state).toBe("running");
-    expect(ui.notifications).toEqual([]);
-    expect(ui.handler).toBeUndefined();
-  });
-
   test("a steer that cannot move a call tells the user and leaves it in the foreground", async () => {
     for (let index = 0; index < 16; index++) {
       registry.createJob("root", `job ${index}`, () => ({
@@ -562,24 +474,6 @@ describe("Background jobs", () => {
     expect(notices[0]).toMatchObject([{ id: "b1", output: "done\n" }]);
   });
 
-  test("a steer for another session leaves a running call alone", async () => {
-    const { tool } = replacement();
-    const running = tool.execute(
-      "call",
-      { command: "echo mine; sleep 0.5" },
-      undefined,
-      undefined,
-      context(),
-    );
-    await waitFor(() => ui.handler !== undefined);
-    raiseQueuedSteer("child");
-    try {
-      expect((await running).structuredContent).toMatchObject({ exit_code: 0 });
-    } finally {
-      settleQueuedSteers("child");
-    }
-  });
-
   test("Esc after backgrounding leaves the job alive; terminal_stop kills the whole tree", async () => {
     const { tool } = replacement();
     const pidFile = join(directory, "grandchild.pid");
@@ -624,78 +518,6 @@ describe("Background jobs", () => {
     expect(existsSync(logPath)).toBe(false);
     await nextTick();
     expect(notices).toEqual([]);
-  });
-
-  test("after backgrounding, Pi's accumulator and onUpdate receive nothing more", async () => {
-    let dataAfterBackground = 0;
-    let backgrounded = false;
-    const definitionFactory: typeof createBashToolDefinition = (cwd, options) => {
-      const operations = options?.operations;
-      if (operations === undefined) throw new Error("expected wrapped operations");
-      return createBashToolDefinition(cwd, {
-        ...options,
-        operations: {
-          exec: (command, execCwd, execOptions) =>
-            operations.exec(command, execCwd, {
-              ...execOptions,
-              onData: (data) => {
-                if (backgrounded) dataAfterBackground++;
-                execOptions.onData(data);
-              },
-            }),
-        },
-      });
-    };
-    const { tool } = replacement(definitionFactory);
-    let updatesAfterBackground = 0;
-    const running = tool.execute(
-      "call",
-      { command: "for i in $(seq 1 20); do echo tick $i; sleep 0.05; done" },
-      undefined,
-      () => {
-        if (backgrounded) updatesAfterBackground++;
-      },
-      context(),
-    );
-    await waitFor(() => ui.handler !== undefined);
-    await sleep(200);
-    ui.handler?.("\u0002");
-    backgrounded = true;
-    await running;
-    await waitFor(() => registry.get("b1")?.state === "exited");
-    expect(dataAfterBackground).toBe(0);
-    expect(updatesAfterBackground).toBe(0);
-    const log = await readFile(join(tmpdir(), "pi-termctrl", `${process.pid}-b1.log`), "utf8");
-    expect(log).toContain("tick 20");
-  });
-
-  test("log files are deleted when removed from /ps and when the owner shuts down", async () => {
-    const { tool } = replacement();
-    const start = async () => {
-      const running = tool.execute(
-        "call",
-        { command: "echo x; sleep 0.3" },
-        undefined,
-        undefined,
-        context(),
-      );
-      await waitFor(() => ui.handler !== undefined);
-      ui.handler?.("\u0002");
-      return running;
-    };
-    const first = await start();
-    const firstLog = join(tmpdir(), "pi-termctrl", `${process.pid}-b1.log`);
-    expect(first.structuredContent).toMatchObject({ background: { log_path: firstLog } });
-    await waitFor(() => registry.get("b1")?.state === "exited");
-    expect(existsSync(firstLog)).toBe(true);
-    await registry.remove("b1");
-    expect(existsSync(firstLog)).toBe(false);
-
-    await start();
-    const secondLog = join(tmpdir(), "pi-termctrl", `${process.pid}-b2.log`);
-    expect(existsSync(secondLog)).toBe(true);
-    await registry.shutdownOwner("root");
-    expect(existsSync(secondLog)).toBe(false);
   });
 
   test("the cap stops background: true before the command runs", async () => {

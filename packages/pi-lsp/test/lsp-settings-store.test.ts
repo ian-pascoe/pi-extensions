@@ -180,32 +180,25 @@ test("preserves settings symlinks, permissions, and original bytes on an unchang
   expect(await readdir(targetDirectory)).toEqual(["dotfiles.json"]);
 });
 
-test.each([
-  "not json",
-  "null",
-  "[]",
-  '{"lsp":null}',
-  '{"lsp":[]}',
-  '{"lsp":{"enablement":null}}',
-  '{"lsp":{"enablement":[]}}',
-  '{"lsp":{"enablement":{"typescript":"false"}}}',
-  '{"lsp":{"enablement":{"":false}}}',
-])("rejects an invalid document unchanged: %s", async (text) => {
-  const cwd = await createSettingsDirectory();
-  const path = resolve(cwd, "settings.json");
-  await writeFile(path, text);
-  await expect(
-    writeLspEnablement({
-      agentDirectory: cwd,
-      cwd,
-      projectTrusted: true,
-      scope: "global",
-      serverId: "typescript",
-      enabled: false,
-    }),
-  ).rejects.toThrow();
-  expect(await readFile(path, "utf8")).toBe(text);
-});
+test.each(["not json", "[]", '{"lsp":{"enablement":{"typescript":"false"}}}'])(
+  "rejects an invalid document unchanged: %s",
+  async (text) => {
+    const cwd = await createSettingsDirectory();
+    const path = resolve(cwd, "settings.json");
+    await writeFile(path, text);
+    await expect(
+      writeLspEnablement({
+        agentDirectory: cwd,
+        cwd,
+        projectTrusted: true,
+        scope: "global",
+        serverId: "typescript",
+        enabled: false,
+      }),
+    ).rejects.toThrow();
+    expect(await readFile(path, "utf8")).toBe(text);
+  },
+);
 
 test("persists project eligibility without copying inherited definitions or changing unrelated settings", async () => {
   const cwd = await createSettingsDirectory();

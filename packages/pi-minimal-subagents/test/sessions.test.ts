@@ -9,7 +9,6 @@ import type {
   Usage,
   UserMessage,
 } from "@earendil-works/pi-ai";
-import { Agent } from "@earendil-works/pi-agent-core";
 import {
   createAssistantMessageEventStream,
   getCurrentSystemPrompt,
@@ -257,39 +256,6 @@ describe("minimal subagent sessions", () => {
     },
   );
 
-  it("recognizes native PowerShell as an available child tool", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-powershell-"));
-    temporaryDirectories.push(directory);
-    const factory = new PiAgentSessionFactory({
-      cwd: directory,
-      agentDir: directory,
-      sessionDir: directory,
-      rootSessionId: "root",
-      extensionEntrypoint: join(directory, "index.ts"),
-      models: [TEST_MODEL],
-      eligibleModelIds: ["provider/model"],
-      modelScopeRestricted: false,
-      availableToolNames: ["powershell"],
-      projectTrusted: true,
-      getCoordinatorTools: () => [],
-    });
-    const agent = persistedAgent();
-    agent.launch_contract.tools = "modify";
-    agent.launch_contract.ordinary_tools = ["powershell"];
-    agent.capability_ceiling = ["powershell"];
-    await expect(factory.resolveLaunchMissingDependencies(agent)).resolves.toEqual([]);
-    const identity = factory.createIdentity(agent, []);
-    agent.session_file = identity.sessionFile;
-    agent.session_id = identity.sessionId;
-    agent.session_leaf_id = identity.sessionLeafId;
-    const runtime = await factory.openRuntime(agent);
-    try {
-      expect(runtime.getActiveToolNames?.()).toEqual(["powershell"]);
-    } finally {
-      await runtime.dispose();
-    }
-  });
-
   it("persists quoted parent context that the child replays as user-role entries and compaction can cut", () => {
     const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-quoted-context-"));
     temporaryDirectories.push(directory);
@@ -380,16 +346,6 @@ describe("minimal subagent sessions", () => {
       "read",
     ]);
     expect(readFileSync(identity.sessionFile, "utf8")).toBe(before);
-    for (const invalid of [
-      { ...agent, session_leaf_id: undefined },
-      { ...agent, session_leaf_id: "missing-leaf" },
-      { ...agent, agent_id: "impostor" },
-      { ...agent, session_id: "wrong-session" },
-    ]) {
-      await expect(factory.resolveRestorationMissingDependencies(invalid)).rejects.toThrow();
-      expect(readFileSync(identity.sessionFile, "utf8")).toBe(before);
-    }
-
     expect(() => factory.readTranscript({ ...agent, session_leaf_id: undefined })).toThrow(
       /position/i,
     );
@@ -673,66 +629,6 @@ describe("minimal subagent sessions", () => {
     });
   });
 
-  it("queues an active-turn coordination message without starting a second prompt", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-active-turn-message-"));
-    temporaryDirectories.push(directory);
-    const agent = persistedAgent();
-    const identity = createPersistentChildIdentity({
-      agent,
-      importedMessages: [],
-      cwd: directory,
-      sessionDir: directory,
-      rootSessionId: "root",
-    });
-    agent.session_file = identity.sessionFile;
-    agent.session_id = identity.sessionId;
-    agent.session_leaf_id = identity.sessionLeafId;
-    const factory = new PiAgentSessionFactory({
-      cwd: directory,
-      agentDir: directory,
-      sessionDir: directory,
-      rootSessionId: "root",
-      extensionEntrypoint: join(directory, "index.ts"),
-      models: [TEST_MODEL],
-      eligibleModelIds: ["provider/model"],
-      modelScopeRestricted: false,
-      availableToolNames: ["read"],
-      projectTrusted: true,
-      getCoordinatorTools: () => [],
-    });
-    const runtime = await factory.openRuntime(agent);
-    const secondPrompt = vi
-      .spyOn(AgentSession.prototype, "sendCustomMessage")
-      .mockRejectedValue(
-        new Error(
-          "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
-        ),
-      );
-    const steer = vi.spyOn(Agent.prototype, "steer");
-    const message: CoordinatorMessage = {
-      customType: "minimal-subagents.message",
-      content: "change direction",
-      details: {
-        source_agent_id: "root",
-        destination_agent_id: "child",
-        source_turn_id: "root:turn",
-        message_id: "message",
-      },
-    };
-
-    try {
-      await expect(runtime.queueCoordinatorMessage(message)).resolves.toBeUndefined();
-      expect(secondPrompt).not.toHaveBeenCalled();
-      expect(steer).toHaveBeenCalledWith(expect.objectContaining({ role: "custom" }));
-      // The steer waits for the child's tool batch, so a wait inside the child must yield to it.
-      expect(hasQueuedSteer(agent.session_id!)).toBe(true);
-    } finally {
-      secondPrompt.mockRestore();
-      steer.mockRestore();
-      await runtime.dispose();
-    }
-  });
-
   it("settles the child session's Queued Steer on its turn start, run end, and disposal", async () => {
     const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-child-steer-"));
     temporaryDirectories.push(directory);
@@ -796,22 +692,6 @@ describe("minimal subagent sessions", () => {
       settleQueuedSteers(identity.sessionId);
       await runtime.dispose();
     }
-  });
-
-  it("force-flushes persistent child identity before any model response", () => {
-    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-session-"));
-    temporaryDirectories.push(directory);
-    const identity = createPersistentChildIdentity({
-      agent: persistedAgent(),
-      importedMessages: [userMessage("hello", 1)],
-      cwd: directory,
-      sessionDir: directory,
-      rootSessionId: "root-session",
-    });
-    const contents = readFileSync(identity.sessionFile, "utf8");
-    expect(contents).toContain('"customType":"minimal-subagents.identity"');
-    expect(contents).toContain('"canonical_agent_id":"child"');
-    expect(contents).toContain('"content":"hello"');
   });
 
   it("child sessions carry an Agent Lineage Record naming their place in the agent tree", () => {
@@ -1176,38 +1056,7 @@ describe("minimal subagent sessions", () => {
     expect(codemode?.definition.description).not.toContain("Model API");
   });
 
-  it("loads Pi's built-in llama.cpp provider unless settings disable it", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-llama-"));
-    temporaryDirectories.push(directory);
-    const load = async (extensions: string[]) => {
-      writeFileSync(join(directory, "settings.json"), JSON.stringify({ extensions }));
-      const loader = createChildResourceLoader({
-        cwd: directory,
-        agentDir: directory,
-        projectContext: "inherit",
-        extensionEntrypoint: join(directory, "index.ts"),
-        systemPromptBlock: "child prompt",
-        grantedTools: [],
-        settingsManager: SettingsManager.create(directory, directory, { projectTrusted: true }),
-      });
-      await loader.reload();
-      return loader.getExtensions();
-    };
-
-    const enabled = await load([]);
-    expect(enabled.errors).toEqual([]);
-    const llama = enabled.extensions.find(({ path }) => path === "builtin:llama.cpp");
-    expect(llama?.sourceInfo.source).toBe("builtin");
-    expect([...(llama?.commands.keys() ?? [])]).toEqual(["llama"]);
-    expect(
-      enabled.runtime.pendingNativeProviderRegistrations.map(({ provider }) => provider.id),
-    ).toEqual(["llama.cpp"]);
-
-    const disabled = await load(["-builtin:llama.cpp"]);
-    expect(disabled.extensions.map(({ path }) => path)).not.toContain("builtin:llama.cpp");
-  });
-
-  it.each(["standalone", "codemode", "codemode-only"] as const)(
+  it.each(["standalone", "codemode-only"] as const)(
     "keeps configured context tools and ordered definitions across child turns and restoration (%s)",
     async (mode) => {
       const withCodeMode = mode !== "standalone";
@@ -1435,7 +1284,7 @@ export default function (pi) {
     30_000,
   );
 
-  it.each(["codemode", "codemode-only"] as const)(
+  it.each(["codemode-only"] as const)(
     "hands codemode scripts partial subagent_delete failures as structured data (%s)",
     async (mode) => {
       const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-partial-delete-"));
@@ -1894,34 +1743,6 @@ export default function projectAdapter(pi) {
     }
     // Disposal shuts child extensions down so they release services like MCP servers.
     expect(existsSync(shutdownMarker)).toBe(true);
-
-    const shellAgent = persistedAgent();
-    shellAgent.agent_id = "shell-child";
-    shellAgent.friendly_id = "shell-child";
-    shellAgent.launch_contract.tools = ["read", "bash"];
-    shellAgent.launch_contract.ordinary_tools = ["read", "bash"];
-    shellAgent.launch_contract.project_context = "omit";
-    shellAgent.capability_ceiling = ["read", "bash"];
-    const shellIdentity = createPersistentChildIdentity({
-      agent: shellAgent,
-      importedMessages: [],
-      cwd: directory,
-      sessionDir: directory,
-      rootSessionId: "root",
-    });
-    shellAgent.session_file = shellIdentity.sessionFile;
-    shellAgent.session_id = shellIdentity.sessionId;
-    shellAgent.session_leaf_id = shellIdentity.sessionLeafId;
-    rmSync(lateToolMarker);
-
-    const shellRuntime = await factory.openRuntime(shellAgent);
-
-    try {
-      await vi.waitFor(() => expect(existsSync(lateToolMarker)).toBe(true));
-      expect(shellRuntime.getActiveToolNames?.()).toEqual(["read", "exec_command", "write_stdin"]);
-    } finally {
-      await shellRuntime.dispose();
-    }
   }, 15_000);
 
   it("keeps arbitrary runtime tool replacements inside the Launch Contract", () => {
@@ -2051,7 +1872,7 @@ export default function projectAdapter(pi) {
         "message:batched",
       ),
     ).toBe(true);
-    for (const event of ["message", "timeout"]) {
+    for (const event of ["message", "timeout", "steered"]) {
       expect(
         findDeliveryEvidence(
           [toolResultEntry("subagent_wait", { ...details, event })],

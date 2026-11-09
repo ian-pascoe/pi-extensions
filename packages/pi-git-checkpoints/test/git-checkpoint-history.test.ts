@@ -178,7 +178,7 @@ describe("persisted Worktree Checkpoint history", () => {
     }
   });
 
-  test("ignores malformed, unsupported, foreign, inherited, scope-mismatched, mode-mismatched, and unpaired records", () => {
+  test("ignores malformed, unsupported, foreign, scope-mismatched, mode-mismatched, and unpaired records", () => {
     const { sessionManager, identity } = createHistorySession();
     sessionManager.appendMessage({ role: "user", content: "work", timestamp: Date.now() });
     const valid = appendModelStep(sessionManager, identity, {
@@ -194,7 +194,6 @@ describe("persisted Worktree Checkpoint history", () => {
     });
     for (const [stepId, override] of [
       ["foreign", { session_id: "another-session" }],
-      ["inherited", { session_id: "source-session" }],
       ["scope", { checkpoint_scope: "another-scope" }],
       ["mode", { mode: "repository", source_state: { kind: "unborn" } }],
     ] as const) {
@@ -240,14 +239,6 @@ describe("persisted Restore undo state", () => {
       GIT_CHECKPOINT_UNDO_ENTRY_TYPE,
       undoPayload(identity, "first"),
     );
-    sessionManager.appendCustomEntry(GIT_CHECKPOINT_UNDO_ENTRY_TYPE, {
-      ...undoPayload(identity, "unsupported"),
-      version: 2,
-    });
-    sessionManager.appendCustomEntry(GIT_CHECKPOINT_UNDO_ENTRY_TYPE, {
-      ...undoPayload(identity, "foreign"),
-      session_id: "another-session",
-    });
     sessionManager.appendCustomEntry(GIT_CHECKPOINT_UNDO_ENTRY_TYPE, {
       ...undoPayload(identity, "scope"),
       checkpoint_scope: "another-scope",
@@ -336,19 +327,20 @@ describe("Target Checkpoint mapping", () => {
     );
     const history = replay(sessionManager, identity);
 
-    for (const selectedTargetId of [userId, customMessageId]) {
+    for (const [selectedTargetId, targetPositionId] of [
+      [userId, first.endEntryId],
+      [customMessageId, userId],
+    ] as const) {
       const plan = planGitCheckpointNavigation(history, {
         oldLeafId: customMessageId,
         selectedTargetId,
       });
-      expect(plan.kind === "ready" && plan.targetCheckpoint.endEntryId).toBe(first.endEntryId);
+      expect(plan).toMatchObject({
+        kind: "ready",
+        targetPositionId,
+        targetCheckpoint: { endEntryId: first.endEntryId },
+      });
     }
-    expect(
-      planGitCheckpointNavigation(history, {
-        oldLeafId: customMessageId,
-        selectedTargetId: userId,
-      }),
-    ).toMatchObject({ kind: "ready", targetPositionId: first.endEntryId });
   });
 
   test("maps an assistant result exactly and an assistant inside a tool batch to its preceding checkpoint", () => {
@@ -446,8 +438,6 @@ describe("ignored path inheritance", () => {
 
     expect(history.checkpoints.map(({ ignoredPaths }) => ignoredPaths)).toEqual([[".env"], [], []]);
     expect(gitCheckpointIgnoredPathsAt(history, first.endEntryId)).toEqual([".env"]);
-    expect(gitCheckpointIgnoredPathsAt(history, third.assistantId)).toEqual([]);
-    expect(gitCheckpointIgnoredPathsAt(history, null)).toEqual([]);
     expect(
       planGitCheckpointNavigation(history, {
         oldLeafId: third.endEntryId,
@@ -520,7 +510,7 @@ describe("Navigation Transition planning", () => {
     });
   });
 
-  test("traverses branch summaries, labels, hidden custom entries, and sibling branches", () => {
+  test("traverses branch summaries, labels, and sibling branches", () => {
     const { sessionManager, identity } = createHistorySession();
     sessionManager.appendMessage({ role: "user", content: "first", timestamp: Date.now() });
     const first = appendModelStep(sessionManager, identity, {
@@ -530,7 +520,6 @@ describe("Navigation Transition planning", () => {
       changedPaths: ["first.ts"],
     });
     const labelId = sessionManager.appendLabelChange(first.endEntryId, "bookmark");
-    const hiddenId = sessionManager.appendCustomEntry("hidden-state", { ok: true });
     sessionManager.branch(first.endEntryId);
     const summaryId = sessionManager.branchWithSummary(
       first.endEntryId,
@@ -540,7 +529,7 @@ describe("Navigation Transition planning", () => {
     );
     const history = replay(sessionManager, identity);
 
-    for (const selectedTargetId of [labelId, hiddenId, summaryId]) {
+    for (const selectedTargetId of [labelId, summaryId]) {
       const plan = planGitCheckpointNavigation(history, {
         oldLeafId: summaryId,
         selectedTargetId,

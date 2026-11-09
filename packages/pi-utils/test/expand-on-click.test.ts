@@ -1,9 +1,4 @@
-import {
-  CustomMessageComponent,
-  initTheme,
-  type CustomEntry,
-  type Theme,
-} from "@earendil-works/pi-coding-agent";
+import { CustomMessageComponent, initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import {
   MouseRegion,
   Text,
@@ -13,7 +8,7 @@ import {
   type TuiMouseEventType,
 } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
-import { expandEntryOnClick, expandMessageOnClick } from "../src/ui.js";
+import { expandMessageOnClick } from "../src/ui.js";
 import { expectClickToggles, keybindingHints } from "../src/ui-testing.js";
 
 beforeAll(() => initTheme("dark"));
@@ -115,34 +110,7 @@ describe("expandMessageOnClick", () => {
   });
 });
 
-describe("expandEntryOnClick", () => {
-  it("toggles a custom entry on a left click", () => {
-    const entry: CustomEntry = {
-      type: "custom",
-      customType: "demo",
-      data: {},
-      id: "e1",
-      parentId: null,
-      timestamp: "",
-    };
-    const component = expandEntryOnClick(view)(
-      entry,
-      { ...keybindingHints, expanded: false },
-      theme,
-    );
-    expect(lines(component)).toEqual(["short"]);
-    click(component);
-    expect(lines(component)).toEqual(["full", "body"]);
-  });
-});
-
 describe("expectClickToggles", () => {
-  it("passes for a renderer wrapped to expand on click", () => {
-    expect(() =>
-      expectClickToggles(expandMessageOnClick(view), message(), collapsed, theme),
-    ).not.toThrow();
-  });
-
   it("fails for a renderer that ignores clicks", () => {
     expect(() => expectClickToggles(view, message(), collapsed, theme)).toThrow(
       /did not handle a left click/,
@@ -162,13 +130,6 @@ describe("expectClickToggles", () => {
 });
 
 describe("inside Pi's CustomMessageComponent", () => {
-  // Pi's host has no click handling of its own; this records why expandMessageOnClick exists.
-  it("does not toggle a plain renderer on click", () => {
-    const host = new CustomMessageComponent(message(), view);
-    expect(click(host, 1)).toBeUndefined();
-    expect(lines(host)).toEqual(["", "short"]);
-  });
-
   it("toggles a renderer wrapped with expandMessageOnClick", () => {
     const host = new CustomMessageComponent(message(), expandMessageOnClick(view));
     expect(lines(host)).toEqual(["", "short"]);

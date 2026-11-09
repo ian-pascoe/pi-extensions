@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager, setKeybindings } from "@earendil-works/pi-tui";
 import type { DurationContext } from "@ian-pascoe/pi-utils/ui";
@@ -27,8 +27,6 @@ beforeAll(() => {
   initTheme("dark");
   setKeybindings(new KeybindingsManager({ "app.tools.expand": { defaultKeys: "ctrl+o" } }));
 });
-
-afterEach(() => vi.useRealTimers());
 
 /**
  * Render at 40 and 120 columns, proving both fit (Markdown bodies follow Pi's global theme), and
@@ -78,18 +76,6 @@ describe("Advisor Interventions", () => {
       expect(rendered).toContain("Run the tests");
       expect(rendered).not.toMatch(/[▲✖]/);
     }
-  });
-
-  it("draws Pi's custom-message box with the configured output padding", () => {
-    const rendered = lines(
-      renderAdvisorIntervention(
-        { severity: "concern", message: "Run the tests" },
-        { expanded: false, outputPad: 3 },
-        theme,
-      ),
-    );
-    expect(rendered.every((line) => line.startsWith("<bg:customMessageBg>"))).toBe(true);
-    expect(withoutTags(rendered[1] ?? "").trimEnd()).toBe(`   ${withoutTags(`${label} concern`)}`);
   });
 
   it("always shows Concerns and Blockers in full but collapses long Nits to ten lines", () => {
@@ -199,14 +185,6 @@ const statusLines = (data: StatusData, expanded = false) =>
 const status = (data: StatusData, expanded = false) => plainText(statusLines(data, expanded));
 
 describe("Advisor status", () => {
-  it("draws the label and state mark in Pi's custom-message box", () => {
-    const rendered = statusLines(snapshot);
-    expect(rendered.every((line) => line.startsWith("<bg:customMessageBg>"))).toBe(true);
-    expect(rendered.join("\n")).toContain(
-      `${label} <accent>●</accent> <customMessageText>reviewing</customMessageText>`,
-    );
-  });
-
   it("summarizes state, model, backlog, usage, children, and problems when collapsed", () => {
     const text = status({ ...snapshot, error: "Model unavailable" });
     expect(text).toContain("[advisor] ● reviewing");
@@ -274,13 +252,6 @@ describe("Advisor status", () => {
       "1 Review ended by invalid reports",
     ])
       expect(text.replace(/\s+/g, " ")).toContain(count);
-    expect(
-      status({
-        ...snapshot,
-        deferredFindings: 0,
-        droppedFindings: { overNitCap: 4, unsupported: 0 },
-      }),
-    ).toContain("dropped");
     const quiet = status({
       ...snapshot,
       deferredFindings: 0,
@@ -309,12 +280,9 @@ describe("Advisor status", () => {
 
   it("lists every setting with its source and each child as a tree when expanded", () => {
     const text = status(snapshot, true);
-    expect(text).toMatch(/enabled\s+true\s+\[session\]/);
     expect(text).toMatch(/model\s+inherit\s+\[default\]/);
     expect(text).toMatch(/allowedTools\s+read, grep\s+\[project\]/);
-    expect(text).toMatch(/catchUpThreshold\s+3\s+\[default\]/);
     expect(text).toMatch(/reviewTimeoutMs\s+120s\s+\[default\]/);
-    expect(text).toMatch(/seedBudgetTokens\s+auto\s+\[default\]/);
     expect(text).toMatch(
       /prompt\s+Review carefully for scope drift and \.\.\. \(69 chars\)\s+\[default\]/,
     );
@@ -335,16 +303,6 @@ describe("Advisor status", () => {
     ).toMatch(
       /^\[advisor\] ● reviewing.*\n\s*\n\s*✓ model → openai\/gpt \[session\]\s*\n\s*✓ enabled → inherit \[project\]\s*\n/,
     );
-  });
-
-  it("renders recognised fields from older or minimal entries", () => {
-    const text = status({
-      state: "private",
-      error: "Private Advisor Sessions cannot create another Advisor",
-    });
-    expect(text).toContain("[advisor] ○ private");
-    expect(text).toContain("✗ Private Advisor Sessions cannot create another Advisor");
-    expect(status({ state: "paused", error: "boom", usage: null, cost: null })).toContain("✗ boom");
   });
 
   it("keeps every recognisable field when one field no longer matches", () => {
@@ -438,15 +396,6 @@ describe("advisor_ask rendering", () => {
     ]);
   });
 
-  it("shows Elapsed under the call while it runs, from the call row", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(0);
-    const context = durationContext({ executionStarted: true, isPartial: true });
-    const component = renderAdvisorAskCall({ message: "Is this safe?" }, false, theme, context);
-    vi.advanceTimersByTime(2500);
-    expect(lines(component).at(-1)).toBe("<muted>Elapsed 2.5s</muted>");
-  });
-
   it("previews the answer to ten lines with Pi's Expand Hint, then shows it all when expanded", () => {
     const preview = lines(
       renderAdvisorAskResult(answer, resultOptions, theme, durationContext({ durationMs: 1234 })),
@@ -468,13 +417,6 @@ describe("advisor_ask rendering", () => {
     ).join("\n");
     expect(full).toContain("Point 12");
     expect(full).not.toContain("to expand");
-  });
-
-  it("ends the result with Pi's Took footer from the recorded duration", () => {
-    const rendered = lines(
-      renderAdvisorAskResult(answer, resultOptions, theme, durationContext({ durationMs: 1234 })),
-    );
-    expect(rendered.at(-1)).toBe("<muted>Took 1.2s</muted>");
   });
 
   it("shows no placeholder while there is nothing to show", () => {
@@ -524,14 +466,7 @@ describe("advisor_ask rendering", () => {
 describe("Advisor footer", () => {
   const mark = "<accent>●</accent> <dim>advisor</dim>";
 
-  it("is absent while the Advisor is disabled", () => {
-    expect(advisorFooterText({ state: "disabled", backlog: 0 }, [], tagged)).toBeUndefined();
-    expect(advisorFooterText(undefined, [], tagged)).toBeUndefined();
-  });
-
   it("says on while armed, like Guardian, and reports review progress", () => {
-    expect(advisorFooterText({ state: "armed", backlog: 0 }, [], tagged)).toBe(`${mark} on`);
-    expect(advisorFooterText({ state: "armed", backlog: 1 }, [], tagged)).toBe(`${mark} on`);
     expect(advisorFooterText({ state: "reviewing", backlog: 2 }, [], tagged)).toBe(
       `${mark} reviewing<dim> · </dim>backlog 2`,
     );

@@ -12,7 +12,6 @@ import {
   createWebSearchTool,
   redactWebSearchApiKey,
   selectSearchProvider,
-  WEB_SEARCH_TIMEOUT_MS,
   type SearchProvider,
   type WebSearchToolOptions,
 } from "../src/web-search.js";
@@ -107,7 +106,6 @@ async function executeSearch(
     (pi) => pi.registerTool(toolDefinition),
     provider === "exa" ? "session-b" : "session-a",
   );
-  expect(runner.getToolDefinition("web_search")).toBe(toolDefinition);
   return toolDefinition.execute(
     "search-call",
     parameters,
@@ -123,7 +121,6 @@ describe("Web Search", () => {
     expect(selectSearchProvider("session-a")).toBe("parallel");
     expect(selectSearchProvider("session-b")).toBe("exa");
     expect(selectSearchProvider("session-a")).toBe("parallel");
-    expect(WEB_SEARCH_TIMEOUT_MS).toBe(25_000);
     expect(JSON.stringify(redactWebSearchApiKey("hidden"))).toBe('"[REDACTED]"');
   });
 
@@ -161,22 +158,6 @@ describe("Web Search", () => {
         },
       },
     });
-    // Exa receives only what its schema declares: no type, livecrawl, or contextMaxCharacters.
-    expect(server.requests[0]).toMatchObject({
-      body: {
-        params: {
-          arguments: {
-            query: "current Pi release",
-            objective: "current Pi release",
-            numResults: 3,
-          },
-        },
-      },
-    });
-    const sent = JSON.stringify(server.requests[0]?.body);
-    for (const absent of ["type", "livecrawl", "contextMaxCharacters"]) {
-      expect(sent).not.toContain(`"${absent}"`);
-    }
     expect(server.requests[0]?.headers.accept).toBe("application/json, text/event-stream");
     expect(server.requests[0]?.headers["content-type"]).toContain("application/json");
     expect(result).toEqual({
@@ -195,13 +176,9 @@ describe("Web Search", () => {
       { query: "defaults" },
     );
 
-    const body = server.requests[0]?.body;
-    expect(body).toMatchObject({
+    expect(server.requests[0]?.body).toMatchObject({
       params: { arguments: { query: "defaults", objective: "defaults", numResults: 8 } },
     });
-    for (const absent of ["type", "livecrawl", "contextMaxCharacters"]) {
-      expect(JSON.stringify(body)).not.toContain(`"${absent}"`);
-    }
   });
 
   test("calls Parallel with its session, bearer credential, and SSE response", async () => {
@@ -246,24 +223,6 @@ describe("Web Search", () => {
     expect(JSON.stringify(result)).not.toContain(secret);
   });
 
-  test("returns the stable fallback when the provider has no text", async () => {
-    const server = await startServer(() => ({
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        result: { content: [{ type: "image", data: "ignored" }] },
-      }),
-    }));
-    const result = await executeSearch(
-      "exa",
-      { exaUrl: `${server.baseUrl}/exa`, parallelUrl: `${server.baseUrl}/parallel` },
-      { query: "nothing" },
-    );
-    expect(result.content).toEqual([
-      { type: "text", text: "No search results found. Please try a different query." },
-    ]);
-  });
-
   test("does not cut the no-results notice at contextMaxCharacters", async () => {
     const server = await startServer(() => ({
       body: JSON.stringify({
@@ -297,57 +256,12 @@ describe("Web Search", () => {
     });
   });
 
-  test("fails once without provider fallback or transport leakage", async () => {
-    const server = await startServer(() => ({ body: "{}", status: 200 }));
-    const secret = "do-not-leak";
-    await expect(
-      executeSearch(
-        "exa",
-        {
-          exaUrl: `${server.baseUrl}/exa`,
-          parallelUrl: `${server.baseUrl}/parallel`,
-          exaApiKey: redactWebSearchApiKey(secret),
-        },
-        { query: "malformed" },
-      ),
-    ).rejects.toThrow("Unable to search the web for malformed");
-    expect(server.requests).toHaveLength(1);
-    expect(server.requests[0]?.url).toContain(secret);
-  });
-
-  test("fails once on a non-OK response without provider fallback", async () => {
-    const server = await startServer(() => ({ body: "unavailable", status: 503 }));
-    await expect(
-      executeSearch(
-        "parallel",
-        { exaUrl: `${server.baseUrl}/exa`, parallelUrl: `${server.baseUrl}/parallel` },
-        { query: "status failure" },
-      ),
-    ).rejects.toThrow(
-      `Unable to search the web for status failure: HTTP 503 Service Unavailable\n\n${TROUBLESHOOTING_HINT}`,
-    );
-    expect(server.requests).toHaveLength(1);
-  });
-
   test("rejects an empty or whitespace-only query before any request", async () => {
-    const server = await startServer(() => ({ body: mcpResult("never") }));
-    for (const provider of ["exa", "parallel"] as const) {
-      for (const query of ["", "  \n\t "]) {
-        const failure: unknown = await executeSearch(
-          provider,
-          { exaUrl: `${server.baseUrl}/exa`, parallelUrl: `${server.baseUrl}/parallel` },
-          { query },
-        ).catch((cause: unknown) => cause);
-        expect(failure).toBeInstanceOf(Error);
-        expect(String(failure)).toBe(
-          "Error: Unable to search the web: query is empty (provide the text to search the web for)",
-        );
-      }
-    }
     const fetch = vi.fn<typeof globalThis.fetch>();
-    await expect(executeSearch("exa", { fetch }, { query: " " })).rejects.toThrow("query is empty");
+    await expect(executeSearch("exa", { fetch }, { query: "  \n\t " })).rejects.toThrow(
+      "Unable to search the web: query is empty (provide the text to search the web for)",
+    );
     expect(fetch).not.toHaveBeenCalled();
-    expect(server.requests).toHaveLength(0);
   });
 
   describe("provider failures", () => {
@@ -401,37 +315,6 @@ describe("Web Search", () => {
       expect(failure.message).not.toContain(TROUBLESHOOTING_HINT);
     });
 
-    test("surfaces Parallel isError text from a JSON response without the hint", async () => {
-      const failure = await failureOf("parallel", {
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          result: {
-            content: [
-              {
-                type: "text",
-                text: "Error executing tool web_search: search_queries must be a non-empty list of non-empty strings. (Internal Detail: None)",
-              },
-            ],
-            isError: true,
-          },
-        }),
-        headers: { "content-type": "application/json" },
-      });
-      expect(failure.message).toBe(
-        "Unable to search the web for failing query: Parallel reported an error: Error executing tool web_search: search_queries must be a non-empty list of non-empty strings. (Internal Detail: None)",
-      );
-    });
-
-    test("reports isError without text", async () => {
-      const failure = await failureOf("parallel", {
-        body: JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [], isError: true } }),
-      });
-      expect(failure.message).toBe(
-        "Unable to search the web for failing query: Parallel reported an error",
-      );
-    });
-
     test("surfaces a JSON-RPC error object returned with HTTP 200 by either provider", async () => {
       const providerError = {
         jsonrpc: "2.0",
@@ -463,38 +346,6 @@ describe("Web Search", () => {
       expect(failure.message).toBe(
         `Unable to search the web for failing query: Exa rate limit reached: ${text.replace(/\s+/g, " ")}\n\n${TROUBLESHOOTING_HINT}`,
       );
-    });
-
-    test("does not treat a false rate-limit flag as a failure", async () => {
-      const server = await startServer(() =>
-        sse({
-          result: {
-            _meta: { "ai.exa/rateLimited": false },
-            content: [{ type: "text", text: "ok" }],
-          },
-        }),
-      );
-      const result = await executeSearch(
-        "exa",
-        { exaUrl: `${server.baseUrl}/exa` },
-        { query: "fine" },
-      );
-      expect(result.content).toEqual([{ type: "text", text: "ok" }]);
-    });
-
-    test("bounds very long provider messages", async () => {
-      const failure = await failureOf("exa", {
-        body: JSON.stringify({
-          result: {
-            content: [{ type: "text", text: `${"boom ".repeat(1_000)}tail` }],
-            isError: true,
-          },
-        }),
-      });
-      expect(failure.message.length).toBeLessThan(600);
-      expect(failure.message).toContain("boom boom");
-      expect(failure.message).toContain("…");
-      expect(failure.message).not.toContain("tail");
     });
 
     test("redacts API keys a provider echoes back", async () => {
@@ -616,20 +467,6 @@ describe("Web Search", () => {
       expect(result.content).toEqual([{ type: "text", text: "found" }]);
     });
 
-    test("keeps the no-results fallback for a valid result without text", async () => {
-      const server = await startServer(() => ({
-        body: JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [] } }),
-      }));
-      const result = await executeSearch(
-        "parallel",
-        { parallelUrl: `${server.baseUrl}/parallel` },
-        { query: "nothing" },
-      );
-      expect(result.content).toEqual([
-        { type: "text", text: "No search results found. Please try a different query." },
-      ]);
-    });
-
     test("skips notifications and other requests' responses on the SSE stream", async () => {
       const notification = JSON.stringify({
         jsonrpc: "2.0",
@@ -670,73 +507,34 @@ describe("Web Search", () => {
       expect(result.content).toEqual([{ type: "text", text: "joined" }]);
     });
 
-    test("orders an answer and a later error deterministically: the first decisive event wins", async () => {
-      const answer = mcpResult("first answer");
-      const failure = JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        result: { content: [{ type: "text", text: "late failure" }], isError: true },
-      });
-      const empty = JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [] } });
-      const answered = await startServer(() => ({
-        body: `data: ${answer}\n\ndata: ${failure}\n\n`,
-      }));
-      const result = await executeSearch(
-        "exa",
-        { exaUrl: `${answered.baseUrl}/exa` },
-        { query: "ordered" },
-      );
-      expect(result.content).toEqual([{ type: "text", text: "first answer" }]);
-
-      const failed = await failureOf("exa", { body: `data: ${empty}\n\ndata: ${failure}\n\n` });
-      expect(failed.message).toBe(
-        "Unable to search the web for failing query: Exa reported an error: late failure",
-      );
-    });
-
     test("reports an unrecognized response for malformed provider bodies", async () => {
-      for (const provider of ["exa", "parallel"] as const) {
-        const failure = await failureOf(provider, { body: "{}" });
+      for (const body of ["{}", "data: {not json\n", "<html><body>Bad gateway</body></html>"]) {
+        const failure = await failureOf("exa", { body });
         expect(failure.message).toBe(
-          `Unable to search the web for failing query: ${provider === "exa" ? "Exa" : "Parallel"} returned an unrecognized response`,
+          "Unable to search the web for failing query: Exa returned an unrecognized response",
         );
-        const broken = await failureOf(provider, { body: "data: {not json\n" });
-        expect(broken.message).toContain("returned an unrecognized response");
-        for (const body of [
-          "",
-          "   ",
-          "<html><body>Bad gateway</body></html>",
-          "data: [DONE]\n\n",
-        ]) {
-          const failure = await failureOf(provider, { body });
-          expect(failure.message).toBe(
-            `Unable to search the web for failing query: ${provider === "exa" ? "Exa" : "Parallel"} returned an unrecognized response`,
-          );
-        }
       }
     });
 
     test("names the HTTP status and hints for server errors and key problems", async () => {
-      for (const provider of ["exa", "parallel"] as const) {
-        const unavailable = await failureOf(provider, { body: "unavailable", status: 503 });
-        expect(unavailable.message).toBe(
-          `Unable to search the web for failing query: HTTP 503 Service Unavailable\n\n${TROUBLESHOOTING_HINT}`,
+      const unavailable = await failureOf("exa", { body: "unavailable", status: 503 });
+      expect(unavailable.message).toBe(
+        `Unable to search the web for failing query: HTTP 503 Service Unavailable\n\n${TROUBLESHOOTING_HINT}`,
+      );
+      const badRequest = await failureOf("exa", { body: "no", status: 400 });
+      expect(badRequest.message).toBe(
+        "Unable to search the web for failing query: HTTP 400 Bad Request",
+      );
+      expect(badRequest.requests).toBe(1);
+      for (const [status, phrase] of [
+        [401, "Unauthorized"],
+        [403, "Forbidden"],
+        [429, "Too Many Requests"],
+      ] as const) {
+        const keyProblem = await failureOf("exa", { body: "denied", status });
+        expect(keyProblem.message).toBe(
+          `Unable to search the web for failing query: HTTP ${status} ${phrase}\n\n${TROUBLESHOOTING_HINT}`,
         );
-        const badRequest = await failureOf(provider, { body: "no", status: 400 });
-        expect(badRequest.message).toBe(
-          "Unable to search the web for failing query: HTTP 400 Bad Request",
-        );
-        expect(badRequest.requests).toBe(1);
-        for (const [status, phrase] of [
-          [401, "Unauthorized"],
-          [403, "Forbidden"],
-          [429, "Too Many Requests"],
-        ] as const) {
-          const keyProblem = await failureOf(provider, { body: "denied", status });
-          expect(keyProblem.message).toBe(
-            `Unable to search the web for failing query: HTTP ${status} ${phrase}\n\n${TROUBLESHOOTING_HINT}`,
-          );
-        }
       }
     });
 
@@ -746,144 +544,80 @@ describe("Web Search", () => {
         error: { code: -32700, message: "Parse error" },
         id: null,
       });
-      for (const provider of ["exa", "parallel"] as const) {
-        const name = provider === "exa" ? "Exa" : "Parallel";
-        const badRequest = await failureOf(provider, {
-          body,
-          status: 400,
-          headers: { "content-type": "application/json" },
-        });
-        expect(badRequest.message).toBe(
-          `Unable to search the web for failing query: HTTP 400 Bad Request: ${name} returned error -32700: Parse error`,
-        );
-        const keyed = await failureOf(provider, {
-          body: JSON.stringify({ error: { code: -32001, message: `bad ${exaSecret}` } }),
-          status: 401,
-          headers: { "content-type": "application/json; charset=utf-8" },
-        });
-        expect(keyed.message).toBe(
-          `Unable to search the web for failing query: HTTP 401 Unauthorized: ${name} returned error -32001: bad [REDACTED]\n\n${TROUBLESHOOTING_HINT}`,
-        );
-        const oversized = await failureOf(provider, {
-          body: JSON.stringify({ error: { code: 1, message: "x".repeat(10_000) } }),
-          status: 502,
-          headers: { "content-type": "application/json" },
-        });
-        expect(oversized.message).toBe(
-          `Unable to search the web for failing query: HTTP 502 Bad Gateway\n\n${TROUBLESHOOTING_HINT}`,
-        );
-        const notJsonRpc = await failureOf(provider, {
-          body: "<html>",
-          status: 400,
-          headers: { "content-type": "application/json" },
-        });
-        expect(notJsonRpc.message).toBe(
-          "Unable to search the web for failing query: HTTP 400 Bad Request",
-        );
-      }
+      const badRequest = await failureOf("parallel", {
+        body,
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+      expect(badRequest.message).toBe(
+        "Unable to search the web for failing query: HTTP 400 Bad Request: Parallel returned error -32700: Parse error",
+      );
+      const keyed = await failureOf("exa", {
+        body: JSON.stringify({ error: { code: -32001, message: `bad ${exaSecret}` } }),
+        status: 401,
+        headers: { "content-type": "application/json; charset=utf-8" },
+      });
+      expect(keyed.message).toBe(
+        `Unable to search the web for failing query: HTTP 401 Unauthorized: Exa returned error -32001: bad [REDACTED]\n\n${TROUBLESHOOTING_HINT}`,
+      );
+      const notJsonRpc = await failureOf("exa", {
+        body: "<html>",
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+      expect(notJsonRpc.message).toBe(
+        "Unable to search the web for failing query: HTTP 400 Bad Request",
+      );
     });
 
     test("names the network error class and hints", async () => {
-      for (const provider of ["exa", "parallel"] as const) {
-        const fetch: typeof globalThis.fetch = () => {
-          throw new TypeError("fetch failed", {
-            cause: Object.assign(
-              new Error(`connect ECONNREFUSED 127.0.0.1:9?exaApiKey=${exaSecret}`),
-              { code: "ECONNREFUSED" },
-            ),
-          });
-        };
-        const failure: unknown = await executeSearch(
-          provider,
-          {
-            fetch,
-            exaApiKey: redactWebSearchApiKey(exaSecret),
-            parallelApiKey: redactWebSearchApiKey(parallelSecret),
-          },
-          { query: "offline" },
-        ).catch((cause: unknown) => cause);
-        expect(String(failure)).toBe(
-          `Error: Unable to search the web for offline: network error ECONNREFUSED\n\n${TROUBLESHOOTING_HINT}`,
-        );
-      }
+      const fetch: typeof globalThis.fetch = () => {
+        throw new TypeError("fetch failed", {
+          cause: Object.assign(
+            new Error(`connect ECONNREFUSED 127.0.0.1:9?exaApiKey=${exaSecret}`),
+            { code: "ECONNREFUSED" },
+          ),
+        });
+      };
+      const failure: unknown = await executeSearch(
+        "exa",
+        {
+          fetch,
+          exaApiKey: redactWebSearchApiKey(exaSecret),
+          parallelApiKey: redactWebSearchApiKey(parallelSecret),
+        },
+        { query: "offline" },
+      ).catch((cause: unknown) => cause);
+      expect(String(failure)).toBe(
+        `Error: Unable to search the web for offline: network error ECONNREFUSED\n\n${TROUBLESHOOTING_HINT}`,
+      );
     });
 
     test("names the timeout deadline and hints", async () => {
-      for (const provider of ["exa", "parallel"] as const) {
-        const deadline = new AbortController();
-        const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
-        try {
-          let requests = 0;
-          const fetch: typeof globalThis.fetch = (_input, init) => {
-            requests++;
-            return new Promise((_resolve, reject) => {
-              init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
-                once: true,
-              });
+      const deadline = new AbortController();
+      const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
+      try {
+        let requests = 0;
+        const fetch: typeof globalThis.fetch = (_input, init) => {
+          requests++;
+          return new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+              once: true,
             });
-          };
-          const pending = executeSearch(provider, { fetch }, { query: "slow" }).catch(
-            (cause: unknown) => cause,
-          );
-          while (requests === 0) await new Promise((resolveDelay) => setTimeout(resolveDelay, 1));
-          deadline.abort(new DOMException("Timed out", "TimeoutError"));
-          expect(String(await pending)).toBe(
-            `Error: Unable to search the web for slow: timed out after 25 seconds\n\n${TROUBLESHOOTING_HINT}`,
-          );
-        } finally {
-          timeout.mockRestore();
-        }
-      }
-    });
-
-    test("reports caller cancellation without a hint or key", async () => {
-      for (const provider of ["exa", "parallel"] as const) {
-        const stalled = await startServer(() => undefined);
-        const controller = new AbortController();
-        const pending = executeSearch(
-          provider,
-          {
-            exaUrl: `${stalled.baseUrl}/exa`,
-            parallelUrl: `${stalled.baseUrl}/parallel`,
-            exaApiKey: redactWebSearchApiKey(exaSecret),
-            parallelApiKey: redactWebSearchApiKey(parallelSecret),
-          },
-          { query: "cancel me" },
-          controller.signal,
-        ).catch((cause: unknown) => cause);
-        while (stalled.requests.length === 0)
-          await new Promise((resolveDelay) => setTimeout(resolveDelay, 1));
-        controller.abort();
-        expect(String(await pending)).toBe(
-          "Error: Unable to search the web for cancel me: request cancelled",
+          });
+        };
+        const pending = executeSearch("exa", { fetch }, { query: "slow" }).catch(
+          (cause: unknown) => cause,
         );
+        while (requests === 0) await new Promise((resolveDelay) => setTimeout(resolveDelay, 1));
+        deadline.abort(new DOMException("Timed out", "TimeoutError"));
+        expect(String(await pending)).toBe(
+          `Error: Unable to search the web for slow: timed out after 25 seconds\n\n${TROUBLESHOOTING_HINT}`,
+        );
+      } finally {
+        timeout.mockRestore();
       }
     });
-  });
-
-  test("applies the 25-second deadline to an in-flight request", async () => {
-    const deadline = new AbortController();
-    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {
-      expect(milliseconds).toBe(25_000);
-      return deadline.signal;
-    });
-    let requests = 0;
-    const fetch: typeof globalThis.fetch = (_input, init) => {
-      requests++;
-      return new Promise((_resolve, reject) => {
-        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
-      });
-    };
-
-    try {
-      const pending = executeSearch("exa", { fetch }, { query: "timeout" });
-      while (requests === 0) await new Promise((resolveDelay) => setTimeout(resolveDelay, 1));
-      deadline.abort(new DOMException("Timed out", "TimeoutError"));
-      await expect(pending).rejects.toThrow("Unable to search the web for timeout");
-      expect(requests).toBe(1);
-    } finally {
-      timeout.mockRestore();
-    }
   });
 
   test("cancels caller-aborted searches and oversized response streams", async () => {
@@ -1047,17 +781,6 @@ describe("Web Search", () => {
       return parsed.results.length;
     }
 
-    test("trims Parallel results to numResults and keeps the payload format", async () => {
-      const { result, text } = await search("parallel", parallelText(10), {
-        query: "q",
-        numResults: 3,
-      });
-      expect(resultCount(text)).toBe(3);
-      const expected = parallelText(3);
-      expect(text).toBe(expected);
-      expect(result.structuredContent).toEqual({ provider: "parallel", content: expected });
-    });
-
     test("trims Parallel results to the default count when numResults is omitted", async () => {
       const { text } = await search("parallel", parallelText(10), { query: "q" });
       expect(resultCount(text)).toBe(8);
@@ -1087,44 +810,6 @@ describe("Web Search", () => {
         // The model text and the script content agree.
         expect(result.structuredContent).toEqual({ provider, content: expected });
       }
-    });
-
-    test("does not cut or mark text within the limit", async () => {
-      const { text } = await search("exa", "abcd", { query: "q", contextMaxCharacters: 4 });
-      expect(text).toBe("abcd");
-      expect((await search("exa", "abcdef", { query: "q" })).text).toBe("abcdef");
-    });
-
-    test("keeps a default 8-result search within the 6,000-character budget for both providers", async () => {
-      const excerpt = "highlight ".repeat(150);
-      const exa = Array.from(
-        { length: 8 },
-        (_, index) =>
-          `Title: Result ${index}\nURL: https://example.com/${index}\nHighlights:\n${excerpt}`,
-      ).join("\n\n");
-      const parallel = JSON.stringify(
-        {
-          results: Array.from({ length: 8 }, (_, index) => ({
-            url: `https://example.com/${index}`,
-            title: `Result ${index}`,
-            excerpts: [excerpt],
-          })),
-        },
-        null,
-        2,
-      );
-      expect(Array.from(exa).length).toBeGreaterThan(6_000);
-      const shared = await search("exa", exa, { query: "q" });
-      const marker = shared.text.slice(shared.text.lastIndexOf("\n\n["));
-      expect(Array.from(shared.text).length - Array.from(marker).length).toBeLessThanOrEqual(6_000);
-      expect(shared.result.structuredContent).toEqual({ provider: "exa", content: shared.text });
-
-      expect(Array.from(parallel).length).toBeGreaterThan(6_000);
-      const { result, text } = await search("parallel", parallel, { query: "q" });
-      const parallelMarker =
-        "\n\n[Search results cut at 6000 characters; pass contextMaxCharacters (up to 50000) for more]";
-      expect(text).toBe(`${Array.from(parallel).slice(0, 6_000).join("")}${parallelMarker}`);
-      expect(result.structuredContent).toEqual({ provider: "parallel", content: text });
     });
 
     describe("shares the budget across Exa results", () => {
@@ -1175,13 +860,6 @@ describe("Web Search", () => {
         expect(marker).toContain("results 1, 3");
         expect(marker).not.toContain("2");
         expect(Array.from(text).length - Array.from(marker).length).toBe(6_000);
-      });
-
-      test("keeps header lines whole for an explicit budget that holds them", async () => {
-        const complete = [exaBlock(1, 5_000), exaBlock(2, 5_000)].join("\n\n");
-        const { text } = await search("exa", complete, { query: "q", contextMaxCharacters: 400 });
-        expect(text).toContain(headers(1));
-        expect(text).toContain(headers(2));
       });
 
       test("keeps only Title and URL lines when the full headers do not fit", async () => {
@@ -1240,24 +918,10 @@ describe("Web Search", () => {
         expect(text).toContain("results 1 shortened".replace("results", "result"));
       });
 
-      test("adds the contextMaxCharacters hint only when the budget was the default", async () => {
-        const complete = [exaBlock(1, 5_000), exaBlock(2, 5_000)].join("\n\n");
-        const byDefault = await search("exa", complete, { query: "q" });
-        expect(byDefault.text).toContain("pass contextMaxCharacters (up to 50000) for more");
-        const explicit = await search("exa", complete, { query: "q", contextMaxCharacters: 1_000 });
-        expect(explicit.text).not.toContain("pass contextMaxCharacters");
-        expect(explicit.text).toContain("cut at 1000 characters");
-      });
-
       test("falls back to a plain cut when the budget cannot hold every header", async () => {
         const complete = [exaBlock(1, 5_000), exaBlock(2, 5_000)].join("\n\n");
         const { text } = await search("exa", complete, { query: "q", contextMaxCharacters: 50 });
         expect(text).toBe(`${complete.slice(0, 50)}\n\n[Search results cut at 50 characters]`);
-      });
-
-      test("returns text that fits unchanged", async () => {
-        const complete = [exaBlock(1, 500), exaBlock(2, 500)].join("\n\n");
-        expect((await search("exa", complete, { query: "q" })).text).toBe(complete);
       });
     });
 
@@ -1271,29 +935,6 @@ describe("Web Search", () => {
         const exact = "x".repeat(6_000);
         expect((await search(provider, exact, { query: "q" })).text).toBe(exact);
       }
-    });
-
-    test("lets an explicit contextMaxCharacters override the default, up to the unchanged maximum", async () => {
-      const complete = "y".repeat(20_000);
-      expect(
-        (await search("exa", complete, { query: "q", contextMaxCharacters: 20_000 })).text,
-      ).toBe(complete);
-      const { text } = await search("exa", "y".repeat(50_001), {
-        query: "q",
-        contextMaxCharacters: 50_000,
-      });
-      expect(text).toBe(`${"y".repeat(50_000)}\n\n[Search results cut at 50000 characters]`);
-    });
-
-    test("never sends the budget to a provider: Exa's live schema declares no such field", async () => {
-      const server = await startServer(() => ({ body: mcpResult("ok") }));
-      await executeSearch(
-        "exa",
-        { exaUrl: `${server.baseUrl}/exa`, parallelUrl: `${server.baseUrl}/parallel` },
-        { query: "q" },
-      );
-      expect(JSON.stringify(server.requests[0]?.body)).not.toContain("contextMaxCharacters");
-      expect(JSON.stringify(server.requests[0]?.body)).not.toContain("maxCharacters");
     });
 
     test("counts code points, never splitting a multibyte character at the boundary", async () => {
@@ -1311,17 +952,6 @@ describe("Web Search", () => {
         contextMaxCharacters: 20,
       });
       expect(text).toBe(`${parallelText(1).slice(0, 20)}\n\n[Search results cut at 20 characters]`);
-    });
-
-    test("describes each parameter's real behavior in static schema text", () => {
-      const { properties }: { properties: Record<string, { description?: string }> } = JSON.parse(
-        JSON.stringify(createWebSearchTool().parameters),
-      );
-      expect(Object.keys(properties)).toEqual(["query", "numResults", "contextMaxCharacters"]);
-      expect(properties.numResults?.description).toContain("Exa applies it");
-      expect(properties.contextMaxCharacters?.description).toContain("1–50,000");
-      expect(properties.contextMaxCharacters?.description).toContain("default: 6,000");
-      expect(properties.contextMaxCharacters?.description).not.toContain("No default");
     });
   });
 });

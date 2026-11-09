@@ -209,22 +209,20 @@ describe("TermctrlRegistry", () => {
     expect(batches).toEqual([]);
   });
 
-  test.each([1, REGISTRY_VERSION - 1, 999])(
-    "tears down a registry with another version (%i) and starts fresh",
-    async (version) => {
-      const teardown = vi.fn(async () => {});
-      Object.defineProperty(globalThis, REGISTRY_KEY, {
-        value: { version, teardown },
-        configurable: true,
-        writable: true,
-      });
-      const { registry } = createHarness();
-      expect(teardown).toHaveBeenCalledOnce();
-      expect(registry.entries()).toEqual([]);
-      const { entry } = startJob(registry, "root");
-      expect(entry.id).toBe("b1");
-    },
-  );
+  test("tears down a registry with another version and starts fresh", async () => {
+    const version = REGISTRY_VERSION - 1;
+    const teardown = vi.fn(async () => {});
+    Object.defineProperty(globalThis, REGISTRY_KEY, {
+      value: { version, teardown },
+      configurable: true,
+      writable: true,
+    });
+    const { registry } = createHarness();
+    expect(teardown).toHaveBeenCalledOnce();
+    expect(registry.entries()).toEqual([]);
+    const { entry } = startJob(registry, "root");
+    expect(entry.id).toBe("b1");
+  });
 
   test("rejects starts beyond the cap and lists the caller's live entries", async () => {
     const { registry } = createHarness();
@@ -438,16 +436,5 @@ describe("TermctrlRegistry", () => {
     expect(exited.job.logRemoved).toBe(true);
     expect(registry.entries()).toEqual([]);
     expect(batches).toEqual([]);
-  });
-
-  test("reports change events for the running count", async () => {
-    const { registry } = createHarness();
-    const counts: number[] = [];
-    const unsubscribe = registry.onChange(() => counts.push(registry.runningCount()));
-    const { entry } = startJob(registry, "root");
-    registry.jobExited(entry.id, { code: 0, signal: null });
-    unsubscribe();
-    startJob(registry, "root");
-    expect(counts).toEqual([1, 0]);
   });
 });

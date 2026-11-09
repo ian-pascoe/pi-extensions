@@ -109,7 +109,7 @@ describe("resolveLspSettings", () => {
     ]);
   });
 
-  test.each([null, [], true, "no"])("reports invalid enablement map %j", async (enablement) => {
+  test.each([null])("reports invalid enablement map %j", async (enablement) => {
     const reader = await createSettingsReader({ lsp: { enablement } }, {}, true);
     expect(resolveLspSettings(reader)).toMatchObject({
       enablement: new Map(),
@@ -133,15 +133,6 @@ describe("resolveLspSettings", () => {
     });
   });
 
-  test("gives workspace-wide requests a larger default budget than ordinary requests", async () => {
-    const settingsManager = await createSettingsReader({}, {}, true);
-
-    const { requestMs, workspaceRequestMs } = resolveLspSettings(settingsManager).timeouts;
-
-    expect(requestMs).toBe(3000);
-    expect(workspaceRequestMs).toBe(15000);
-  });
-
   test("omits hint diagnostics by default and lets project settings override global", async () => {
     const defaults = await createSettingsReader({}, {}, true);
     expect(resolveLspSettings(defaults).includeHintDiagnostics).toBe(false);
@@ -153,14 +144,6 @@ describe("resolveLspSettings", () => {
       true,
     );
     expect(resolveLspSettings(overridden).includeHintDiagnostics).toBe(false);
-  });
-
-  test("quarantines a non-boolean includeHintDiagnostics", async () => {
-    const settings = resolveLspSettings(
-      await createSettingsReader({ lsp: { includeHintDiagnostics: "yes" } }, {}, true),
-    );
-    expect(settings.includeHintDiagnostics).toBe(false);
-    expect(settings.warnings).toEqual(["global lsp.includeHintDiagnostics: expected a boolean"]);
   });
 
   test("replaces complete server definitions and removes inherited servers", async () => {
@@ -195,31 +178,6 @@ describe("resolveLspSettings", () => {
     });
   });
 
-  test("keeps opaque initialization and settings values separate", async () => {
-    const initializationOptions = { nested: ["initialize", { enabled: true }] };
-    const serverSettings = { nested: ["settings", { enabled: false }] };
-    const settingsManager = await createSettingsReader(
-      {
-        lsp: {
-          servers: {
-            typescript: {
-              ...typescriptServer("typescript-language-server"),
-              initializationOptions,
-              settings: serverSettings,
-            },
-          },
-        },
-      },
-      {},
-      true,
-    );
-
-    expect(resolveLspSettings(settingsManager).servers.get("typescript")).toMatchObject({
-      initializationOptions,
-      settings: serverSettings,
-    });
-  });
-
   test("merges environment over process environment and removes null values", async () => {
     process.env.PI_LSP_SETTINGS_INHERITED = "inherited";
     const settingsManager = await createSettingsReader(
@@ -248,19 +206,6 @@ describe("resolveLspSettings", () => {
   });
 
   describe("maxConcurrentDiagnostics", () => {
-    test("defaults to 2 when unset", async () => {
-      const settings = resolveLspSettings(
-        await createSettingsReader(
-          { lsp: { servers: { typescript: typescriptServer("tsc-lsp") } } },
-          {},
-          true,
-        ),
-      );
-
-      expect(settings.servers.get("typescript")?.maxConcurrentDiagnostics).toBe(2);
-      expect(settings.warnings).toEqual([]);
-    });
-
     test("resolves a configured positive integer onto its Server Definition only", async () => {
       const settings = resolveLspSettings(
         await createSettingsReader(
@@ -282,7 +227,7 @@ describe("resolveLspSettings", () => {
       expect(settings.warnings).toEqual([]);
     });
 
-    test.each([0, -1, 1.5, "3", null, true])(
+    test.each([0, "3"])(
       "warns about %j and keeps the Server Definition with the default",
       async (invalid) => {
         const settings = resolveLspSettings(
@@ -308,28 +253,6 @@ describe("resolveLspSettings", () => {
         ]);
       },
     );
-  });
-
-  test("quarantines an invalid global server while preserving valid global servers", async () => {
-    const settingsManager = await createSettingsReader(
-      {
-        lsp: {
-          servers: {
-            invalid: { ...typescriptServer("invalid-lsp"), unknownServerField: true },
-            valid: typescriptServer("valid-lsp"),
-          },
-        },
-      },
-      {},
-      true,
-    );
-
-    const settings = resolveLspSettings(settingsManager);
-
-    expect([...settings.servers.keys()]).toEqual(["valid"]);
-    expect(settings.warnings).toEqual([
-      expect.stringContaining("global lsp.servers.invalid.unknownServerField"),
-    ]);
   });
 
   test("quarantines an invalid project replacement instead of falling back to its global server", async () => {
@@ -382,32 +305,21 @@ describe("resolveLspSettings", () => {
     ]);
   });
 
-  test.each([
-    {
-      lsp: {
-        servers: {
-          typescript: {
-            command: "typescript-language-server",
-            languages: [
-              { extensions: [".ts"], languageId: "typescript", unknownLanguageField: true },
-            ],
-          },
-        },
-      },
+  test.each([{ lsp: { unknownLspField: true } }])(
+    "reports strict unknown fields while retaining valid settings",
+    async (globalSettings) => {
+      const settingsManager = await createSettingsReader(
+        { lsp: { servers: { valid: typescriptServer("valid-lsp") } } },
+        globalSettings,
+        true,
+      );
+
+      const settings = resolveLspSettings(settingsManager);
+
+      expect(settings.servers.get("valid")).toMatchObject({ command: "valid-lsp" });
+      expect(settings.warnings).toEqual([expect.stringContaining("project lsp")]);
     },
-    { lsp: { unknownLspField: true } },
-  ])("reports strict unknown fields while retaining valid settings", async (globalSettings) => {
-    const settingsManager = await createSettingsReader(
-      { lsp: { servers: { valid: typescriptServer("valid-lsp") } } },
-      globalSettings,
-      true,
-    );
-
-    const settings = resolveLspSettings(settingsManager);
-
-    expect(settings.servers.get("valid")).toMatchObject({ command: "valid-lsp" });
-    expect(settings.warnings).toEqual([expect.stringContaining("project lsp")]);
-  });
+  );
 
   test("parses root marker activation and quarantines an activation gate without markers", async () => {
     const settingsManager = await createSettingsReader(

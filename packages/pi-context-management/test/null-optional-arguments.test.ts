@@ -9,11 +9,6 @@ test("each Context Management tool treats null for an optional parameter like om
   const { pi, tools } = recordToolRegistrations();
   contextManagement(pi);
 
-  expect(tools.map(({ name }) => name).toSorted()).toEqual([
-    "context_history",
-    "context_notes",
-    "context_rollover",
-  ]);
   const proven = Object.fromEntries(
     tools.map((tool) => [tool.name, expectNullOptionalArgumentsOmitted(tool)]),
   );

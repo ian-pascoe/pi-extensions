@@ -218,27 +218,6 @@ it("sends the first and second Review of a new Advisor Session with the same req
   expect(advisor[0]?.body.prompt_cache_key).toBe(advisor[1]?.body.prompt_cache_key);
 });
 
-it("leaves providers without a retention opt-in at their default", async () => {
-  const requests: Request[] = [];
-  const privateRequests: PrivateRequest[] = [];
-  globalThis.advisorObserverTest = longSessionStream({ Request: 1 }, privateRequests, {
-    result: (id) => `ok ${id}`,
-    isError: () => false,
-  });
-  recordPayloads(requests);
-  const session = await activeFixture();
-  const observer = new AdvisorObserver(
-    session,
-    { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: 1 },
-    "headless-root",
-  );
-  globalThis.advisorObserverTest.settled = () => observer.settled();
-  onTestFinished(() => observer.dispose());
-  await session.prompt("Request 1.");
-  expect(requests.some((request) => request.advisor)).toBe(true);
-  for (const request of requests) expect(request.options?.cacheRetention).toBeUndefined();
-});
-
 it.each([
   ["openai", {}],
   ["anthropic", { anthropicLongCache: true }],

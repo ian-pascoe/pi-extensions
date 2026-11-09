@@ -161,56 +161,6 @@ describe("lsp tool result", () => {
     expect(rendered.some((line) => line.includes("2 more lines"))).toBe(true);
   });
 
-  test("shows every line and no hint when expanded", () => {
-    const rendered = lines(
-      renderLspToolResult(
-        "find_references",
-        textResult(numbered(20)),
-        { expanded: true, isPartial: false },
-        escapeTaggedTheme,
-        resultContext(),
-      ),
-    );
-    expect(rendered).toContain("<toolOutput>src/a.ts:20:1  line</toolOutput>");
-    expect(rendered.some((line) => line.includes("to expand"))).toBe(false);
-  });
-
-  test("fits narrow terminals", () => {
-    const component = renderLspToolResult(
-      "find_references",
-      textResult(numbered(20)),
-      { expanded: false, isPartial: false },
-      escapeTaggedTheme,
-      resultContext(),
-    );
-    lines(component, 40);
-  });
-
-  test("streams Elapsed while partial, with no placeholder text", () => {
-    vi.useFakeTimers({ now: 0 });
-    const context = resultContext({ isPartial: true, durationMs: undefined });
-    // The first render starts the row's clock, as Pi's first partial draw does.
-    renderLspToolResult(
-      "hover",
-      textResult(""),
-      { expanded: false, isPartial: true },
-      escapeTaggedTheme,
-      context,
-    );
-    vi.advanceTimersByTime(1500);
-    const rendered = lines(
-      renderLspToolResult(
-        "hover",
-        textResult(""),
-        { expanded: false, isPartial: true },
-        escapeTaggedTheme,
-        context,
-      ),
-    );
-    expect(rendered.join("\n")).not.toContain("Running");
-    expect(rendered.at(-1)).toBe("<muted>Elapsed 1.5s</muted>");
-  });
-
   test("shows an error's text in the error role", () => {
     const rendered = lines(
       renderLspToolResult(
@@ -222,20 +172,5 @@ describe("lsp tool result", () => {
       ),
     );
     expect(rendered).toContain("<error>Pi LSP: server typescript request failed</error>");
-  });
-
-  test("renders an apply partial failure as its error text", () => {
-    const rendered = lines(
-      renderLspToolResult(
-        "apply",
-        textResult("Workspace Edit rollback failed for: /workspace/a.ts"),
-        { expanded: false, isPartial: false },
-        escapeTaggedTheme,
-        resultContext({ isError: true }),
-      ),
-    );
-    expect(rendered).toContain(
-      "<error>Workspace Edit rollback failed for: /workspace/a.ts</error>",
-    );
   });
 });

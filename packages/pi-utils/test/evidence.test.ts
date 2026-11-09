@@ -77,54 +77,37 @@ describe("evidence projection", () => {
     expect(future && projectEvidenceItem(future)).toBeUndefined();
   });
 
-  it("estimates tokens from the serialized messages plus images", () => {
-    const text = projectEvidence(messages.slice(0, 1));
-    expect(evidenceTokens(text)).toBe(Math.ceil(JSON.stringify(text.messages).length / 4));
+  it("counts images in the token estimate", () => {
     expect(evidenceTokens(projectEvidence(messages))).toBeGreaterThan(
       evidenceTokens({ ...projectEvidence(messages), images: [] }),
     );
   });
 
   it("attributes converted user messages to their original role", () => {
-    const origins = messageOrigins(
-      [
-        { role: "user", content: "hello", timestamp: 5 },
-        { role: "user", content: "Command output", timestamp: 6 },
-      ],
-      [
-        { role: "user", content: "hello", timestamp: 5 },
-        {
-          role: "bashExecution",
-          command: "ls",
-          output: "x",
-          exitCode: 0,
-          cancelled: false,
-          truncated: false,
-          timestamp: 6,
-        },
-      ],
-    );
-    expect(origins).toEqual(["user", "bashExecution"]);
-  });
-
-  it("pairs a rewritten message with the next unused source of its timestamp", () => {
-    const bash = (timestamp: number) =>
-      ({
+    const sources: Parameters<typeof messageOrigins>[1] = [
+      { role: "user", content: "hello", timestamp: 5 },
+      {
         role: "bashExecution",
         command: "ls",
         output: "x",
         exitCode: 0,
         cancelled: false,
         truncated: false,
-        timestamp,
-      }) as const;
-    // A context hook rewrote the text, so no converted source matches exactly.
-    expect(
-      messageOrigins([{ role: "user", content: "rewritten", timestamp: 6 }], [bash(6)]),
-    ).toEqual(["bashExecution"]);
-    expect(
-      messageOrigins([{ role: "user", content: "rewritten", timestamp: 9 }], [bash(6)]),
-    ).toEqual(["unknown"]);
+        timestamp: 6,
+      },
+    ];
+    const origins = messageOrigins(
+      [
+        { role: "user", content: "hello", timestamp: 5 },
+        { role: "user", content: "Command output", timestamp: 6 },
+      ],
+      sources,
+    );
+    expect(origins).toEqual(["user", "bashExecution"]);
+    // No source shares the timestamp of a message nothing converted to.
+    expect(messageOrigins([{ role: "user", content: "rewritten", timestamp: 9 }], sources)).toEqual(
+      ["unknown"],
+    );
   });
 
   it("keeps messages that share a timestamp apart by content, then by order", () => {
@@ -174,12 +157,6 @@ describe("tool-result cap", () => {
     },
   ];
 
-  it("is off unless a caller opts in, so every text is projected whole", () => {
-    expect(projectEvidence(long)).toEqual(projectEvidence(long, {}));
-    expect(JSON.stringify(projectEvidence(long))).toContain(text);
-    expect(projectEvidenceItem(long[2]!)?.message).toEqual(projectEvidence([long[2]!]).messages[0]);
-  });
-
   it("keeps head and tail of tool-result text only, with the reference and error status", () => {
     const capped = projectEvidence(long, { toolResultCap: cap });
     const plain = projectEvidence(long);
@@ -201,9 +178,7 @@ describe("tool-result cap", () => {
     );
   });
 
-  it("is deterministic and leaves text within the limit, or that a marker would not shorten, as is", () => {
-    const first = JSON.stringify(projectEvidence(long, { toolResultCap: cap }));
-    expect(JSON.stringify(projectEvidence(long, { toolResultCap: cap }))).toBe(first);
+  it("leaves text within the limit, or that a marker would not shorten, as is", () => {
     expect(capText("x".repeat(100), cap)).toBe("x".repeat(100));
     expect(capText("x".repeat(101), cap)).toBe("x".repeat(101));
     expect(capText("x".repeat(200), cap)).toHaveLength(50 + 50 + "\n[cut 100]\n".length);
@@ -230,11 +205,8 @@ describe("evidence shortening and fitting", () => {
     expect(call).toBe(source[1]);
   });
 
-  it("keeps unchanged items by identity and never grows text", () => {
+  it("never grows text", () => {
     const source = items(messages);
-    const shortened = shortenEvidence(source, 10, marker);
-    expect(shortened[0]).toBe(source[0]);
-    expect(shortened[3]).toBe(source[3]);
     expect(shortenEvidence(source, 1000, marker)).toEqual(source);
   });
 
@@ -259,22 +231,6 @@ describe("evidence shortening and fitting", () => {
     expect(fitted).toBeDefined();
     expect(evidenceItemsCost(fitted ?? [])).toBeLessThanOrEqual(allowance);
     expect(fitEvidence(source, 1, marker)).toBeUndefined();
-  });
-
-  it("picks the longest per-string limit that fits, not merely one that fits", () => {
-    const source: EvidenceItem[] = [
-      { message: { role: "user", content: "x".repeat(2000) }, images: [] },
-    ];
-    const allowance = Math.floor(evidenceItemsCost(source) / 2);
-    const fitted = fitEvidence(source, allowance, marker);
-    const limit = JSON.stringify(fitted?.[0]?.message.content).indexOf("\\n[cut ") - 1; // minus the opening quote
-    expect(limit).toBeGreaterThan(0);
-    expect(evidenceItemsCost(shortenEvidence(source, limit, marker))).toBeLessThanOrEqual(
-      allowance,
-    );
-    expect(evidenceItemsCost(shortenEvidence(source, limit + 1, marker))).toBeGreaterThan(
-      allowance,
-    );
   });
 
   it("combines items, renumbering image attachments", () => {

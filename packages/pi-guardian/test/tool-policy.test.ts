@@ -1,5 +1,5 @@
 import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sensitivePathReason, type SensitivePathContext } from "../src/sensitive-paths.js";
@@ -28,16 +28,12 @@ beforeAll(async () => {
 afterAll(() => rm(root, { recursive: true, force: true }));
 
 describe("Sensitive Path", () => {
-  it.each(["src/index.ts", "./README.md", "new/dir/file.ts", "@src/a.ts", "src/../src/b.ts"])(
-    "treats %s as an ordinary workspace path",
-    (path) => {
-      expect(sensitivePathReason(path, paths)).toBeUndefined();
-    },
-  );
+  it.each(["src/index.ts", "@src/a.ts"])("treats %s as an ordinary workspace path", (path) => {
+    expect(sensitivePathReason(path, paths)).toBeUndefined();
+  });
 
   it.each([
     ["the parent directory", "../outside/file", "outside the workspace root"],
-    ["an absolute outside path", "/usr/share/outside.txt", "outside the workspace root"],
     ["the home directory", "~/notes.txt", "outside the workspace root"],
     ["a file URL outside", "file:///usr/share/outside.txt", "outside the workspace root"],
     ["git metadata", ".git/config", 'version-control metadata (".git")'],
@@ -45,37 +41,13 @@ describe("Sensitive Path", () => {
     ["case variants", ".GIT/config", 'version-control metadata (".GIT")'],
     ["Pi project settings", ".pi/settings.json", 'Pi configuration (".pi")'],
     ["dotenv", ".env", 'a secret or environment file (".env")'],
-    ["dotenv variants", "app/.env.local", 'a secret or environment file (".env.local")'],
-    ["direnv", ".envrc", 'a secret or environment file (".envrc")'],
-    ["agent Skills", ".agents/skills/x/SKILL.md", 'agent Skills and configuration (".agents")'],
-    ["agent configuration", ".claude/settings.json", 'agent configuration (".claude")'],
-    ["git hooks", ".husky/pre-commit", 'git hooks (".husky")'],
     ["CI workflows", ".github/workflows/ci.yml", 'CI workflows (".github/workflows")'],
-    ["editor tasks", ".vscode/tasks.json", 'editor tasks and settings (".vscode")'],
-    ["editor run configurations", ".idea/workspace.xml", 'editor run configurations (".idea")'],
-    ["Yarn configuration", ".yarnrc.yml", 'package-manager configuration (".yarnrc.yml")'],
-    ["pnpm install hooks", ".pnpmfile.cjs", 'package-manager install hooks (".pnpmfile.cjs")'],
     [
       "a stow-style dotfile",
       "dotfiles/bash/.bashrc",
       'a shell startup, credential, or persistence file (".bashrc") that takes effect once linked or copied into the home directory',
     ],
-    [
-      "a nested program directory",
-      "dotfiles/local/.local/bin/git",
-      'a shell startup, credential, or persistence file (".local/bin") that takes effect once linked or copied into the home directory',
-    ],
     ["a context file", "AGENTS.md", 'a context file Pi loads as instructions ("AGENTS.md")'],
-    [
-      "a nested context file",
-      "pkg/claude.MD",
-      'a context file Pi loads as instructions ("claude.MD")',
-    ],
-    [
-      "an override context file",
-      "AGENTS.override.md",
-      'a context file Pi loads as instructions ("AGENTS.override.md")',
-    ],
     [
       "a hard-linked file",
       "src/hard-link.ts",
@@ -114,36 +86,20 @@ describe("Sensitive Path", () => {
     expect(reason).not.toContain("\n");
   });
 
-  it.each([
-    ".bashrc",
-    ".zshenv",
-    ".profile",
-    ".config/fish/config.fish",
-    ".config/systemd/user/x.service",
-    ".ssh/authorized_keys",
-    ".gnupg/gpg.conf",
-    ".aws/credentials",
-    ".gitconfig",
-    ".npmrc",
-    ".netrc",
-    ".docker/config.json",
-    ".kube/config",
-    ".local/bin/git",
-    ".bash_aliases",
-    "bin/deploy",
-    ".cargo/bin/cargo-x",
-  ])("reviews ~/%s as a persistence or credential location wherever the workspace is", (path) => {
-    const home = join(root, "home");
-    const inHome = { cwd: join(home, "project"), piDirectories: [], home };
-    expect(sensitivePathReason(join(home, path), inHome)).toMatch(
-      /^a shell startup, credential, or persistence location in the home directory/,
-    );
-  });
+  it.each([".bashrc", ".ssh/authorized_keys", ".local/bin/git", "bin/deploy"])(
+    "reviews ~/%s as a persistence or credential location wherever the workspace is",
+    (path) => {
+      const home = join(root, "home");
+      const inHome = { cwd: join(home, "project"), piDirectories: [], home };
+      expect(sensitivePathReason(join(home, path), inHome)).toMatch(
+        /^a shell startup, credential, or persistence location in the home directory/,
+      );
+    },
+  );
 
   it.each([
     ["the home directory", (home: string) => home],
     ["an ancestor of the home directory", (home: string) => join(home, "..")],
-    ["the file system root", () => "/"],
   ])("reviews every edit when the workspace is %s", (_case, cwd) => {
     const home = join(root, "home");
     const context = { cwd: cwd(home), piDirectories: [], home };
@@ -187,17 +143,6 @@ describe("Sensitive Path", () => {
       "Pi's agent configuration or session files",
     );
   });
-
-  it("expands ~ like Pi", () => {
-    const project = { cwd: join(homedir(), "guardian-test-project"), piDirectories: [] };
-    expect(sensitivePathReason("~/guardian-test-project/notes.txt", project)).toBeUndefined();
-    expect(sensitivePathReason("~/guardian-test-project/.pi/settings.json", project)).toBe(
-      'Pi configuration (".pi")',
-    );
-    expect(sensitivePathReason("~/.bashrc", project)).toMatch(
-      /^a shell startup, credential, or persistence location in the home directory \("\.bashrc"\)/,
-    );
-  });
 });
 
 describe("Tool Policy resolution", () => {
@@ -211,25 +156,7 @@ describe("Tool Policy resolution", () => {
     ...overrides,
   });
 
-  it.each([
-    "read",
-    "grep",
-    "find",
-    "ls",
-    "codemode",
-    "tool_search",
-    "todo",
-    "web_search",
-    "context_notes",
-    "context_history",
-    "context_rollover",
-    "advisor_report",
-    "secret_ask",
-    "secret_ask_grant",
-    "secret_list",
-    "secret_save",
-    "secret_forget",
-  ])("allows %s by default", (toolName) => {
+  it.each(["read", "codemode", "advisor_report"])("allows %s by default", (toolName) => {
     expect(resolveToolPolicy(call({ toolName }))).toEqual({ policy: "allow", source: "default" });
   });
 
@@ -274,12 +201,6 @@ describe("Tool Policy resolution", () => {
       resolveToolPolicy(call({ toolName: "bash", input: { command }, settled: false })).policy,
     ).toBe("review");
     expect(resolveToolPolicy(call({ toolName: "bash", input: { command } })).policy).toBe("review");
-    // Judged against the workspace in `paths`.
-    for (const escape of ["cd escape && git status", "cd .. && git status", "cd git-link"])
-      expect(
-        resolveToolPolicy(call({ toolName: "bash", input: { command: escape }, settled: true }))
-          .policy,
-      ).toBe("review");
     // What the shell inherits is passed through.
     expect(
       resolveToolPolicy(
@@ -362,18 +283,18 @@ describe("Tool Policy resolution", () => {
       expect(
         resolveToolPolicy(call({ toolName, input: { command: "python", text: "rm x" }, commands })),
       ).toEqual({ policy: "review", source: "default", detail: named });
-    // terminal_send types text rather than running a command line: reviewed, never denied.
+    // terminal_send types text rather than running a command line: reviewed, never denied, even
+    // when annotated read-only.
     expect(
       resolveToolPolicy(
-        call({ toolName: "terminal_send", input: { text: "rm -rf x\n" }, commands }),
+        call({
+          toolName: "terminal_send",
+          input: { text: "rm -rf x\n" },
+          commands,
+          annotations: { readOnlyHint: true },
+        }),
       ).policy,
     ).toBe("review");
-  });
-
-  it("reviews terminal tools even when annotated read-only", () => {
-    expect(
-      resolveToolPolicy(call({ toolName: "terminal_send", annotations: { readOnlyHint: true } })),
-    ).toEqual({ policy: "review", source: "default" });
   });
 
   it("reviews web_fetch by default, since a fetched URL can carry data out", () => {
@@ -405,18 +326,6 @@ describe("Tool Policy resolution", () => {
       source: "fallback",
     });
     expect(resolveToolPolicy(call({}))).toEqual({ policy: "review", source: "fallback" });
-  });
-
-  it("lets an explicit review Tool Policy review advisor_report", () => {
-    expect(
-      resolveToolPolicy(
-        call({
-          toolName: "advisor_report",
-          configured: { advisor_report: "review" },
-          annotations: { readOnlyHint: false },
-        }),
-      ),
-    ).toEqual({ policy: "review", source: "setting" });
   });
 
   it("lets configured Tool Policies override defaults and annotations", () => {

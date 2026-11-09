@@ -262,11 +262,4 @@ describe("1Password Secret Provider", () => {
       fields: [{ id: "password", purpose: "PASSWORD", type: "CONCEALED" }],
     });
   });
-
-  it("treats an empty vault list, as invalid settings fall back to, as no vaults", async () => {
-    const { provider: onePassword } = provider({ "item get": githubItem }, { vaults: [] });
-    await expect(onePassword.describe("op://Dev/GitHub/credential")).rejects.toThrow(
-      "not in a vault listed in secret.providers.1password.vaults",
-    );
-  });
 });

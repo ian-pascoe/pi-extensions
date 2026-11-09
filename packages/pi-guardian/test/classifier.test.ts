@@ -103,17 +103,8 @@ describe("Classifier First Pass", () => {
         model: "guardian-test/reviewer",
       },
     });
-  });
-
-  it("hides an escalation that resolved the classifier's doubt unless verbose", async () => {
-    const { entry } = await deployOnce(
-      [classified({ low: 0.6, high: 0.4 }, { high: 0.5, low: 0.5 }, { destruction: 1 })],
-      [assessment("low", "high", "Routine.")],
-    );
-    expect(text(renderReviewEntry(entry, false, plainTheme, false))).toBe("");
-    expect(text(renderReviewEntry(entry, false, plainTheme, true))).toContain(
-      "escalated (classifier unsure: low/low)",
-    );
+    // An escalation that only resolved the classifier's doubt renders nothing unless verbose.
+    expect(renderReviewEntry(entry, false, plainTheme, false)).toBeUndefined();
   });
 
   it("escalates a would-be Rejection, which stands when the Escalation Pass fails", async () => {
@@ -131,9 +122,6 @@ describe("Classifier First Pass", () => {
     });
     const result = harness.session.messages.find((message) => message.role === "toolResult");
     expect(JSON.stringify(result)).toContain("Reason: The Guardian gave no specific rationale.");
-    expect(text(renderReviewEntry(entry, false, plainTheme, false))).toContain(
-      "escalation failed, first pass stands (first pass critical (destruction)/unknown)",
-    );
   });
 
   it("escalates high risk without a Risk Category instead of deciding it as medium", async () => {

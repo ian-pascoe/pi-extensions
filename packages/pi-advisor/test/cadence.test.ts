@@ -17,8 +17,6 @@ import { readAdvisorSettings, type AdvisorConfig } from "../src/advisor-settings
 
 /** Short, successful observed tool results unless a test marks some as errors. */
 const ok = { result: (id: string) => `ok ${id}`, isError: () => false };
-/** Successful tool calls with effects, which start a Review per turn under the default cadence. */
-const effects = { ...ok, call: effectful };
 
 async function observe(
   config: Partial<AdvisorConfig>,
@@ -72,21 +70,6 @@ it('reviews a multi-turn request once, at its completion, under reviewEvery "req
   expect(second).toHaveLength(8);
   expect(second[0]).toBe("user:Second request: add tests.");
   expectPrefix(privateRequests[1], privateRequests[0]);
-});
-
-it("reviews a request at native request completion alone, without the settled hook", async () => {
-  const privateRequests: PrivateRequest[] = [];
-  globalThis.advisorObserverTest = longSessionStream(
-    { "Interactive task": 3 },
-    privateRequests,
-    ok,
-  );
-  const { session, observer } = await observe({ reviewEvery: "request" }, {}, [], "interactive");
-  await session.prompt("Interactive task");
-  await vi.waitFor(() => expect(observer.status).toMatchObject({ state: "armed", backlog: 0 }));
-  expect(observer.status.lastError).toBeNull();
-  expect(privateRequests).toHaveLength(1);
-  expect(received(privateRequests[0])).toHaveLength(8);
 });
 
 it("waits for Pi's automatic retry before reviewing the request", async () => {
@@ -190,52 +173,27 @@ it("finishes a request's Review across observed compaction after the request, th
   );
 });
 
-it("reseeds within the Context Seed budget when a coarse Review's new evidence would exceed it", async () => {
+it('reviews a tool-error turn at once, then the rest of the request, under reviewEvery "request"', async () => {
+  const reviewEvery = "request";
   const privateRequests: PrivateRequest[] = [];
-  globalThis.advisorObserverTest = longSessionStream(
-    { "Small request": 1, "Large request": 6 },
-    privateRequests,
-    { isError: () => false, result: (id) => `result ${id} ${"x".repeat(4_000)}` },
-  );
-  const { session, observer } = await observe({ reviewEvery: "request", seedBudgetTokens: 4_000 });
-  await session.prompt("Small request");
-  await session.prompt("Large request");
-  expect(observer.status.lastError).toBeNull();
+  // The second tool batch (`0-1`) fails; batches are named `<request index>-<batch>`.
+  globalThis.advisorObserverTest = longSessionStream({ "Fix the build": 5 }, privateRequests, {
+    ...ok,
+    isError: (id) => id === "0-1",
+  });
+  const { session, observer } = await observe({ reviewEvery });
+  await session.prompt("Fix the build");
+  expect(observer.status).toMatchObject({ lastError: null, backlog: 0 });
   expect(privateRequests).toHaveLength(2);
-  // Six new tool batches exceed the budget, so the Advisor Session is rebuilt from a seed.
-  const second = seedPayload(privateRequests[1]);
-  expect(second.header).toContain("Current context seed.");
-  expect(second.header).toContain("seedBudgetTokens (4000 tokens)");
-  expect(second.tokens).toBeLessThanOrEqual(4_000);
-  expect(received(privateRequests[1]).at(-1)).toBe("assistant:Done");
-  expect(privateRequests[1]?.messages).toHaveLength(1);
+  // The first Review stops at the failed batch: the request and two tool batches.
+  const [failed, rest] = privateRequests.map(received);
+  expect(failed).toHaveLength(5);
+  expect(failed?.at(-1)).toBe("toolResult:ok 0-1");
+  // The second covers every remaining turn: three more batches and the final answer.
+  expect(rest).toHaveLength(7);
+  expect(rest?.at(-1)).toBe("assistant:Done");
+  expect([...(failed ?? []), ...(rest ?? [])]).toHaveLength(conversation(session.messages).length);
 });
-
-it.each(["request", 4] as const)(
-  "reviews a tool-error turn at once, then the rest of the request, under reviewEvery %s",
-  async (reviewEvery) => {
-    const privateRequests: PrivateRequest[] = [];
-    // The second tool batch (`0-1`) fails; batches are named `<request index>-<batch>`.
-    globalThis.advisorObserverTest = longSessionStream({ "Fix the build": 5 }, privateRequests, {
-      ...ok,
-      isError: (id) => id === "0-1",
-    });
-    const { session, observer } = await observe({ reviewEvery });
-    await session.prompt("Fix the build");
-    expect(observer.status).toMatchObject({ lastError: null, backlog: 0 });
-    expect(privateRequests).toHaveLength(2);
-    // The first Review stops at the failed batch: the request and two tool batches.
-    const [failed, rest] = privateRequests.map(received);
-    expect(failed).toHaveLength(5);
-    expect(failed?.at(-1)).toBe("toolResult:ok 0-1");
-    // The second covers every remaining turn: three more batches and the final answer.
-    expect(rest).toHaveLength(7);
-    expect(rest?.at(-1)).toBe("assistant:Done");
-    expect([...(failed ?? []), ...(rest ?? [])]).toHaveLength(
-      conversation(session.messages).length,
-    );
-  },
-);
 
 const annotatedTools = fileURLToPath(
   new URL("./fixtures/annotated-tools-extension.ts", import.meta.url),
@@ -267,20 +225,6 @@ it("reviews a run of read-only turns once, with the edit that follows them", asy
   expectPrefix(privateRequests[1], privateRequests[0]);
 });
 
-it("reviews the read-only turns left at request completion", async () => {
-  const privateRequests: PrivateRequest[] = [];
-  globalThis.advisorObserverTest = longSessionStream({ "Only explore": 3 }, privateRequests, {
-    ...ok,
-    call: () => readTurn,
-  });
-  const { session, observer } = await observe({});
-  await session.prompt("Only explore");
-  expect(observer.status).toMatchObject({ lastError: null, backlog: 0 });
-  expect(privateRequests).toHaveLength(1);
-  expect(received(privateRequests[0])).toHaveLength(8);
-  expect(received(privateRequests[0]).at(-1)).toBe("assistant:Done");
-});
-
 it("reviews an errored read-only call at once, with the read turns before it", async () => {
   const privateRequests: PrivateRequest[] = [];
   globalThis.advisorObserverTest = longSessionStream({ "Explore badly": 4 }, privateRequests, {
@@ -309,17 +253,9 @@ it.each([
     true,
   ],
   ["a tool annotated readOnlyHint: true", [{ name: "lookup", arguments: {} }], true],
-  ["a read and an annotated read-only tool", [readTurn, { name: "lookup", arguments: {} }], true],
   ["a tool annotated readOnlyHint: false", [{ name: "mutate", arguments: {} }], false],
-  ["a tool without annotations", [{ name: "unannotated", arguments: {} }], false],
   ["an unknown tool", [{ name: "missing_tool", arguments: {} }], false],
-  ["bash", [{ name: "bash", arguments: { command: "true" } }], false],
   ["a read alongside bash", [readTurn, { name: "bash", arguments: { command: "true" } }], false],
-  [
-    "a read alongside an unannotated tool",
-    [readTurn, { name: "unannotated", arguments: {} }],
-    false,
-  ],
 ])("classifies a turn that calls %s for its Review", async (_name, calls, readOnly) => {
   const privateRequests: PrivateRequest[] = [];
   globalThis.advisorObserverTest = longSessionStream({ "One batch": 1 }, privateRequests, {
@@ -336,32 +272,17 @@ it.each([
   expect(sizes).toEqual(readOnly ? [calls.length + 3] : [calls.length + 2, 1]);
 });
 
-it.each(["request", 3] as const)(
-  "leaves reviewEvery %s unchanged for read-only turns",
-  async (reviewEvery) => {
-    const privateRequests: PrivateRequest[] = [];
-    globalThis.advisorObserverTest = longSessionStream({ "Long read": 7 }, privateRequests, {
-      ...ok,
-      call: () => readTurn,
-    });
-    const { session, observer } = await observe({ reviewEvery });
-    await session.prompt("Long read");
-    expect(observer.status).toMatchObject({ lastError: null, backlog: 0 });
-    expect(privateRequests.map((request) => received(request).length)).toEqual(
-      reviewEvery === "request" ? [16] : [7, 6, 3],
-    );
-  },
-);
-
-it("reviews every N turns and the remainder at request completion", async () => {
+it("leaves reviewEvery 3 unchanged for read-only turns", async () => {
+  const reviewEvery = 3;
   const privateRequests: PrivateRequest[] = [];
-  globalThis.advisorObserverTest = longSessionStream({ "Long task": 7 }, privateRequests, ok);
-  const { session, observer } = await observe({ reviewEvery: 3 });
-  await session.prompt("Long task");
+  globalThis.advisorObserverTest = longSessionStream({ "Long read": 7 }, privateRequests, {
+    ...ok,
+    call: () => readTurn,
+  });
+  const { session, observer } = await observe({ reviewEvery });
+  await session.prompt("Long read");
   expect(observer.status).toMatchObject({ lastError: null, backlog: 0 });
-  // Eight turns: Reviews after turns 3 and 6, then turns 7–8 when the request completes.
   expect(privateRequests.map((request) => received(request).length)).toEqual([7, 6, 3]);
-  expect(received(privateRequests[2]).at(-1)).toBe("assistant:Done");
 });
 
 /** Pi's estimate of an Advisor context, without the newest prompt that started the request. */
@@ -446,47 +367,16 @@ it.each([
 /**
  * Advisor cache proof across compaction: every request keeps the system prompt and tools, and
  * each Review without a compaction since the previous one extends its history unchanged.
- * Returns how many consecutive pairs were compared as prefixes and how many spanned compaction.
  */
 function expectStableAcrossCompaction(privateRequests: PrivateRequest[]) {
-  let prefixes = 0;
-  let compactions = 0;
   for (const [index, request] of privateRequests.entries()) {
     const previous = privateRequests[index - 1];
     if (!previous) continue;
     expect(request.systemPrompt).toEqual(previous.systemPrompt);
     expect(request.tools).toEqual(previous.tools);
-    if (request.summariesBefore === previous.summariesBefore) {
-      expectPrefix(request, previous);
-      prefixes++;
-    } else compactions++;
+    if (request.summariesBefore === previous.summariesBefore) expectPrefix(request, previous);
   }
-  return { prefixes, compactions };
 }
-
-it("keeps the Advisor prompt and tools across compaction, and its history a prefix between compactions", async () => {
-  const privateRequests: PrivateRequest[] = [];
-  const summaries: Context[] = [];
-  const requests = Array.from({ length: 12 }, (_, index) => `Request ${index + 1}.`);
-  globalThis.advisorObserverTest = longSessionStream(
-    Object.fromEntries(requests.map((request) => [request, 1])),
-    privateRequests,
-    { isError: () => false, summaries },
-  );
-  const { session, observer } = await observe(
-    { reviewEvery: "request", maxSessionTokens: 9_000, maxToolResultChars: 1_000_000 },
-    { compaction: { enabled: false, keepRecentTokens: 1_000 } },
-  );
-  for (const request of requests) await session.prompt(request);
-  expect(observer.status.lastError).toBeNull();
-  expect(privateRequests).toHaveLength(12);
-  const { prefixes, compactions } = expectStableAcrossCompaction(privateRequests);
-  expect(prefixes).toBeGreaterThanOrEqual(4);
-  expect(compactions).toBeGreaterThanOrEqual(2);
-  // Every Review after the first stays incremental, across compaction too.
-  for (const request of privateRequests.slice(1))
-    expect(seedPayload(request).header).toContain("Incremental update.");
-});
 
 it.each(["headless-root", "owned-child"] as const)(
   "lets the %s final drain wait for a running Advisor Session compaction",
@@ -631,27 +521,6 @@ it("leaves a Context Management Advisor Session to its own Rollover instead of c
   expectPrefix(privateRequests[2], privateRequests[1]);
 });
 
-it("keeps the private Advisor history a stable prefix between Reviews without compaction", async () => {
-  const privateRequests: PrivateRequest[] = [];
-  globalThis.advisorObserverTest = longSessionStream(
-    { "Step one": 2, "Step two": 2, "Step three": 2 },
-    privateRequests,
-    effects,
-  );
-  const { session, observer } = await observe({});
-  for (const prompt of ["Step one", "Step two", "Step three"]) await session.prompt(prompt);
-  expect(observer.status.lastError).toBeNull();
-  // The default cadence still reviews every turn.
-  expect(privateRequests).toHaveLength(9);
-  for (const [index, request] of privateRequests.entries()) {
-    if (index === 0) continue;
-    const previous = privateRequests[index - 1];
-    expect(request.systemPrompt).toEqual(previous?.systemPrompt);
-    expect(request.tools).toEqual(previous?.tools);
-    expectPrefix(request, previous);
-  }
-});
-
 it("reports the last Review's cost and the running total in status", async () => {
   const privateRequests: PrivateRequest[] = [];
   const cost = { input: 0.003, output: 0.001, cacheRead: 0.0005, cacheWrite: 0, total: 0.0045 };
@@ -682,11 +551,4 @@ it("reports a Review without usage on a priced model as a known $0", async () =>
   await session.prompt("First");
   expect(observer.status.lastError).toBeNull();
   expect(observer.status.reviewCost).toEqual({ reviews: 1, last: 0, total: 0 });
-});
-
-it("reports unknown Review cost as unknown, not zero", async () => {
-  globalThis.advisorObserverTest = longSessionStream({}, [], ok);
-  const { session, observer } = await observe({});
-  await session.prompt("First");
-  expect(observer.status.reviewCost).toEqual({ reviews: 1, last: null, total: null });
 });

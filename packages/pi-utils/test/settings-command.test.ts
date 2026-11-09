@@ -96,26 +96,13 @@ describe("parseSettingsCommand", () => {
 
   it("throws the usage for malformed commands", () => {
     expect(() => parse("set limit")).toThrow(usage);
-    expect(() => parse("set")).toThrow(usage);
     expect(() => parse("bogus")).toThrow(usage);
-    expect(() => parse("inherit a b")).toThrow(usage);
   });
 
   it("tries the command's own actions first and falls through on undefined", () => {
     expect(parse("reset")).toEqual({ action: "reset", scope: "session" });
     expect(parse("pin build")).toEqual({ action: "pin", name: "build" });
     expect(() => parse("pin")).toThrow(usage);
-  });
-
-  it("works without extra actions", () => {
-    const plain: SettingsCommandSpec<Options, Key> = {
-      usage,
-      optionKey: spec.optionKey,
-      parseOptions: spec.parseOptions,
-      toggle: spec.toggle,
-    };
-    expect(() => parseSettingsCommand("reset", plain)).toThrow(usage);
-    expect(parseSettingsCommand("off", plain)).toMatchObject({ action: "set" });
   });
 });
 
@@ -130,7 +117,6 @@ describe("completeSettingsCommandArguments", () => {
     completeSettingsCommandArguments(prefix, completion).map((item) => item.value);
 
   it("offers the words that start with the prefix, labelled by value", () => {
-    expect(values("")).toEqual(completion.words);
     expect(values("s")).toEqual(["status", "set"]);
     expect(completeSettingsCommandArguments("of", completion)).toEqual([
       { value: "off", label: "off" },

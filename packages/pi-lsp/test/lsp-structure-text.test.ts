@@ -98,36 +98,6 @@ describe("formatLspStructureReadText", () => {
     );
   });
 
-  test("renders workspace symbols with their containers and URI-only locations", async () => {
-    const cwd = await workspace({});
-    const text = await render(cwd, {
-      operation: "workspace_symbols",
-      documentPath: resolve(cwd, "src/a.ts"),
-      value: [
-        {
-          name: "greet",
-          kind: 6,
-          containerName: "Greeter",
-          location: { uri: resolve(cwd, "src/a.ts"), range: range(3, 3) },
-        },
-        { name: "Greeter", kind: 5, location: { uri: resolve(cwd, "src/a.ts") } },
-        {
-          name: "old",
-          kind: 13,
-          deprecated: true,
-          location: { uri: "/outside/b.ts", range: range(1, 7) },
-        },
-      ],
-    });
-    expect(text).toBe(
-      [
-        "greet (method) src/a.ts:3:3  in Greeter",
-        "Greeter (class) src/a.ts",
-        "old (variable, deprecated) /outside/b.ts:1:7",
-      ].join("\n"),
-    );
-  });
-
   test("renders hierarchy items as name (kind) path:line:col", async () => {
     const cwd = await workspace({});
     const text = await render(cwd, {

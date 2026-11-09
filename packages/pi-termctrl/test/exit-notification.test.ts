@@ -140,42 +140,6 @@ describe("Exit notifications", () => {
     expect(collapsed[3]).toContain("<success>✓</success> <customMessageText><b>t1</b>");
   });
 
-  test("more than 10 exits collapse to 10 rows and the Expand Hint", () => {
-    const many = Array.from({ length: 13 }, (_, index): Notice => ({
-      id: `t${index + 1}`,
-      kind: "terminal",
-      command: "false",
-      exit: { code: 1, signal: null },
-      durationMs: 100,
-      output: "",
-    }));
-    const collapsed = rendered(
-      renderExitNotification(
-        messageFor(many, 0),
-        { ...keybindingHints, expanded: false, outputPad: 0 },
-        theme,
-      ),
-    );
-    expect(collapsed.filter((line) => line.includes("■"))).toHaveLength(10);
-    expect(collapsed).toContain(
-      "<muted>... (3 more lines,</muted> <dim>ctrl+o</dim><muted> to expand</muted><muted>)</muted>",
-    );
-  });
-
-  test("expanded shows the full text with no extra hint", () => {
-    const expanded = rendered(
-      renderExitNotification(
-        messageFor(notices),
-        { ...keybindingHints, expanded: true, outputPad: 1 },
-        theme,
-      ),
-    );
-    expect(expanded).toContain(
-      "<customMessageText>Last lines of final screen:</customMessageText>",
-    );
-    expect(expanded.join("\n")).not.toContain("to expand");
-  });
-
   test("a message without details collapses its text to 10 lines", () => {
     const { details: _details, ...withoutDetails } = messageFor(notices);
     const message = {

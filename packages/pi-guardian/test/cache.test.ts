@@ -135,32 +135,15 @@ describe("evidence that overflows its budget", () => {
     for (const between of growthAtReanchor.slice(1))
       expect(between).toBeGreaterThanOrEqual(rawBudget / 2 - perTurn);
   });
-
-  it("calibrates the token estimate from the provider's reported prompt tokens", async () => {
-    // The provider reports 2.5× Pi's chars/4 estimate.
-    // At the uncalibrated 1.5×, evidence grows to nearly 3,000 / 1.5 estimated tokens.
-    const uncalibrated = await overflowingSession(16, (estimated) => Math.ceil(estimated * 1.5));
-    const largest = Math.max(...uncalibrated.reviews.map(evidenceBlocks).map(blockTokens));
-    expect(largest).toBeLessThanOrEqual(2_000);
-    expect(largest).toBeGreaterThan(1_200);
-    // Every later review shrinks to 3,000 / 2.5 once the provider reports 2.5× the estimate.
-    const harness = await overflowingSession(16, (estimated) => Math.ceil(estimated * 2.5));
-    const later = harness.reviews.slice(1).map(evidenceBlocks).map(blockTokens);
-    for (const tokens of later) {
-      expect(tokens).toBeLessThanOrEqual(1_200);
-      // In the provider's real tokens, evidence stays within its 3,000-token budget.
-      expect(Math.ceil(tokens * 2.5)).toBeLessThanOrEqual(3_000);
-    }
-    console.info(
-      `calibration: largest evidence ${largest} est. tokens at 1.5x; at 2.5x at most ${Math.max(...later)} (real ${Math.ceil(Math.max(...later) * 2.5)} of 3000)`,
-    );
-  });
 });
 
 describe("calibration from the session", () => {
   it("records calibration samples, so a reloaded session keeps its factor", async () => {
     const scale = (estimated: number) => Math.ceil(estimated * 2.5);
     const first = await overflowingSession(16, scale);
+    // Within the session, each review after the first already fits the provider's 2.5\u00d7 scale.
+    for (const review of first.reviews.slice(1))
+      expect(blockTokens(evidenceBlocks(review))).toBeLessThanOrEqual(1_200);
     expect(first.entries("pi-guardian-review")).toContainEqual(
       expect.objectContaining({
         estimatedPromptTokens: expect.any(Number),

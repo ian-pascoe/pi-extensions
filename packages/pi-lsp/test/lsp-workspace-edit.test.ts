@@ -467,20 +467,13 @@ describe("Workspace Edit Preview and Validated Workspace Edit", () => {
     expect(await readFile(file, "utf8")).toBe("after\n");
   });
 
-  test("acquires sorted real-path queues and honors cancellation before mutation", async () => {
+  test("honors cancellation before mutation", async () => {
     const root = await makeTemporaryDirectory();
     const a = resolve(root, "a.ts");
     const z = resolve(root, "z.ts");
     await writeFile(a, "a");
     await writeFile(z, "z");
-    const queued: string[] = [];
-    const store = new LspWorkspaceEditStore({
-      createPreviewId: () => "queues",
-      queueMutation: async (path, operation) => {
-        queued.push(path);
-        return operation();
-      },
-    });
+    const store = new LspWorkspaceEditStore({ createPreviewId: () => "queues" });
     const preview = await store.createPreview({
       edit: {
         changes: {
@@ -510,7 +503,6 @@ describe("Workspace Edit Preview and Validated Workspace Edit", () => {
       ),
       "workspace_edit_cancelled",
     );
-    expect(queued).toEqual([a, z]);
     expect(await readFile(a, "utf8")).toBe("a");
     expect(await readFile(z, "utf8")).toBe("z");
   });

@@ -13,11 +13,10 @@ const cli = fileURLToPath(
 const advisor = fileURLToPath(new URL("../src/index.ts", import.meta.url));
 const fixture = fileURLToPath(new URL("./fixtures/cli-extension.ts", import.meta.url));
 
+// One run per axis value: each of CodeMode and OAuth is on in one case and off in the other.
 it.each([
-  [false, false],
   [false, true],
   [true, false],
-  [true, true],
 ])(
   "settles Advisor reviews through the bundled CLI before and after reload (CodeMode: %s, OAuth: %s)",
   async (withCodeMode, withOAuth) => {

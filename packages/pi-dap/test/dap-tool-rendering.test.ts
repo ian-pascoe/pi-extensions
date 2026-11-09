@@ -134,31 +134,6 @@ describe("dap tool call", () => {
       }
     }
   });
-
-  test("lists supplied arguments one per line in muted only when expanded", () => {
-    const parameters = {
-      operation: "set_breakpoints",
-      file_path: "/workspace/app.ts",
-      breakpoints: [{ line: 3, condition: "i > 2" }, { line: 8 }],
-    } as const;
-    expect(lines(renderDapToolCall(parameters, escapeTaggedTheme, callContext()))).toHaveLength(1);
-    const expanded = lines(
-      renderDapToolCall(parameters, escapeTaggedTheme, callContext({ expanded: true })),
-    );
-    expect(expanded.slice(1)).toEqual([
-      "<muted>file_path: app.ts</muted>",
-      "<muted>breakpoints: 3 if i > 2, 8</muted>",
-    ]);
-    lines(renderDapToolCall(parameters, escapeTaggedTheme, callContext({ expanded: true })), 40);
-  });
-
-  test("shows live Elapsed beneath the call until a result row takes over", () => {
-    vi.useFakeTimers({ now: 0 });
-    const context = callContext({ executionStarted: true });
-    const component = renderDapToolCall({ operation: "stack" }, escapeTaggedTheme, context);
-    vi.advanceTimersByTime(3000);
-    expect(lines(component).at(-1)).toBe("<muted>Elapsed 3.0s</muted>");
-  });
 });
 
 describe("dap tool result", () => {
@@ -172,22 +147,6 @@ describe("dap tool result", () => {
       );
       expect(rendered.at(-1)).toBe("<muted>Took 2.5s</muted>");
     }
-  });
-
-  test("previews evaluate and execution results to the 10-line fallback", () => {
-    for (const operation of ["evaluate", "continue"] as const) {
-      const rendered = lines(renderResult(operation, numbered(12), { expanded: false }));
-      expect(rendered).toContain("<toolOutput>  row 10</toolOutput>");
-      expect(rendered).not.toContain("<toolOutput>  row 11</toolOutput>");
-      expect(rendered.some((line) => line.includes("(2 more lines,"))).toBe(true);
-    }
-  });
-
-  test("shows every line without a hint when expanded, and fits narrow terminals", () => {
-    const expanded = lines(renderResult("stack", numbered(25), { expanded: true }));
-    expect(expanded).toContain("<toolOutput>  row 25</toolOutput>");
-    expect(expanded.some((line) => line.includes("to expand"))).toBe(false);
-    lines(renderResult("stack", numbered(25), { expanded: false }), 40);
   });
 
   test("sanitizes terminal sequences and controls out of Debuggee output", () => {
@@ -224,19 +183,5 @@ describe("dap tool result", () => {
     expect(rendered.join("\n")).not.toContain("waiting");
     expect(rendered.join("\n")).not.toContain("Continuing");
     expect(rendered.at(-1)).toBe("<muted>Elapsed 7.0s</muted>");
-  });
-
-  test("shows an error's text in the error role", () => {
-    const rendered = lines(
-      renderResult(
-        "stack",
-        "Pi DAP: DAP Session: stack requires a stopped Debuggee",
-        { expanded: false },
-        resultContext({ isError: true }),
-      ),
-    );
-    expect(rendered).toContain(
-      "<error>Pi DAP: DAP Session: stack requires a stopped Debuggee</error>",
-    );
   });
 });

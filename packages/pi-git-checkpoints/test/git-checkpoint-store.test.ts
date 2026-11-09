@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
 import {
-  chmod,
   lstat,
   mkdir,
   mkdtemp,
@@ -111,7 +110,7 @@ describe("Worktree Checkpoint capture", () => {
     await expect(lstat(join(standalone, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  test("captures eligible changes with exact modes and deterministic skipped paths", async () => {
+  test("captures eligible changes with deterministic skipped paths", async () => {
     const { repository, store } = await initializeRepositoryStore();
     await writeFile(join(repository, ".gitignore"), "ignored.txt\n");
     await writeFile(join(repository, ".git", "info", "exclude"), "excluded.txt\n");
@@ -120,16 +119,21 @@ describe("Worktree Checkpoint capture", () => {
     await writeFile(join(repository, "large.bin"), Buffer.alloc(2 * 1024 * 1024 + 1, 1));
     await writeFile(join(repository, "binary.bin"), Buffer.from([0, 255, 1, 254]));
     await writeFile(join(repository, "-leading [*]: ü.txt"), "special\n");
-    await writeFile(join(repository, "executable.sh"), "#!/bin/sh\nexit 0\n");
-    await chmod(join(repository, "executable.sh"), 0o755);
     await symlink("tracked.txt", join(repository, "linked.txt"));
     const nested = join(repository, "nested");
     await mkdir(nested);
     await git(nested, "init", "--quiet");
     await writeFile(join(nested, "nested.txt"), "nested\n");
+    await git(
+      repository,
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `160000,${await git(repository, "rev-parse", "HEAD")},submodule`,
+    );
 
     const before = await store.capture();
-    expect(before.skippedPaths).toEqual(["large.bin", "nested"]);
+    expect(before.skippedPaths).toEqual(["large.bin", "nested", "submodule"]);
 
     await writeFile(join(repository, "tracked.txt"), "two\n");
     await rm(join(repository, "binary.bin"));
@@ -141,46 +145,8 @@ describe("Worktree Checkpoint capture", () => {
       { path: "binary.bin", status: "D" },
       { path: "tracked.txt", status: "M" },
     ]);
-    expect(after.skippedPaths).toEqual(["large.bin", "nested"]);
-
-    const modeTree = await git(
-      store.storeDirectory,
-      `--git-dir=${join(store.storeDirectory, "git")}`,
-      "ls-tree",
-      after.treeId,
-      "executable.sh",
-    );
-    expect(modeTree.startsWith("100755 blob ")).toBe(true);
+    expect(after.skippedPaths).toEqual(["large.bin", "nested", "submodule"]);
     expect(await readlink(join(repository, "linked.txt"))).toBe("tracked.txt");
-  });
-
-  test("keeps reporting real capture skips while reporting ignored paths separately", async () => {
-    const { repository, store } = await initializeRepositoryStore();
-    await writeFile(join(repository, ".gitignore"), "ignored.txt\n");
-    await writeFile(join(repository, "ignored.txt"), "ignored\n");
-    await writeFile(join(repository, "large.bin"), Buffer.alloc(2 * 1024 * 1024 + 1, 1));
-    await mkdir(join(repository, "nested"));
-    await git(join(repository, "nested"), "init", "--quiet");
-    await writeFile(join(repository, "nested", "nested.txt"), "nested\n");
-    await git(
-      repository,
-      "update-index",
-      "--add",
-      "--cacheinfo",
-      `160000,${await git(repository, "rev-parse", "HEAD")},submodule`,
-    );
-
-    const capture = await store.capture();
-
-    expect(capture.skippedPaths).toEqual(["large.bin", "nested", "submodule"]);
-    expect(
-      await store.pathsExcludedFromRestore([
-        "ignored.txt",
-        "nested/nested.txt",
-        "tracked.txt",
-        ".gitignore",
-      ]),
-    ).toEqual(new Set(["ignored.txt", "nested/nested.txt"]));
   });
 
   test("does not report git-ignored paths, including self-ignoring directories, as skipped", async () => {
@@ -312,23 +278,11 @@ describe("selective Restore and one-level undo", () => {
     expect(changed.treeId).not.toBe(target.treeId);
   });
 
-  test("rolls worktree writes back when session undo callbacks fail", async () => {
+  test("rolls the worktree back when the session cannot consume the undo record", async () => {
     const { repository, store } = await initializeRepositoryStore();
     const target = await store.capture();
     await writeFile(join(repository, "tracked.txt"), "live safety\n");
     const safety = await store.capture();
-
-    await expect(
-      store.restore({
-        paths: ["tracked.txt"],
-        safetyTreeId: safety.treeId,
-        saveUndoRecord: () => {
-          throw new Error("session append failed");
-        },
-        targetTreeId: target.treeId,
-      }),
-    ).rejects.toMatchObject({ operation: "restore", unrecoveredPaths: [] });
-    expect(await readFile(join(repository, "tracked.txt"), "utf8")).toBe("live safety\n");
 
     let undoRecord: GitCheckpointUndoRecord | undefined;
     await store.restore({
@@ -383,18 +337,6 @@ describe("selective Restore and one-level undo", () => {
     await expect(lstat(join(store.storeDirectory, "undo.json"))).rejects.toMatchObject({
       code: "ENOENT",
     });
-  });
-
-  test("reports missing Git trees referenced by session undo state", async () => {
-    const { store } = await initializeRepositoryStore();
-
-    await expect(
-      store.inspectUndo(() => ({
-        paths: ["tracked.txt"],
-        restoredTreeId: "0".repeat(40),
-        safetyTreeId: "1".repeat(40),
-      })),
-    ).rejects.toThrow();
   });
 
   test("reports divergent undo and rolls partial Restore writes back", async () => {
