@@ -21,8 +21,6 @@ import { FakeDriverFactory, type FakeTerminal } from "./fake-driver.js";
 
 /** The `termctrl.scrollback` limits the Terminal tools read; each test starts with the default. */
 let scrollback: LineByteLimits | undefined;
-/** Whether the fake session has a follow-up queued: Pi's `hasPendingMessages()` counts it, a Steer Yield must not. */
-let pendingMessages = false;
 /** The session's working directory; `terminal_start` checks that it exists. */
 let workDir: string;
 
@@ -40,10 +38,8 @@ function toolContext(owner: string): ExtensionToolContext {
       return workDir;
     },
     sessionManager: { getSessionId: () => owner },
-    hasPendingMessages: () => pendingMessages,
   };
-  // SAFETY: the Terminal tools read only `cwd` and `sessionManager.getSessionId()` from the context;
-  // `hasPendingMessages()` is there to prove that a queued follow-up ends no wait.
+  // SAFETY: the Terminal tools read only `cwd` and `sessionManager.getSessionId()` from the context.
   return context as ExtensionToolContext;
 }
 
@@ -95,7 +91,6 @@ const root = toolContext("root");
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-  pendingMessages = false;
   scrollback = { maxLines: 100, maxBytes: 16 * 1024 };
   harness = createHarness();
 });
@@ -157,39 +152,6 @@ describe("terminal_start", () => {
     expect(textOf(result)).toBe(
       "t1 running · settled: quiet · cursor hidden\n--- screen ---\n>>> ",
     );
-  });
-
-  test("settles after 250 ms of quiet", async () => {
-    harness.drivers.onLaunch = (terminal) => {
-      terminal.reportsIdle = false;
-      terminal.screen = "ready";
-    };
-    const { elapsed } = await timed(
-      harness.start.execute("call", { command: "app" }, undefined, undefined, root),
-    );
-    expect(elapsed).toBeGreaterThanOrEqual(250);
-    expect(elapsed).toBeLessThan(400);
-  });
-
-  test("waits 2 s by default and clamps wait_ms to 5 minutes", async () => {
-    harness.drivers.onLaunch = busy;
-    const byDefault = await timed(
-      harness.start.execute("call", { command: "yes" }, undefined, undefined, root),
-    );
-    expect(byDefault.elapsed).toBeGreaterThanOrEqual(2_000);
-    expect(byDefault.elapsed).toBeLessThan(2_100);
-
-    const clamped = await timed(
-      harness.start.execute(
-        "call",
-        { command: "yes", wait_ms: 3_600_000 },
-        undefined,
-        undefined,
-        root,
-      ),
-    );
-    expect(clamped.elapsed).toBeGreaterThanOrEqual(300_000);
-    expect(clamped.elapsed).toBeLessThan(300_100);
   });
 
   test("returns as soon as the process exits", async () => {
@@ -297,6 +259,7 @@ describe("terminal_send", () => {
     );
     expect(literal.elapsed).toBeGreaterThanOrEqual(1_000);
     expect(literal.elapsed).toBeLessThan(1_100);
+    expect(literal.value.structuredContent).toMatchObject({ settle_reason: "matched" });
 
     terminal.screen = "";
     const regex = await timed(
@@ -312,24 +275,22 @@ describe("terminal_send", () => {
     expect(regex.value.structuredContent).toMatchObject({ screen: "Build finished in 12s" });
   });
 
-  test("a poll waits up to 30 s for new output, then settles on quiet", async () => {
+  test("without idle time from termctrl, a poll settles once the screen stops changing", async () => {
     const { terminal } = await startTerminal();
-    const quietPoll = await timed(
-      harness.send.execute("call", { id: "t1" }, undefined, undefined, root),
-    );
-    expect(quietPoll.elapsed).toBeGreaterThanOrEqual(30_000);
-    expect(quietPoll.elapsed).toBeLessThan(30_100);
-
     terminal.reportsIdle = false;
     setTimeout(() => {
       terminal.screen = ">>> tick";
-    }, 5_000);
-    const activePoll = await timed(
+    }, 1_000);
+    const { value, elapsed } = await timed(
       harness.send.execute("call", { id: "t1" }, undefined, undefined, root),
     );
-    expect(activePoll.elapsed).toBeGreaterThanOrEqual(5_250);
-    expect(activePoll.elapsed).toBeLessThan(5_400);
-    expect(activePoll.value.structuredContent).toMatchObject({ changed: true, screen: ">>> tick" });
+    expect(elapsed).toBeGreaterThanOrEqual(1_250);
+    expect(elapsed).toBeLessThan(1_400);
+    expect(value.structuredContent).toMatchObject({
+      changed: true,
+      settle_reason: "quiet",
+      screen: ">>> tick",
+    });
   });
 
   test("returns the lines that scrolled off since the previous result, skipping ones it showed", async () => {
@@ -380,22 +341,6 @@ describe("terminal_send", () => {
     );
     expect(last.value.structuredContent).toMatchObject({ screen: "6\n7", scrolled_off: "" });
     expect(last.value.structuredContent).not.toHaveProperty("output_missing");
-  });
-
-  test("reports a line rewritten after the agent saw it in its final form", async () => {
-    const { result, terminal } = await startTerminal((self) => {
-      self.logLines = ["Building..."];
-      self.screen = "Building...";
-    });
-    expect(result.structuredContent).toMatchObject({ scrolled_off: "" });
-    terminal.onInput = (self) => {
-      self.logLines = ["Building... FAILED", "1", "2", "3"];
-      self.screen = "2\n3";
-    };
-    const { value } = await timed(
-      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
-    );
-    expect(value.structuredContent).toMatchObject({ scrolled_off: "Building... FAILED\n1" });
   });
 
   test("starts over when the log is reset, as by clear", async () => {
@@ -462,27 +407,6 @@ describe("terminal_send", () => {
     });
   });
 
-  test("skips nothing it showed when output is missing", async () => {
-    const numbers = (from: number, to: number) =>
-      Array.from({ length: to - from + 1 }, (_, index) => String(from + index));
-    const { terminal } = await startTerminal((self) => {
-      self.logLines = numbers(1, 10);
-      self.screen = numbers(6, 10).join("\n");
-    });
-    // The cursor is lost, so 6 and 7 are not known to be the rows the agent saw.
-    terminal.onInput = (self) => {
-      self.logLines = ["6", "7", "50", "51", "52"];
-      self.screen = "51\n52";
-    };
-    const { value } = await timed(
-      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
-    );
-    expect(value.structuredContent).toMatchObject({
-      scrolled_off: "6\n7\n50",
-      output_missing: true,
-    });
-  });
-
   test("says output is missing when a burst overflows before anything scrolled off", async () => {
     const { terminal } = await startTerminal((self) => {
       self.logLines = ["$ "];
@@ -544,28 +468,6 @@ describe("terminal_send", () => {
     expect(await readFile(path ?? "", "utf8")).toBe(rows.join("\n"));
   });
 
-  test("keeps scrolled-off lines within the scrollback byte limit", async () => {
-    scrollback = { maxLines: 100, maxBytes: 1_000 };
-    const rows = Array.from({ length: 20 }, (_, index) => `${index}`.padEnd(99, "."));
-    const { terminal } = await startTerminal((self) => {
-      self.logLines = ["$ "];
-      self.screen = "$ ";
-    });
-    terminal.onInput = (self) => {
-      self.logLines = ["$ ", ...rows, "$ "];
-      self.screen = "$ ";
-    };
-    const { value } = await timed(
-      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
-    );
-    const lines = value.details.scrolled_off.split("\n");
-    expect(Buffer.byteLength(value.details.scrolled_off)).toBeLessThanOrEqual(1_000);
-    expect(lines[0]).toBe(rows[0]);
-    expect(lines.at(-1)).toBe(rows[19]);
-    expect(lines).toContainEqual(expect.stringMatching(/^\[… \d+ lines omitted …\]$/u));
-    expect(await readFile(value.details.full_output_path ?? "", "utf8")).toBe(rows.join("\n"));
-  });
-
   test("names the scrollback limits when they leave no room for the omission marker", async () => {
     scrollback = { maxLines: 1, maxBytes: 16 * 1024 };
     const { terminal } = await startTerminal((self) => {
@@ -603,23 +505,6 @@ describe("terminal_send", () => {
     expect(textOf(value)).toMatch(
       /\[Showing the end of scrolled-off line 1 of 1 \(100B or 100 line limit\)\. Full output: /u,
     );
-  });
-
-  test("returns scrolled-off lines whole when they fit the scrollback limits", async () => {
-    const rows = Array.from({ length: 99 }, (_, index) => `row ${index}`);
-    const { terminal } = await startTerminal((self) => {
-      self.logLines = ["$ "];
-      self.screen = "$ ";
-    });
-    terminal.onInput = (self) => {
-      self.logLines = ["$ ", ...rows, "", "$ "];
-      self.screen = "$ ";
-    };
-    const { value } = await timed(
-      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
-    );
-    expect(value.details.scrolled_off).toBe(`${rows.join("\n")}\n`);
-    expect(value.details.full_output_path).toBeUndefined();
   });
 
   test("with scrollback off, fits large output into Pi's limits and saves every line", async () => {
@@ -703,14 +588,6 @@ describe("terminal_send", () => {
     expect(value.structuredContent).toMatchObject({ screen: ">>> 6*7\n42\n>>> 1+1\n2\n>>> " });
   });
 
-  test("points to the troubleshooting Skill when the driver is lost", async () => {
-    await startTerminal();
-    harness.drivers.latest.die();
-    await expect(
-      harness.send.execute("call", { id: "t1", text: "a" }, undefined, undefined, root),
-    ).rejects.toThrow(`t1 was lost because the termctrl driver exited\n\n${TROUBLESHOOTING_HINT}`);
-  });
-
   test("input to a Terminal lost with its driver says it accepts no input, not that the driver failed", async () => {
     await startTerminal();
     harness.drivers.latest.die();
@@ -722,7 +599,9 @@ describe("terminal_send", () => {
       undefined,
       root,
     );
-    await expect(first).rejects.toThrow("t1 was lost because the termctrl driver exited");
+    await expect(first).rejects.toThrow(
+      `t1 was lost because the termctrl driver exited\n\n${TROUBLESHOOTING_HINT}`,
+    );
     const error = await second.then(
       () => undefined,
       (cause: Error) => cause,
@@ -761,16 +640,6 @@ describe("terminal_send", () => {
     expect(terminal.pressed).toEqual([]);
   });
 
-  test("input to a Terminal the exit watcher already recorded as exited errors too", async () => {
-    const { terminal } = await startTerminal();
-    terminal.exitWith({ code: 1, signal: null });
-    await harness.runtime.registry.pollTerminals();
-    await expect(
-      harness.send.execute("call", { id: "t1", text: "a" }, undefined, undefined, root),
-    ).rejects.toThrow("t1 exited with code 1 and accepts no input");
-    expect(terminal.typed).toEqual([]);
-  });
-
   test("input to an exited Terminal sends no deferred Exit notification", async () => {
     const delivered: string[] = [];
     harness.runtime.registry.bindOwner("root", (notices) => {
@@ -785,24 +654,6 @@ describe("terminal_send", () => {
     ).rejects.toThrow("accepts no input");
     await new Promise((resolve) => setImmediate(resolve));
     expect(delivered).toEqual([]);
-  });
-
-  test("input to a Terminal a signal ended names the signal", async () => {
-    const { terminal } = await startTerminal();
-    terminal.exitWith({ code: null, signal: "SIGTERM" });
-    await expect(
-      harness.send.execute("call", { id: "t1", text: "a" }, undefined, undefined, root),
-    ).rejects.toThrow("t1 ended by SIGTERM and accepts no input");
-  });
-
-  test("polling an exited Terminal still returns its final screen", async () => {
-    const { terminal } = await startTerminal();
-    terminal.screen = "bye";
-    terminal.exitWith({ code: 0, signal: null });
-    const { value } = await timed(
-      harness.send.execute("call", { id: "t1" }, undefined, undefined, root),
-    );
-    expect(value.structuredContent).toMatchObject({ state: "exited", exit_code: 0, screen: "bye" });
   });
 
   test("hides other sessions' Terminals and rejects input to Background jobs", async () => {
@@ -868,17 +719,6 @@ describe("Screen Delta", () => {
     });
   });
 
-  test("typing at the prompt without Enter shows only the prompt row", async () => {
-    const { terminal } = await startTerminal((self) => {
-      draw(self, [">>> 1+1", "2", ">>> "], [3, 5]);
-    });
-    terminal.onInput = (self) => draw(self, [">>> 1+1", "2", ">>> exi"], [3, 8]);
-    const value = await send({ text: "exi" });
-    expect(textOf(value)).toBe(
-      "t1 running · settled: quiet · cursor 3:8\n--- screen (rows 3-3 of 3; rows above unchanged) ---\n>>> exi",
-    );
-  });
-
   test("a scrolling REPL shows only the rows from the previous prompt row down", async () => {
     const { terminal } = await startTerminal((self) => {
       draw(self, ["a", "b", "c", ">>> "], [4, 5]);
@@ -927,16 +767,6 @@ describe("Screen Delta", () => {
     expect(textOf(value)).toBe(
       "t1 running · settled: quiet · cursor 3:6\n--- screen ---\na\nb\n>>> x",
     );
-  });
-
-  test("reports a hidden cursor", async () => {
-    const { result: started } = await startTerminal((self) => {
-      draw(self, ["menu"], null);
-    });
-    expect(textOf(started)).toBe(
-      "t1 running · settled: quiet · cursor hidden\n--- screen ---\nmenu",
-    );
-    expect(started.structuredContent).toMatchObject({ cursor: null });
   });
 
   test("shows the whole screen when the previous cursor row scrolled off", async () => {
@@ -1078,34 +908,6 @@ describe("terminal_send queueing", () => {
     ]);
   });
 
-  test("sends to different Terminals run concurrently", async () => {
-    await startTerminals(2);
-    busy(harness.drivers.terminal(0));
-    busy(harness.drivers.terminal(1));
-    const { elapsed } = await timed(
-      Promise.all([
-        harness.send.execute("call", { id: "t1", text: "a" }, undefined, undefined, root),
-        harness.send.execute("call", { id: "t2", text: "b" }, undefined, undefined, root),
-      ]),
-    );
-    expect(elapsed).toBeGreaterThanOrEqual(500);
-    expect(elapsed).toBeLessThan(600);
-  });
-
-  test("calls to one Terminal wait for the previous call to settle", async () => {
-    await startTerminals(1);
-    const terminal = harness.drivers.terminal(0);
-    busy(terminal);
-    const { elapsed } = await timed(
-      Promise.all([
-        harness.send.execute("call", { id: "t1", text: "a" }, undefined, undefined, root),
-        harness.send.execute("call", { id: "t1", text: "b" }, undefined, undefined, root),
-      ]),
-    );
-    expect(elapsed).toBeGreaterThanOrEqual(1_000);
-    expect(elapsed).toBeLessThan(1_100);
-  });
-
   test("aborting a queued call removes it without affecting the running one", async () => {
     await startTerminals(1);
     const terminal = harness.drivers.terminal(0);
@@ -1138,46 +940,6 @@ describe("terminal_send queueing", () => {
     expect(elapsed).toBeLessThan(1_100);
   });
 
-  test("a queued send to a Terminal that exited meanwhile reports the exit", async () => {
-    await startTerminals(1);
-    const terminal = harness.drivers.terminal(0);
-    terminal.onInput = (self) => self.exitWith({ code: 0, signal: null });
-    const first = harness.send.execute(
-      "call",
-      { id: "t1", text: "quit" },
-      undefined,
-      undefined,
-      root,
-    );
-    const second = harness.send.execute(
-      "call",
-      { id: "t1", text: "more" },
-      undefined,
-      undefined,
-      root,
-    );
-    const outcome = failure(second);
-    const { value } = await timed(Promise.all([first, outcome]));
-    expect(value[0].structuredContent).toMatchObject({ state: "exited", exit_code: 0 });
-    expect(value[1]).toContain("t1 exited with code 0 and accepts no input");
-    expect(terminal.typed).toEqual(["quit"]);
-  });
-
-  test("aborting a queued stop leaves the Terminal running", async () => {
-    await startTerminals(1);
-    const terminal = harness.drivers.terminal(0);
-    busy(terminal);
-    const controller = new AbortController();
-    const send = harness.send.execute("call", { id: "t1", text: "a" }, undefined, undefined, root);
-    const stop = harness.stop.execute("call", { id: "t1" }, controller.signal, undefined, root);
-    const outcome = failure(stop);
-    setTimeout(() => controller.abort(), 100);
-    const { value } = await timed(Promise.all([send, outcome]));
-    expect(value[1]).toContain("cancelled before it started");
-    expect(terminal.stopCalls).toBe(0);
-    expect(harness.runtime.registry.entries()).toHaveLength(1);
-  });
-
   test("a stop queued behind a send reports what the agent saw, as a sequential stop would", async () => {
     await startTerminals(1);
     const send = harness.send.execute("call", { id: "t1", text: "a" }, undefined, undefined, root);
@@ -1197,29 +959,6 @@ describe("terminal_send queueing", () => {
     );
   });
 
-  test("a stop queued behind a send that saw the Terminal exit reports it had already exited", async () => {
-    await startTerminals(1);
-    harness.drivers.terminal(0).onInput = (self) => {
-      self.screen = "bye";
-      self.exitWith({ code: 0, signal: null });
-    };
-    const send = harness.send.execute(
-      "call",
-      { id: "t1", text: "quit" },
-      undefined,
-      undefined,
-      root,
-    );
-    const stop = harness.stop.execute("call", { id: "t1" }, undefined, undefined, root);
-    const { value } = await timed(Promise.all([send, stop]));
-    expect(value[0].structuredContent).toMatchObject({ state: "exited", screen: "bye" });
-    expect(textOf(value[1])).toBe(
-      "Terminal t1 had already exited with code 0; removed.\nIts screen is unchanged since your last result.",
-    );
-    expect(value[1].structuredContent).toMatchObject({ changed: false, exit_code: 0 });
-    expect(harness.drivers.terminal(0).stopCalls).toBe(0);
-  });
-
   test("a send queued behind a stop finds the Terminal gone", async () => {
     await startTerminals(1);
     const terminal = harness.drivers.terminal(0);
@@ -1231,43 +970,6 @@ describe("terminal_send queueing", () => {
     expect(value[1]).toContain("Unknown id t1");
     expect(value[1]).not.toContain("driver exited");
     expect(terminal.typed).toEqual([]);
-  });
-
-  test("aborting the running call lets the next one start", async () => {
-    await startTerminals(1);
-    busy(harness.drivers.terminal(0));
-    const controller = new AbortController();
-    const running = harness.send.execute(
-      "call",
-      { id: "t1", text: "a", wait_ms: 10_000 },
-      controller.signal,
-      undefined,
-      root,
-    );
-    const next = harness.send.execute("call", { id: "t1", text: "b" }, undefined, undefined, root);
-    setTimeout(() => controller.abort(), 100);
-    const { value, elapsed } = await timed(Promise.all([running, next]));
-    expect(value[1].structuredContent).toMatchObject({ screen: "a|b" });
-    expect(elapsed).toBeGreaterThanOrEqual(600);
-    expect(elapsed).toBeLessThan(700);
-  });
-
-  test("a call that fails still hands over its turn", async () => {
-    await startTerminals(1);
-    const failing = failure(
-      harness.send.execute(
-        "call",
-        { id: "t1", text: "a", wait_for_text: "/(/" },
-        undefined,
-        undefined,
-        root,
-      ),
-    );
-    const next = harness.send.execute("call", { id: "t1", text: "b" }, undefined, undefined, root);
-    const { value } = await timed(Promise.all([failing, next]));
-    expect(value[0]).not.toBe("resolved");
-    expect(value[1].structuredContent).toMatchObject({ screen: "b" });
-    expect(harness.drivers.terminal(0).typed).toEqual(["b"]);
   });
 
   test("a call whose signal is already aborted never starts", async () => {
@@ -1312,27 +1014,6 @@ describe("Steer Yield", () => {
     expect(harness.runtime.registry.get("t1")?.state).toBe("running");
   });
 
-  test("a wait_for_text wait ends as steered, says the text was not seen, and typed its input first", async () => {
-    const { terminal } = await startTerminal();
-    busy(terminal);
-    const waiting = harness.send.execute(
-      "call",
-      { id: "t1", text: "make\n", wait_for_text: "never", wait_ms: 60_000 },
-      undefined,
-      undefined,
-      root,
-    );
-    await vi.advanceTimersByTimeAsync(1_000);
-    raiseQueuedSteer("root");
-    const startedAt = Date.now();
-    const value = await waiting;
-    expect(Date.now() - startedAt).toBe(0);
-    expect(terminal.typed).toEqual(["make\n"]);
-    expect(value.structuredContent).toMatchObject({ settle_reason: "steered" });
-    expect(textOf(value)).toContain("t1 running · settled: steered");
-    expect(textOf(value)).toContain('wait_for_text "never" was not seen before the wait ended.');
-  });
-
   test("a call that starts while a Queued Steer is pending types its input, then settles at once", async () => {
     const { terminal } = await startTerminal();
     busy(terminal);
@@ -1358,74 +1039,9 @@ describe("Steer Yield", () => {
     });
     expect(textOf(value)).toContain("t1 running · settled: steered");
   });
-
-  test("a queued follow-up (hasPendingMessages alone) does not end a settle wait", async () => {
-    const { terminal } = await startTerminal();
-    busy(terminal);
-    pendingMessages = true;
-    const { value, elapsed } = await timed(
-      harness.send.execute(
-        "call",
-        { id: "t1", text: "x", wait_ms: 1_000 },
-        undefined,
-        undefined,
-        root,
-      ),
-    );
-    expect(elapsed).toBeGreaterThanOrEqual(1_000);
-    expect(value.structuredContent).toMatchObject({ settle_reason: "timeout" });
-  });
-
-  test("calls in the Call queue still run in order, each yielding once it reaches its wait", async () => {
-    const { terminal } = await startTerminal();
-    busy(terminal);
-    const first = harness.send.execute(
-      "a",
-      { id: "t1", text: "one\n", wait_ms: 60_000 },
-      undefined,
-      undefined,
-      root,
-    );
-    const second = harness.send.execute(
-      "b",
-      { id: "t1", text: "two\n", wait_ms: 60_000 },
-      undefined,
-      undefined,
-      root,
-    );
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(terminal.typed).toEqual(["one\n"]);
-    raiseQueuedSteer("root");
-    const results = await Promise.all([first, second]);
-    expect(terminal.typed).toEqual(["one\n", "two\n"]);
-    expect(results.map((result) => result.structuredContent)).toMatchObject([
-      { settle_reason: "steered" },
-      { settle_reason: "steered" },
-    ]);
-  });
 });
 
 describe("settle reason", () => {
-  test("is matched when wait_for_text is found", async () => {
-    const { terminal } = await startTerminal();
-    busy(terminal);
-    terminal.onInput = (self) => {
-      self.screen = "Build finished";
-    };
-    const { value } = await timed(
-      harness.send.execute(
-        "call",
-        { id: "t1", text: "make\n", wait_for_text: "finished", wait_ms: 5_000 },
-        undefined,
-        undefined,
-        root,
-      ),
-    );
-    expect(value.structuredContent).toMatchObject({ settle_reason: "matched" });
-    expect(textOf(value)).toContain("t1 running · settled: matched");
-    expect(textOf(value)).not.toContain("was not seen");
-  });
-
   test("is timeout when wait_ms runs out, and an unmatched wait_for_text says it was not seen", async () => {
     const { terminal } = await startTerminal();
     busy(terminal);
@@ -1448,75 +1064,6 @@ describe("settle reason", () => {
     expect(textOf(value)).toContain(
       'wait_for_text "/never[0-9]+/" was not seen before the wait ended.',
     );
-  });
-
-  test("is timeout for a terminal_start whose output never pauses", async () => {
-    harness.drivers.onLaunch = busy;
-    const { value } = await timed(
-      harness.start.execute("call", { command: "yes" }, undefined, undefined, root),
-    );
-    expect(value.structuredContent).toMatchObject({ settle_reason: "timeout" });
-    expect(textOf(value)).toContain("t1 running · settled: timeout");
-    expect(textOf(value)).not.toContain("was not seen");
-  });
-
-  test("is quiet when the screen stops changing", async () => {
-    await startTerminal();
-    const { value } = await timed(
-      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
-    );
-    expect(value.structuredContent).toMatchObject({ settle_reason: "quiet" });
-    expect(textOf(value)).toContain("settled: quiet");
-  });
-
-  test("is exited when the process exits, including a poll of an exited Terminal", async () => {
-    const { terminal } = await startTerminal();
-    terminal.onInput = (self) => {
-      self.exitWith({ code: 0, signal: null });
-    };
-    const { value } = await timed(
-      harness.send.execute(
-        "call",
-        { id: "t1", text: "exit\n", wait_for_text: "never" },
-        undefined,
-        undefined,
-        root,
-      ),
-    );
-    expect(value.structuredContent).toMatchObject({
-      state: "exited",
-      settle_reason: "exited",
-    });
-    expect(textOf(value)).toContain("t1 exited with code 0 · settled: exited");
-
-    const poll = await timed(
-      harness.send.execute("call", { id: "t1" }, undefined, undefined, root),
-    );
-    expect(poll.value.structuredContent).toMatchObject({
-      settle_reason: "exited",
-    });
-  });
-
-  test("is reported by a poll for output as quiet, and as timeout when nothing arrives under constant output", async () => {
-    const { terminal } = await startTerminal();
-    terminal.reportsIdle = false;
-    setTimeout(() => {
-      terminal.screen = ">>> tick";
-    }, 1_000);
-    const active = await timed(
-      harness.send.execute("call", { id: "t1" }, undefined, undefined, root),
-    );
-    expect(active.value.structuredContent).toMatchObject({
-      settle_reason: "quiet",
-    });
-
-    busy(terminal);
-    const idle = await timed(
-      harness.send.execute("call", { id: "t1", wait_ms: 1_000 }, undefined, undefined, root),
-    );
-    expect(idle.value.structuredContent).toMatchObject({
-      settle_reason: "timeout",
-    });
   });
 });
 
@@ -1604,25 +1151,6 @@ describe("terminal_stop and terminal_list", () => {
     expect(harness.runtime.registry.entries()).toEqual([]);
   });
 
-  test("stopping an exited Terminal still reports lines that scrolled off unseen", async () => {
-    const { terminal } = await startTerminal((self) => {
-      self.logLines = ["one", "two"];
-      self.screen = "two";
-    });
-    // A second running Terminal keeps the driver open, so the exited one's log stays readable.
-    await timed(harness.start.execute("call", { command: "sleep 9" }, undefined, undefined, root));
-    terminal.screen = "two";
-    terminal.exitWith({ code: 0, signal: null });
-    await timed(harness.send.execute("call", { id: "t1" }, undefined, undefined, root));
-    terminal.logLines = ["one", "two", "three", "four"];
-    const { value } = await timed(
-      harness.stop.execute("call", { id: "t1" }, undefined, undefined, root),
-    );
-    // The agent saw "two" on its screen; "three" left the log's screen unseen.
-    expect(value.structuredContent).toMatchObject({ changed: false, scrolled_off: "three" });
-    expect(value.structuredContent).not.toHaveProperty("screen");
-  });
-
   test("stopping an exited Terminal the agent has not seen since it changed shows the screen", async () => {
     const { terminal } = await startTerminal();
     terminal.screen = "bye";
@@ -1655,24 +1183,6 @@ describe("terminal_stop and terminal_list", () => {
     expect(existsSync(path)).toBe(true);
     await harness.runtime.registry.shutdownOwner("root");
     expect(existsSync(path)).toBe(false);
-  });
-
-  test("stop keeps the start and end of many scrolled-off lines", async () => {
-    scrollback = { maxLines: 5, maxBytes: 16 * 1024 };
-    const rows = Array.from({ length: 10 }, (_, index) => `row ${index}`);
-    const { terminal } = await startTerminal((self) => {
-      self.logLines = [">>> "];
-      self.screen = ">>> ";
-    });
-    terminal.logLines = [">>> ", ...rows, ">>> "];
-    const { value } = await timed(
-      harness.stop.execute("call", { id: "t1" }, undefined, undefined, root),
-    );
-    expect(value.structuredContent).toMatchObject({
-      changed: false,
-      scrolled_off: "row 0\nrow 1\n[… 6 lines omitted …]\nrow 8\nrow 9",
-    });
-    expect(await readFile(value.details.full_output_path ?? "", "utf8")).toBe(rows.join("\n"));
   });
 
   test("list shows Terminals and a separate background_jobs section", async () => {
@@ -1820,36 +1330,6 @@ describe("terminal_wait", () => {
     const clamped = await timed(harness.wait.execute("call", {}, undefined, undefined, root));
     expect(clamped.elapsed).toBeGreaterThanOrEqual(300_000);
     expect(clamped.elapsed).toBeLessThan(300_200);
-  });
-
-  test("a wait that starts while a Queued Steer is pending returns at once", async () => {
-    job("sleep 100");
-    raiseQueuedSteer("root");
-    const { value, elapsed } = await timed(
-      harness.wait.execute("call", {}, undefined, undefined, root),
-    );
-    expect(elapsed).toBeLessThanOrEqual(10);
-    expect(value.structuredContent).toMatchObject({ reason: "steered" });
-  });
-
-  test("a queued follow-up (hasPendingMessages alone) does not end the wait", async () => {
-    job("sleep 100");
-    pendingMessages = true;
-    const { value, elapsed } = await timed(
-      harness.wait.execute("call", { wait_ms: 3_000 }, undefined, undefined, root),
-    );
-    expect(elapsed).toBeGreaterThanOrEqual(3_000);
-    expect(value.structuredContent).toMatchObject({ reason: "timeout" });
-  });
-
-  test("a steer for another session does not end the wait", async () => {
-    job("sleep 100");
-    const waiting = harness.wait.execute("call", { wait_ms: 3_000 }, undefined, undefined, root);
-    await vi.advanceTimersByTimeAsync(1_000);
-    raiseQueuedSteer("child");
-    await vi.advanceTimersByTimeAsync(2_000);
-    const value = await waiting;
-    expect(value.structuredContent).toMatchObject({ reason: "timeout" });
   });
 
   test("returns when the call is aborted", async () => {

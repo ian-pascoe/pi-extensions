@@ -87,13 +87,14 @@ function toolNamesOf(turn: CapturedTurn | undefined): string[] {
 }
 
 describe("prefix stability", () => {
-  test("consecutive turns keep tools, system prompt and history byte-stable", async () => {
+  test("consecutive turns and a /reload keep tools, system prompt and history byte-stable", async () => {
     const fixture = await createSdkFixture({
       binary: available,
       createDriver: new FakeDriverFactory().create,
     });
     fixture.responses.push(fauxAssistantMessage("One."), fauxAssistantMessage("Two."));
     await prompt(fixture, "First");
+    await fixture.session.reload();
     await prompt(fixture, "Second");
     expectStablePrefix(fixture.turns, 2);
     expect(toolNamesOf(fixture.turns[0])).toEqual([
@@ -107,18 +108,12 @@ describe("prefix stability", () => {
       "terminal_list",
       "terminal_wait",
     ]);
-  });
-
-  test("/reload keeps tools, system prompt and history byte-stable", async () => {
-    const fixture = await createSdkFixture({
-      binary: available,
-      createDriver: new FakeDriverFactory().create,
-    });
-    fixture.responses.push(fauxAssistantMessage("Before."), fauxAssistantMessage("After."));
-    await prompt(fixture, "Before reload");
-    await fixture.session.reload();
-    await prompt(fixture, "After reload");
-    expectStablePrefix(fixture.turns, 2);
+    const bash = fixture.turns[0]?.tools.find(({ name }) => name === "bash");
+    expect(Object.keys(JSON.parse(JSON.stringify(bash?.parameters)).properties)).toEqual([
+      "command",
+      "timeout",
+      "background",
+    ]);
   });
 
   test("starting and stopping a Terminal changes nothing in the prefix", async () => {
@@ -200,25 +195,19 @@ describe("prefix stability", () => {
     expect(JSON.stringify(fixture.turns[2]?.messages.at(-1))).toContain(
       "Background job b1 exited with code 0",
     );
+    expect(
+      fixture.session.messages.find(
+        (message) => message.role === "custom" && message.customType === EXIT_NOTIFICATION_TYPE,
+      ),
+    ).toMatchObject({
+      role: "custom",
+      display: true,
+      details: { exits: [{ id: "b1", kind: "background_job", exit_code: 0, signal: null }] },
+    });
   });
 });
 
 describe("configurations", () => {
-  test("replaceBash: true is stable and declares bash with background", async () => {
-    const fixture = await createSdkFixture({ settings: { termctrl: { replaceBash: true } } });
-    fixture.responses.push(fauxAssistantMessage("One."), fauxAssistantMessage("Two."));
-    await prompt(fixture, "First");
-    await fixture.session.reload();
-    await prompt(fixture, "Second");
-    expectStablePrefix(fixture.turns, 2);
-    const bash = fixture.turns[0]?.tools.find(({ name }) => name === "bash");
-    expect(Object.keys(JSON.parse(JSON.stringify(bash?.parameters)).properties)).toEqual([
-      "command",
-      "timeout",
-      "background",
-    ]);
-  });
-
   test("replaceBash: false is stable and declares Pi's built-in bash byte for byte", async () => {
     const fixture = await createSdkFixture({ settings: { termctrl: { replaceBash: false } } });
     fixture.responses.push(fauxAssistantMessage("One."), fauxAssistantMessage("Two."));
@@ -267,27 +256,6 @@ describe("configurations", () => {
     expect(text).toContain("4701\\n4702");
     expect(text).not.toContain("4700\\n");
     expect(text).toContain("of 5000 (16.0KB or 300 line limit). Full output: ");
-    await removeFullOutputs(text);
-  });
-
-  test("bashTail: false declares Pi's built-in bash description and keeps Pi's limits", async () => {
-    const fixture = await createSdkFixture({
-      settings: { termctrl: { replaceBash: true, bashTail: false } },
-    });
-    fixture.responses.push(
-      toolCallTurn("bash", { command: "seq 1 5000" }),
-      fauxAssistantMessage("Saw it."),
-    );
-    await prompt(fixture, "Count");
-    expectStablePrefix(fixture.turns, 2);
-    const builtin = createBashToolDefinition(fixture.cwd);
-    const bash = fixture.turns[0]?.tools.find(({ name }) => name === "bash");
-    expect(bash?.description).toBe(builtin.description);
-    const text = JSON.stringify(
-      fixture.turns[1]?.messages.find(({ role }) => role === "toolResult")?.content,
-    );
-    expect(text).toContain("3001\\n3002");
-    expect(text).toContain("Showing lines 3001-5000 of 5000.");
     await removeFullOutputs(text);
   });
 

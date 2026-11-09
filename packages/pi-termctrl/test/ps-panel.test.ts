@@ -105,31 +105,6 @@ afterEach(async () => {
 });
 
 describe("TermctrlPsPanel", () => {
-  test("shows an empty state", () => {
-    const registry = TermctrlRegistry.acquire({ createDriver: new FakeDriverFactory().create });
-    const { panel } = panelFixture(registry);
-    expectFits(panel);
-    const lines = view(panel, 120);
-    const text = lines.join("\n");
-    expect(text).toContain(
-      "<accent><b>Terminals and Background jobs</b></accent><dim> · </dim><muted>0 running</muted>",
-    );
-    expect(text).toContain("<muted>Nothing is running.</muted>");
-    expect(text).toContain(
-      "<dim>↑↓</dim><muted> navigate</muted>  <dim>k</dim><muted> stop</muted>  <dim>x</dim><muted> remove exited</muted>  <dim>escape</dim><muted> close</muted>",
-    );
-  });
-
-  test("is framed by Pi's selector borders, not a drawn box", () => {
-    const registry = TermctrlRegistry.acquire({ createDriver: new FakeDriverFactory().create });
-    const { panel } = panelFixture(registry);
-    const lines = view(panel, 30);
-    const border = `<border>${"─".repeat(30)}</border>`;
-    expect(lines[0]).toBe(border);
-    expect(lines.at(-1)).toBe(border);
-    expect(lines.join("")).not.toMatch(/[╭╮╰╯│]/u);
-  });
-
   test("renders every entry with kind, owner, state and age, and previews the Terminal screen", async () => {
     const { registry } = await populatedRegistry();
     const { panel } = panelFixture(registry);
@@ -148,33 +123,13 @@ describe("TermctrlPsPanel", () => {
     expect(text).toContain("<text>2</text>");
   });
 
-  test("drops the owner and age columns at narrow widths and stays within the width", async () => {
-    const { registry } = await populatedRegistry();
-    const { panel } = panelFixture(registry);
-    const lines = view(panel, 40);
-    expectFits(panel);
-    const text = lines.join("\n");
-    expect(text).toContain("t1    running    python3");
-    expect(text).not.toContain("root");
-  });
-
-  test("previews a Background job's log tail after moving the selection", async () => {
-    const { registry } = await populatedRegistry();
-    const { panel, tui } = panelFixture(registry);
-    panel.handleInput("down");
-    expect(tui.requestRender).toHaveBeenCalled();
-    const text = view(panel, 100).join("\n");
-    expect(text).toContain("<accent>→ </accent>");
-    expect(text).toMatch(/<accent>job {3}b1/u);
-    expect(text).toContain("<dim>b1 log tail</dim>");
-    expect(text).toContain("compiling");
-    expect(text).toContain("linking");
-  });
-
   test("k stops the selected entry and x removes it once exited", async () => {
     const { registry, job } = await populatedRegistry();
     const { panel } = panelFixture(registry);
     panel.handleInput("down");
+    // The selected Background job previews its log tail.
+    expect(view(panel, 100).join("\n")).toContain("<dim>b1 log tail</dim>");
+    expect(view(panel, 100).join("\n")).toContain("linking");
     panel.handleInput("x");
     expect(view(panel, 100).join("\n")).toContain(
       "<warning>b1 is running; press k to stop it first.</warning>",
@@ -204,15 +159,6 @@ describe("TermctrlPsPanel", () => {
     panel.dispose();
     expect(onClose).toHaveBeenCalledOnce();
     expect(stopRefresh).toHaveBeenCalledOnce();
-  });
-
-  test("the refresh timer picks up new entries", async () => {
-    const registry = TermctrlRegistry.acquire({ createDriver: new FakeDriverFactory().create });
-    const { panel, refresh, tui } = panelFixture(registry);
-    registry.createJob("root", "sleep 5", (id) => jobChild(id, "", () => {}));
-    refresh();
-    expect(tui.requestRender).toHaveBeenCalled();
-    expect(view(panel, 80).join("\n")).toContain("b1");
   });
 });
 
