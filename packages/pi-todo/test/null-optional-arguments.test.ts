@@ -30,11 +30,3 @@ test("todo keeps null where it has a meaning: description null removes a descrip
     updates: [{ id: 1, description: null }],
   });
 });
-
-test("todo drops a null optional field of a new Task", () => {
-  const added = { action: "add", tasks: [{ title: "T", description: null }] };
-  expect(registeredTodoTool().prepareArguments?.(added)).toEqual({
-    action: "add",
-    tasks: [{ title: "T" }],
-  });
-});

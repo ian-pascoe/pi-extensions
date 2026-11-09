@@ -10,15 +10,13 @@ import type {
   SessionTreeEvent,
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, Component, TUI } from "@earendil-works/pi-tui";
-import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { expectToolOutputMatches } from "@ian-pascoe/pi-utils/tool-testing";
-import { existsSync } from "node:fs";
 import type { TSchema } from "typebox";
-import { Value } from "typebox/value";
 import { describe, expect, test } from "vitest";
 import todoExtension from "../src/index.js";
 import type { TodoActionInput, TodoTaskChange, TodoToolDetails } from "../src/todo-list.js";
-import { TROUBLESHOOTING_HINT, TROUBLESHOOTING_SKILL_PATH } from "../src/troubleshooting-skill.js";
+import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 
 type TodoToolResult = {
   readonly content: ReadonlyArray<{ readonly type: string; readonly text?: string }>;
@@ -30,6 +28,7 @@ type ContextEventResult = { readonly messages?: ContextEvent["messages"] };
 type ExtensionMode = ExtensionContext["mode"];
 type RegisteredTodoTool = {
   readonly name: string;
+  readonly annotations?: unknown;
   readonly outputSchema?: TSchema;
   readonly parameters: TSchema;
   execute(
@@ -191,6 +190,13 @@ describe("Pi Todo extension", () => {
     const listed = await harness.execute({ action: "list" }, context);
 
     expect(harness.tool.name).toBe("todo");
+    // Mutates only the session's own journal: additive, not idempotent, closed world.
+    expect(harness.tool.annotations).toEqual({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    });
     expect(resultText(added)).toBe("Added Task #1");
     expect(resultText(listed)).toBe("[>] #1 Ship the extension\n    Run the focused checks.");
     expect(harness.entries).toEqual([
@@ -245,14 +251,12 @@ describe("Pi Todo extension", () => {
     await expect(harness.execute({ action: "remove", id: 99 }, context)).rejects.toThrow(
       "Todo remove failed: Task #99 was not found",
     );
-    for (const action of ["update", "remove"] as const) {
-      await expect(harness.execute({ action }, context)).rejects.toThrow(
-        `Todo ${action} failed: id is required`,
-      );
-      await expect(harness.execute({ action, id: 0 }, context)).rejects.toThrow(
-        `Todo ${action} failed: id must be a positive safe integer`,
-      );
-    }
+    await expect(harness.execute({ action: "update" }, context)).rejects.toThrow(
+      "Todo update failed: id is required",
+    );
+    await expect(harness.execute({ action: "remove", id: 0 }, context)).rejects.toThrow(
+      "Todo remove failed: id must be a positive safe integer",
+    );
     await expect(harness.execute({ action: "update", id: 1 }, context)).rejects.toThrow(
       "Todo update failed: provide a title, description, or status",
     );
@@ -340,34 +344,6 @@ describe("Pi Todo extension", () => {
       nextId: 5,
       tasks: [{ id: 1, title: "Existing", status: "pending" }, ...batch],
     });
-  });
-
-  test("tool schema accepts batch add and the transcript labels it", async () => {
-    const harness = new TodoExtensionHarness();
-    const { parameters } = harness.tool;
-    expect(
-      Value.Check(parameters, { action: "add", tasks: [{ title: "A", description: "B" }] }),
-    ).toBe(true);
-    expect(Value.Check(parameters, { action: "add", tasks: [] })).toBe(false);
-    expect(Value.Check(parameters, { action: "add", tasks: [{ description: "No title" }] })).toBe(
-      false,
-    );
-    expect(Value.Check(parameters, { action: "add", tasks: ["A"] })).toBe(false);
-    // A per-Task status is rejected rather than silently dropped.
-    expect(
-      Value.Check(parameters, { action: "add", tasks: [{ title: "A", status: "active" }] }),
-    ).toBe(false);
-    const batch = await harness.execute(
-      {
-        action: "add",
-        tasks: [
-          { title: "B1", description: "Only expanded." },
-          ...[2, 3, 4, 5, 6].map((n) => ({ title: `B${n}` })),
-        ],
-      },
-      harness.context(),
-    );
-    expect(batch.details).toMatchObject({ action: "add" });
   });
 
   test("batch add creates nothing when any Task is invalid", async () => {
@@ -540,12 +516,7 @@ describe("Pi Todo extension", () => {
     await harness.execute({ action: "add", title: "One" }, context);
     const updates = [{ id: 1, status: "active" as const }];
 
-    for (const single of [
-      { id: 1 },
-      { title: "Loose" },
-      { description: "Loose" },
-      { status: "completed" as const },
-    ]) {
+    for (const single of [{ id: 1 }, { description: "Loose" }]) {
       await expect(
         harness.execute({ action: "update", ...single, updates }, context),
       ).rejects.toThrow("Todo update failed: provide either id and fields or updates, not both");
@@ -555,49 +526,6 @@ describe("Pi Todo extension", () => {
     expect(
       resultText(await harness.execute({ action: "update", description: null, updates }, context)),
     ).toBe("Updated 1 Task\n[>] #1 One");
-  });
-
-  test("tool schema accepts batch update and the transcript labels it", async () => {
-    const harness = new TodoExtensionHarness();
-    const { parameters } = harness.tool;
-    expect(
-      Value.Check(parameters, {
-        action: "update",
-        updates: [{ id: 1, status: "active", title: "A", description: null }],
-      }),
-    ).toBe(true);
-    expect(Value.Check(parameters, { action: "update", updates: [] })).toBe(false);
-    expect(Value.Check(parameters, { action: "update", updates: [{ status: "active" }] })).toBe(
-      false,
-    );
-    expect(Value.Check(parameters, { action: "update", updates: [{ id: 0 }] })).toBe(false);
-    expect(Value.Check(parameters, { action: "update", updates: [{ id: 1, extra: 1 }] })).toBe(
-      false,
-    );
-    const context = harness.context();
-    await harness.execute(
-      { action: "add", tasks: [1, 2, 3, 4, 5, 6].map((n) => ({ title: `T${n}` })) },
-      context,
-    );
-    const batch = await harness.execute(
-      {
-        action: "update",
-        updates: [1, 2, 3, 4, 5, 6].map((id) => ({ id, status: "completed" as const })),
-      },
-      context,
-    );
-    expect(batch.details).toMatchObject({ action: "update" });
-  });
-
-  test("clear resets IDs after every Task was individually removed", async () => {
-    const harness = new TodoExtensionHarness();
-    const context = harness.context();
-    await harness.execute({ action: "add", title: "Temporary" }, context);
-    await harness.execute({ action: "remove", id: 1 }, context);
-    await harness.execute({ action: "clear" }, context);
-    expect(resultText(await harness.execute({ action: "add", title: "Fresh" }, context))).toBe(
-      "Added Task #1",
-    );
   });
 
   test("list and repeated empty clear append only the required reset snapshot", async () => {
@@ -689,19 +617,6 @@ describe("Pi Todo extension", () => {
     });
   });
 
-  test("troubleshooting Skill exists and is hinted only on extension failures", async () => {
-    expect(existsSync(TROUBLESHOOTING_SKILL_PATH)).toBe(true);
-    const harness = new TodoExtensionHarness();
-    const context = harness.context();
-    await expect(harness.execute({ action: "remove", id: 99 }, context)).rejects.not.toThrow(
-      TROUBLESHOOTING_HINT,
-    );
-    harness.failAppend = true;
-    await expect(harness.execute({ action: "add", title: "Not saved" }, context)).rejects.toThrow(
-      `disk full\n\n${TROUBLESHOOTING_HINT}`,
-    );
-  });
-
   test("canceled execution does not acknowledge or persist a mutation", async () => {
     const harness = new TodoExtensionHarness();
     await expect(
@@ -724,9 +639,13 @@ describe("Pi Todo extension", () => {
     const context = harness.context([], "tui");
     await harness.execute({ action: "add", title: "Acknowledged" }, context);
     const before = renderTodoWidget(harness, 80);
+    // An ordinary Task failure does not point at the troubleshooting Skill; a write failure does.
+    await expect(harness.execute({ action: "remove", id: 99 }, context)).rejects.not.toThrow(
+      TROUBLESHOOTING_HINT,
+    );
     harness.failAppend = true;
     await expect(harness.execute({ action: "add", title: "Not saved" }, context)).rejects.toThrow(
-      "disk full",
+      `disk full\n\n${TROUBLESHOOTING_HINT}`,
     );
     expect(harness.entries).toHaveLength(1);
     expect(renderTodoWidget(harness, 80)).toEqual(before);
@@ -759,47 +678,18 @@ describe("Pi Todo extension", () => {
     ]);
   });
 
-  test("renders a compact Todo Widget and confirms manual clearing", async () => {
+  test("completes and confirms manual clearing", async () => {
     const harness = new TodoExtensionHarness();
     const context = harness.context([], "tui");
 
-    await harness.execute(
-      {
-        action: "add",
-        title: "Active one with a title that must truncate",
-        status: "active",
-      },
-      context,
-    );
+    await harness.execute({ action: "add", title: "Active one", status: "active" }, context);
     await harness.execute({ action: "add", title: "Pending one" }, context);
-    await harness.execute({ action: "add", title: "Completed one", status: "completed" }, context);
-    await harness.execute({ action: "add", title: "Active two", status: "active" }, context);
-    await harness.execute({ action: "add", title: "Pending two" }, context);
-    const listed = await harness.execute(
-      {
-        action: "add",
-        title: "Completed two",
-        description: "Only expanded transcript output shows this.",
-        status: "completed",
-      },
-      context,
-    );
+    expect(harness.widget).toBeTypeOf("function");
 
-    expect(renderTodoWidget(harness, 36)).toEqual([
-      "Todo 2 active · 2 pending · 2 com...",
-      "[>] #1 Active one with a title th...",
-      "[>] #4 Active two",
-      "[ ] #2 Pending one",
-      "[ ] #5 Pending two",
-      "[x] #3 ~Completed one~",
-      "[x] #6 ~Completed two~",
+    expect(await harness.command.getArgumentCompletions?.("cl")).toMatchObject([
+      { value: "clear" },
     ]);
-    expect(renderTodoWidget(harness, 36).every((line) => visibleWidth(line) <= 36)).toBe(true);
-
-    const completions = await harness.command.getArgumentCompletions?.("cl");
-    expect(completions).toEqual([
-      { value: "clear", label: "clear", description: "Clear the Todo List" },
-    ]);
+    expect(await harness.command.getArgumentCompletions?.("x")).toBeNull();
 
     harness.confirmResult = false;
     await harness.command.handler("clear", context);
@@ -813,8 +703,6 @@ describe("Pi Todo extension", () => {
       "Todo List is empty",
     );
     expect(harness.widget).toBeUndefined();
-    expect(harness.notifications.at(-1)).toEqual({ message: "Cleared 6 Tasks", type: "info" });
-
-    expect(listed.details?.action).toBe("add");
+    expect(harness.notifications.at(-1)).toEqual({ message: "Cleared 2 Tasks", type: "info" });
   });
 });

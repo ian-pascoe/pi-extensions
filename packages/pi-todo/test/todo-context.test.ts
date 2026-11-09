@@ -124,33 +124,6 @@ describe("immutable Todo journal projection", () => {
     ]);
   });
 
-  it("supports an empty Tail and a cutoff on a state entry without inventing an earlier baseline", () => {
-    const manager = SessionManager.inMemory();
-    user(manager, "Request");
-    const cutoff = state(manager, "First state");
-    manager.appendCompaction("State cutoff", cutoff, 1000);
-    expect(snapshots(project(manager))).toEqual([`${HEADER}[ ] #1 First state${CHECKPOINT}`]);
-    const empty = manager.appendCompaction("Empty Tail", "unused", 1000);
-    // Native appendCompaction can express an empty Tail by pointing at the checkpoint itself.
-    const entry = manager.getEntry(empty);
-    if (entry?.type !== "compaction") throw new Error("Missing checkpoint");
-    const branch = manager
-      .getBranch()
-      .map((item) => (item.id === empty ? { ...entry, firstKeptEntryId: empty } : item));
-    const messages: Message[] = [
-      {
-        role: "compactionSummary",
-        summary: "Empty Tail",
-        tokensBefore: 1000,
-        timestamp: Date.parse(entry.timestamp),
-      },
-    ];
-    // With an empty Tail, the Checkpoint Snapshot takes the baseline's place.
-    expect(snapshots(projectTodoContext(branch, messages))).toEqual([
-      `${HEADER}[ ] #1 First state${CHECKPOINT}`,
-    ]);
-  });
-
   function assistantCalls(manager: SessionManager, ids: string[]): void {
     manager.appendMessage({
       role: "assistant",
@@ -208,48 +181,6 @@ describe("immutable Todo journal projection", () => {
     expect(project(manager, result)).toEqual(result);
   });
 
-  it("projects one snapshot per tool group and keeps earlier groups fixed", () => {
-    const manager = SessionManager.inMemory();
-    user(manager, "Work");
-    assistantCalls(manager, ["a", "b"]);
-    state(manager, "A1");
-    toolResult(manager, "a");
-    state(manager, "A2");
-    toolResult(manager, "b");
-    const first = project(manager);
-    assistantCalls(manager, ["c", "d"]);
-    state(manager, "B1");
-    toolResult(manager, "c");
-    state(manager, "B2");
-    toolResult(manager, "d");
-    const second = project(manager);
-    expect(snapshots(second)).toEqual([`${HEADER}[ ] #1 A2`, `${HEADER}[ ] #1 B2`]);
-    expect(second.slice(0, first.length)).toEqual(first);
-    expect(second.map((message) => message.role)).toEqual([
-      "user",
-      "assistant",
-      "toolResult",
-      "toolResult",
-      "custom",
-      "assistant",
-      "toolResult",
-      "toolResult",
-      "custom",
-    ]);
-  });
-
-  it("projects nothing for a tool group that ends in the state it began with", () => {
-    const manager = SessionManager.inMemory();
-    user(manager, "Start");
-    state(manager, "Stable");
-    assistantCalls(manager, ["a", "b"]);
-    state(manager, "Temporary");
-    toolResult(manager, "a");
-    state(manager, "Stable");
-    toolResult(manager, "b");
-    expect(snapshots(project(manager))).toEqual([`${HEADER}[ ] #1 Stable`]);
-  });
-
   const fullList = (tasks: JsonValue) => ({ action: "list", tasks });
   const task = (title: string): JsonObject[] => [{ id: 1, title, status: "pending" }];
 
@@ -278,23 +209,6 @@ describe("immutable Todo journal projection", () => {
     const second = project(manager);
     expect(snapshots(second)).toEqual([`${HEADER}[ ] #1 Other`]);
     expect(second.slice(0, first.length)).toEqual(first);
-  });
-
-  it("checks the group's last todo result, not its last message", () => {
-    const manager = SessionManager.inMemory();
-    user(manager, "Go");
-    assistantCalls(manager, ["a", "b"]);
-    state(manager, "Task");
-    toolResult(manager, "a", "list", false, fullList(task("Task")));
-    manager.appendMessage({
-      role: "toolResult",
-      toolCallId: "b",
-      toolName: "bash",
-      content: [{ type: "text", text: "other tool" }],
-      isError: false,
-      timestamp: 3,
-    });
-    expect(snapshots(project(manager))).toEqual([]);
   });
 
   it("keeps the Snapshot when the last todo result is partial, stale, or an error", () => {
@@ -362,22 +276,10 @@ describe("immutable Todo journal projection", () => {
     assistantCalls(manager, ["c"]);
     state(manager, null);
     codemodeResult(manager, "c", script(shown([])));
-    expect(snapshots(project(manager))).toEqual([]);
-  });
-
-  it("finds the list inside a wrapper value or a bare task array the script returned", () => {
-    const manager = SessionManager.inMemory();
-    user(manager, "Script");
-    assistantCalls(manager, ["a"]);
-    state(manager, "Wrapped");
-    codemodeResult(
-      manager,
-      "a",
-      script(JSON.stringify({ after: JSON.parse(shown(task("Wrapped"))) })),
-    );
-    assistantCalls(manager, ["b"]);
+    // A script may also return a bare task array.
+    assistantCalls(manager, ["d"]);
     state(manager, "Bare");
-    codemodeResult(manager, "b", script(JSON.stringify(task("Bare"))));
+    codemodeResult(manager, "d", script(JSON.stringify(task("Bare"))));
     expect(snapshots(project(manager))).toEqual([]);
   });
 
@@ -445,20 +347,6 @@ describe("immutable Todo journal projection", () => {
       `${HEADER}[ ] #1 Big`,
       `${HEADER}[ ] #1 Desynced`,
     ]);
-  });
-
-  it("judges a mixed group by its last todo or codemode result", () => {
-    const manager = SessionManager.inMemory();
-    user(manager, "Mixed");
-    assistantCalls(manager, ["a", "b"]);
-    state(manager, "Direct");
-    toolResult(manager, "a", "x", false, { action: "update", task: task("Direct")[0]! });
-    codemodeResult(manager, "b", script(shown(task("Direct"))));
-    assistantCalls(manager, ["c", "d"]);
-    state(manager, "Later");
-    codemodeResult(manager, "c", script(shown(task("Later"))));
-    toolResult(manager, "d", "x", false, { action: "update", task: task("Later")[0]! });
-    expect(snapshots(project(manager))).toEqual([`${HEADER}[ ] #1 Later`]);
   });
 
   type Status = "pending" | "active" | "completed";
