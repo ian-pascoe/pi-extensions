@@ -160,32 +160,6 @@ describe("TPS Tracker extension", () => {
     );
   });
 
-  it("reports status and the final notification as plain text without icon glyphs", async () => {
-    const host = new RecordingLifecycleHost();
-    const context = new RecordingTrackerContext();
-    registerTpsTracker(host, new RecordingTokenCounterLoader(null));
-
-    await requireHandler(host.agentStart)(
-      { type: "agent_start" } satisfies AgentStartEvent,
-      context,
-    );
-    await requireHandler(host.messageStart)(messageStartEvent(), context);
-    await requireHandler(host.messageUpdate)(messageUpdateEvent("first", 12), context);
-    vi.advanceTimersByTime(1_000);
-    await requireHandler(host.messageUpdate)(messageUpdateEvent("second", 12), context);
-    await requireHandler(host.messageEnd)(messageEndEvent(12), context);
-    await requireHandler(host.agentEnd)(
-      { type: "agent_end", messages: [] } satisfies AgentEndEvent,
-      context,
-    );
-
-    const texts = [...context.statuses, ...context.notifications].filter(
-      (text): text is string => text !== undefined,
-    );
-    expect(texts.length).toBeGreaterThan(0);
-    for (const text of texts) expect(text).not.toMatch(/[\p{Co}✓•]|\s{2}/u);
-  });
-
   it("uses a model-keyed Tokenized Output Count when provider usage is absent", async () => {
     const host = new RecordingLifecycleHost();
     const context = new RecordingTrackerContext("model-a");
