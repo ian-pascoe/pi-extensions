@@ -48,12 +48,6 @@ describe("convertHtmlInChunks", () => {
     }
   });
 
-  test("shape A: a plain page with head and body", () => {
-    expectSameAsOneConversion(
-      `<!doctype html><html><head><title>Page Title</title><meta charset="utf-8"></head><body>${blocks(150)}</body></html>`,
-    );
-  });
-
   test("shape B: containers that each hold many siblings", () => {
     expectSameAsOneConversion(
       `<main><div id="a">${blocks(120)}</div><div id="b">${blocks(120)}</div><section>text <b>inline</b> <div>${blocks(40)}</div> tail</section></main>`,

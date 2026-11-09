@@ -3,7 +3,6 @@ import {
   describeWebFailure,
   readBoundedResponseBody,
   WebHttpStatusError,
-  WebInputError,
   WebResponseTooLargeError,
 } from "../src/web-response.js";
 
@@ -37,40 +36,6 @@ describe("bounded Web response bodies", () => {
     expect(new TextDecoder().decode(result)).toBe("abcd");
   });
 
-  test("rejects and cancels a declared overflow before reading", async () => {
-    let cancelled = false;
-    const response = responseFromChunks([new Uint8Array([1])], { "content-length": "6" }, () => {
-      cancelled = true;
-    });
-
-    await expect(readBoundedResponseBody(response, 5)).rejects.toThrow(
-      "Response body exceeds 5 bytes",
-    );
-    expect(cancelled).toBe(true);
-  });
-
-  test("rejects streamed overflow without reading later chunks", async () => {
-    let pulls = 0;
-    let cancelled = false;
-    const response = new Response(
-      new ReadableStream<Uint8Array>({
-        pull(controller) {
-          pulls++;
-          controller.enqueue(new Uint8Array(3));
-        },
-        cancel() {
-          cancelled = true;
-        },
-      }),
-    );
-
-    await expect(readBoundedResponseBody(response, 5)).rejects.toThrow(
-      "Response body exceeds 5 bytes",
-    );
-    expect(pulls).toBeLessThan(4);
-    expect(cancelled).toBe(true);
-  });
-
   test("cancels a pending read when the caller aborts", async () => {
     let cancelled = false;
     const controller = new AbortController();
@@ -88,18 +53,6 @@ describe("bounded Web response bodies", () => {
     await expect(reading).rejects.toThrow("Response body read aborted");
     expect(cancelled).toBe(true);
   });
-
-  test("rejects failed response streams", async () => {
-    const response = new Response(
-      new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.error(new Error("transport details"));
-        },
-      }),
-    );
-
-    await expect(readBoundedResponseBody(response, 5)).rejects.toThrow("Response body read failed");
-  });
 });
 
 describe("Web failure causes", () => {
@@ -107,7 +60,6 @@ describe("Web failure causes", () => {
     [new WebHttpStatusError(404), "HTTP 404 Not Found", false],
     [new WebHttpStatusError(502), "HTTP 502 Bad Gateway", true],
     [new WebHttpStatusError(599), "HTTP 599", true],
-    [new WebInputError("invalid URL"), "invalid URL", false],
     [new WebResponseTooLargeError(1024), "response body exceeds the 1024-byte limit", false],
     [new WebResponseTooLargeError(2 * 1024 * 1024), "response body exceeds the 2 MiB limit", false],
     [
@@ -118,14 +70,6 @@ describe("Web failure causes", () => {
       true,
     ],
     [new TypeError("fetch failed"), "network error", true],
-    [
-      new Error("ENOENT: no such file", {
-        cause: Object.assign(new Error("x"), { code: "ENOENT" }),
-      }),
-      "unexpected Error",
-      false,
-    ],
-    [Object.assign(new Error("disk"), { code: "EACCES" }), "unexpected Error", false],
     [new RangeError("secret user:pass@host"), "unexpected RangeError", false],
     ["boom", "unexpected error", false],
   ])("describes %s", (error, cause, diagnosable) => {

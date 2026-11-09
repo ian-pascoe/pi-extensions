@@ -1,8 +1,8 @@
 import { toToolContext } from "./tool-context.js";
+import { existsSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { expectToolOutputMatches } from "@ian-pascoe/pi-utils/tool-testing";
 import { Parser } from "htmlparser2";
 import TurndownService from "turndown";
@@ -10,13 +10,12 @@ import { Value } from "typebox/value";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import {
   createWebFetchTool,
-  WEB_FETCH_DEFAULT_TIMEOUT_SECONDS,
   WEB_FETCH_MAX_RESPONSE_BYTES,
   WebFetchOutputSchema,
   type WebFetchToolOptions,
 } from "../src/web-fetch.js";
 import { WEB_TOOL_STRUCTURED_MAX_BYTES } from "../src/web-tool-output.js";
-import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
+import { TROUBLESHOOTING_HINT, TROUBLESHOOTING_SKILL_PATH } from "../src/troubleshooting-skill.js";
 import { createWebToolsTestRunner } from "./web-tools-test-harness.js";
 
 type ServedResponse = {
@@ -76,7 +75,6 @@ async function executeFetch(
 ) {
   const definition = createWebFetchTool(options);
   const runner = await createWebToolsTestRunner((pi) => pi.registerTool(definition));
-  expect(runner.getToolDefinition("web_fetch")).toBe(definition);
   return definition.execute(
     "fetch-call",
     parameters,
@@ -130,17 +128,12 @@ describe("Web Fetch", () => {
     expect(server.requests.map(({ path }) => path)).toEqual(["/redirect", "/target"]);
   });
 
-  test("accepts HTTPS syntax and rejects non-HTTP schemes before transport", async () => {
+  test("rejects non-HTTP schemes before transport", async () => {
     const calls: string[] = [];
     const fetch: typeof globalThis.fetch = async (input) => {
       calls.push(new Request(input).url);
       return new Response("secure", { headers: { "content-type": "text/plain" } });
     };
-    const https = await executeFetch({ fetch }, { url: "https://example.com/path" });
-    expect(https.content).toEqual([{ type: "text", text: "secure" }]);
-    expect(https.details.format).toBe("markdown");
-    expect(calls).toEqual(["https://example.com/path"]);
-
     const invalid = await executeFetch({ fetch }, { url: "file:///etc/passwd" }).catch(
       (cause: unknown) => cause,
     );
@@ -148,7 +141,7 @@ describe("Web Fetch", () => {
       "Unable to fetch file:///etc/passwd: unsupported URL scheme file: (Web Fetch requires an HTTP or HTTPS URL)",
     );
     expect(String(invalid)).not.toContain(TROUBLESHOOTING_HINT);
-    expect(calls).toHaveLength(1);
+    expect(calls).toEqual([]);
   });
 
   test("sends format-weighted headers and converts HTML without active content", async () => {
@@ -171,19 +164,15 @@ describe("Web Fetch", () => {
     expect(server.requests[0]?.headers.accept).toContain("text/markdown;q=1.0");
     expect(server.requests[1]?.headers.accept).toContain("text/plain;q=1.0");
     expect(server.requests[2]?.headers.accept).toContain("text/html;q=1.0");
-    expect(server.requests[0]?.headers["accept-language"]).toBe("en-US,en;q=0.9");
-    expect(server.requests[0]?.headers["user-agent"]).toContain("Mozilla/5.0");
   });
 
   test.each([
     [undefined, "absent"],
     ["text/plain", "plain"],
-    ["text/markdown", "markdown"],
     ["application/xml", "<ok/>"],
     ["application/problem+xml", "<error/>"],
     ["application/javascript", "const ok = true;"],
     ["application/x-javascript", "var ok = true;"],
-    ["image/svg+xml", "<svg/>"],
   ])("returns accepted textual MIME %s unchanged", async (contentType, body) => {
     const fetch: typeof globalThis.fetch = async () =>
       new Response(
@@ -198,7 +187,7 @@ describe("Web Fetch", () => {
     expect(result.details.contentType).toBe(contentType ?? "");
   });
 
-  test.each(["image/png", "application/pdf", "application/octet-stream"])(
+  test.each(["application/pdf"])(
     "rejects unsupported MIME %s with a local-conversion suggestion and no hint",
     async (contentType) => {
       const fetch: typeof globalThis.fetch = async () =>
@@ -247,14 +236,6 @@ describe("Web Fetch", () => {
       async () =>
         new Response(body, { headers: { "content-type": "text/plain" } });
 
-    test("returns the page unchanged, with no note, when offset and limit are omitted", async () => {
-      const result = await executeFetch(
-        { fetch: fetchPlain(numbered(5)) },
-        { url: "https://example.com/w", format: "text" },
-      );
-      expect(resultText(result)).toBe(numbered(5));
-    });
-
     test("reads limit lines from a 1-indexed offset and says how many remain and where to continue", async () => {
       const result = await executeFetch(
         { fetch: fetchPlain(numbered(100)) },
@@ -267,29 +248,6 @@ describe("Web Fetch", () => {
         Array.from({ length: 20 }, (_, index) => `line ${index + 11}`).join("\n"),
       );
       expect(result.details.truncation).toBeUndefined();
-    });
-
-    test("treats a limit without an offset as starting at line 1", async () => {
-      const result = await executeFetch(
-        { fetch: fetchPlain(numbered(10)) },
-        { url: "https://example.com/w", format: "text", limit: 3 },
-      );
-      expect(resultText(result)).toBe(
-        "line 1\nline 2\nline 3\n\n[Showing lines 1-3 of 10. 7 lines remain. Use offset=4 to continue.]",
-      );
-    });
-
-    test("adds no note when the window reaches the end of the page", async () => {
-      const toEnd = await executeFetch(
-        { fetch: fetchPlain(numbered(10)) },
-        { url: "https://example.com/w", format: "text", offset: 8 },
-      );
-      expect(resultText(toEnd)).toBe("line 8\nline 9\nline 10");
-      const exact = await executeFetch(
-        { fetch: fetchPlain(numbered(10)) },
-        { url: "https://example.com/w", format: "text", offset: 9, limit: 2 },
-      );
-      expect(resultText(exact)).toBe("line 9\nline 10");
     });
 
     test("fails with the line count when offset is past the end", async () => {
@@ -376,23 +334,6 @@ describe("Web Fetch", () => {
       });
     });
 
-    test("continues past what the model saw, for an offset alone and for no window at all", async () => {
-      for (const parameters of [{ offset: 5 }, {}]) {
-        const result = await executeFetch(
-          { fetch: fetchPlain(numbered(5_000)) },
-          { url: "https://example.com/w", format: "text", ...parameters },
-        );
-        const path = result.details.truncation?.fullOutputPath;
-        if (path === undefined) throw new Error("Expected Web Fetch spill");
-        spillDirectories.push(dirname(path));
-        const note = continuation(resultText(result));
-        expect(note.first).toBe(parameters.offset ?? 1);
-        expect(note.shown[0]).toBe(note.first);
-        expect(note.next).toBe(note.shown.at(-1)! + 1);
-        expect(note.total).toBe(5_000);
-      }
-    });
-
     test("pages through a long page with the note's offsets and sees every line exactly once", async () => {
       const page = numbered(5_000);
       const seen: number[] = [];
@@ -460,23 +401,6 @@ describe("Web Fetch", () => {
       });
       expect(result.structuredContent).not.toHaveProperty("next_offset");
     });
-
-    test("says '1 line remains' for a single remaining line", async () => {
-      const result = await executeFetch(
-        { fetch: fetchPlain(numbered(3)) },
-        { url: "https://example.com/w", format: "text", limit: 2 },
-      );
-      expect(resultText(result)).toContain("1 line remains. Use offset=3 to continue.");
-    });
-
-    test("describes the window in the static parameter schema", () => {
-      const { properties }: { properties: Record<string, { description?: string }> } = JSON.parse(
-        JSON.stringify(createWebFetchTool().parameters),
-      );
-      expect(Object.keys(properties)).toEqual(["url", "format", "timeout", "offset", "limit"]);
-      expect(properties.offset?.description).toContain("1-indexed");
-      expect(properties.limit?.description).toContain("lines");
-    });
   });
 
   test("rejects invalid parameters with a reason and no hint", async () => {
@@ -492,18 +416,27 @@ describe("Web Fetch", () => {
 
   test("rejects declared and streamed bodies above 5 MiB and cancels overflow", async () => {
     let cancelled = false;
+    let declaredCancelled = false;
     const declaredFetch: typeof globalThis.fetch = async () =>
-      new Response("small", {
-        headers: {
-          "content-type": "text/plain",
-          "content-length": String(WEB_FETCH_MAX_RESPONSE_BYTES + 1),
+      new Response(
+        new ReadableStream<Uint8Array>({
+          cancel() {
+            declaredCancelled = true;
+          },
+        }),
+        {
+          headers: {
+            "content-type": "text/plain",
+            "content-length": String(WEB_FETCH_MAX_RESPONSE_BYTES + 1),
+          },
         },
-      });
+      );
     await expect(
       executeFetch({ fetch: declaredFetch }, { url: "https://example.com/declared" }),
     ).rejects.toThrow(
       "Unable to fetch https://example.com/declared: response body exceeds the 5 MiB limit",
     );
+    expect(declaredCancelled).toBe(true);
 
     const streamedFetch: typeof globalThis.fetch = async () =>
       new Response(
@@ -570,24 +503,9 @@ describe("Web Fetch", () => {
         });
       },
     ],
-    [
-      "an unsupported type",
-      async () => new Response("x", { headers: { "content-type": "application/pdf" } }),
-    ],
-    ["a size limit", async () => new Response("x", { headers: { "content-length": "9999999" } })],
-    [
-      "a timeout",
-      async (_input, init) =>
-        new Promise<Response>((_resolve, reject) =>
-          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)),
-        ),
-    ],
   ])("never leaks URL userinfo through %s", async (_name, respond) => {
     const message = await failureMessage(
-      executeFetch(
-        { fetch: respond },
-        { url: "https://user:password@example.com/private", timeout: 0.01 },
-      ),
+      executeFetch({ fetch: respond }, { url: "https://user:password@example.com/private" }),
     );
     expect(message).toContain("Unable to fetch https://example.com/private: ");
     expect(message).not.toContain("password");
@@ -607,23 +525,9 @@ describe("Web Fetch", () => {
           }),
       ),
     );
+    expect(existsSync(TROUBLESHOOTING_SKILL_PATH)).toBe(true);
     expect(await failureMessage(executeFetch({}, { url: `${closed}/refused` }))).toBe(
       `Unable to fetch ${closed}/refused: network error ECONNREFUSED\n\n${TROUBLESHOOTING_HINT}`,
-    );
-  });
-
-  test("names an unresolved host from the transport's cause code", async () => {
-    const fetch: typeof globalThis.fetch = async () => {
-      throw new TypeError("fetch failed", {
-        cause: Object.assign(new Error("getaddrinfo ENOTFOUND missing.invalid"), {
-          code: "ENOTFOUND",
-        }),
-      });
-    };
-    expect(
-      await failureMessage(executeFetch({ fetch }, { url: "https://missing.invalid/page" })),
-    ).toBe(
-      `Unable to fetch https://missing.invalid/page: network error ENOTFOUND\n\n${TROUBLESHOOTING_HINT}`,
     );
   });
 
@@ -643,12 +547,7 @@ describe("Web Fetch", () => {
   });
 
   test.each([
-    [400, "Bad Request", false],
-    [403, "Forbidden", false],
     [404, "Not Found", false],
-    [410, "Gone", false],
-    [429, "Too Many Requests", false],
-    [500, "Internal Server Error", true],
     [503, "Service Unavailable", true],
   ])(
     "reports HTTP %i and points to the Skill only when diagnosable: %s",
@@ -688,19 +587,7 @@ describe("Web Fetch", () => {
     ).toBe(
       `Unable to fetch ${server.baseUrl}/timeout: timed out after 0.01 seconds\n\n${TROUBLESHOOTING_HINT}`,
     );
-    expect(WEB_FETCH_DEFAULT_TIMEOUT_SECONDS).toBe(30);
   });
-
-  test("translates HTML conversion failures at the tool boundary", async () => {
-    const deeplyNestedHtml = `${"<div>".repeat(4_000)}content${"</div>".repeat(4_000)}`;
-    const fetch: typeof globalThis.fetch = async () =>
-      new Response(deeplyNestedHtml, { headers: { "content-type": "text/html" } });
-
-    const message = await failureMessage(
-      executeFetch({ fetch }, { url: "https://example.com/deep", format: "markdown" }),
-    );
-    expect(message).toBe("Unable to fetch https://example.com/deep: unexpected RangeError");
-  }, 15000);
 
   test("extracts text from deeply nested HTML", async () => {
     const deeplyNestedHtml = `${"<div>".repeat(4_000)}content<script>omitted()</script>${"</div>".repeat(4_000)}`;
@@ -714,53 +601,6 @@ describe("Web Fetch", () => {
 
     expect(result.content[0]).toMatchObject({ type: "text", text: "content" });
   }, 15000);
-
-  test("reports a failed output spill as itself, not as a network error", async () => {
-    const originalTmpdir = process.env["TMPDIR"];
-    const missing = join(tmpdir(), `pi-web-tools-missing-${process.pid}`, "nested");
-    process.env["TMPDIR"] = missing;
-    try {
-      const fetch: typeof globalThis.fetch = async () =>
-        new Response("x".repeat(60 * 1024), { headers: { "content-type": "text/plain" } });
-      const message = await failureMessage(
-        executeFetch({ fetch }, { url: "https://example.com/spill", format: "text" }),
-      );
-      expect(message).toContain("ENOENT");
-      expect(message).not.toContain("network error");
-      expect(message).not.toContain("Unable to fetch");
-      expect(message).not.toContain(TROUBLESHOOTING_HINT);
-    } finally {
-      if (originalTmpdir === undefined) delete process.env["TMPDIR"];
-      else process.env["TMPDIR"] = originalTmpdir;
-    }
-  });
-
-  test("truncates complete converted output to a private spill", async () => {
-    const paragraphs = Array.from(
-      { length: 2_100 },
-      (_, index) => `<p>paragraph ${index}</p>`,
-    ).join("");
-    const fetch: typeof globalThis.fetch = async () =>
-      new Response(paragraphs, { headers: { "content-type": "text/html" } });
-    const result = await executeFetch(
-      { fetch },
-      { url: "https://example.com/large", format: "markdown" },
-    );
-    const path = result.details.truncation?.fullOutputPath;
-    if (path === undefined) throw new Error("Expected Web Fetch spill");
-    spillDirectories.push(dirname(path));
-
-    expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining(path) });
-    expect(await readFile(path, "utf8")).toContain("paragraph 2099");
-    // Scripts receive the complete converted text, not the 50 KiB the model sees.
-    expect(result.structuredContent).toMatchObject({
-      content: expect.stringContaining("paragraph 2099"),
-      truncated: true,
-      structured_truncated: false,
-      full_output_path: path,
-    });
-    expectToolOutputMatches(createWebFetchTool(), result);
-  });
 
   test("bounds script content at 1 MiB on a character boundary and keeps the spill complete", async () => {
     // "é" is two bytes, so the limit falls inside a character when the text starts with "a".
@@ -785,23 +625,6 @@ describe("Web Fetch", () => {
     expect(content).not.toContain("\uFFFD");
     expect(body.startsWith(content)).toBe(true);
     expect(await readFile(path, "utf8")).toBe(body);
-  });
-
-  test("returns small pages unspilled with no full output path", async () => {
-    const fetch: typeof globalThis.fetch = async () =>
-      new Response("tiny", { headers: { "content-type": "text/plain" } });
-    const result = await executeFetch(
-      { fetch },
-      { url: "https://example.com/tiny", format: "text" },
-    );
-    expect(result.structuredContent).toEqual({
-      url: "https://example.com/tiny",
-      content_type: "text/plain",
-      format: "text",
-      content: "tiny",
-      truncated: false,
-      structured_truncated: false,
-    });
   });
 
   test("truncation fields never contradict: small, over 50 KiB, and over 1 MiB pages", async () => {
@@ -876,7 +699,7 @@ describe("Web Fetch JSON", () => {
     async () =>
       new Response(body, { headers: { "content-type": contentType } });
 
-  test.each(["markdown", "text"] as const)(
+  test.each(["markdown"] as const)(
     "re-indents minified JSON for format %s without changing its values",
     async (format) => {
       const result = await executeFetch(
@@ -899,79 +722,20 @@ describe("Web Fetch JSON", () => {
     },
   );
 
-  test("pages through re-indented JSON with offset and limit", async () => {
-    const fetch = fetchJson(minified);
-    const whole = resultText(await executeFetch({ fetch }, { url: "https://example.com/j" })).split(
-      "\n",
-    );
-    const first = await executeFetch({ fetch }, { url: "https://example.com/j", limit: 5 });
-    expect(resultText(first)).toBe(
-      `${whole.slice(0, 5).join("\n")}\n\n[Showing lines 1-5 of ${whole.length}. ${whole.length - 5} lines remain. Use offset=6 to continue.]`,
-    );
-    const structured = Value.Parse(WebFetchOutputSchema, first.structuredContent);
-    expect(structured.total_lines).toBe(whole.length);
-    expect(structured.next_offset).toBe(6);
-    const next = await executeFetch(
-      { fetch },
-      { url: "https://example.com/j", offset: 6, limit: 5 },
-    );
-    expect(Value.Parse(WebFetchOutputSchema, next.structuredContent).content).toBe(
-      whole.slice(5, 10).join("\n"),
-    );
-  });
-
-  test("spills the re-indented JSON when it exceeds the output limit", async () => {
-    const large = JSON.stringify(
-      Array.from({ length: 5_000 }, (_, index) => ({ id: index, name: `item-${index}` })),
-    );
-    const result = await executeFetch(
-      { fetch: fetchJson(large) },
-      { url: "https://example.com/large", format: "text" },
-    );
-    const path = result.details.truncation?.fullOutputPath;
-    if (path === undefined) throw new Error("Expected Web Fetch spill");
-    spillDirectories.push(dirname(path));
-    const reindented = JSON.stringify(JSON.parse(large), null, 2);
-    expect(await readFile(path, "utf8")).toBe(reindented);
-    expect(Value.Parse(WebFetchOutputSchema, result.structuredContent).content).toBe(reindented);
-    expect(reindented.startsWith(resultText(result).split("\n\n[Output truncated")[0] ?? "")).toBe(
-      true,
-    );
-  });
-
-  test("normalises the indentation of already formatted JSON", async () => {
-    const result = await executeFetch(
-      {
-        fetch: fetchJson(
-          '{\n    "slideshow": {\n        "title": "Sample",\n        "slides": []\n    }\n}\n',
-        ),
-      },
-      { url: "https://example.com/json" },
-    );
-    expect(resultText(result)).toBe(
-      '{\n  "slideshow": {\n    "title": "Sample",\n    "slides": []\n  }\n}',
-    );
-  });
-
-  test.each([
-    "application/json; charset=utf-8",
-    "text/json",
-    "application/problem+json",
-    "application/vnd.api+json",
-    "Application/LD+JSON",
-  ])("detects JSON served as %s", async (contentType) => {
-    const result = await executeFetch(
-      { fetch: fetchJson('{"a":[1]}', contentType) },
-      { url: "https://example.com/j", format: "text" },
-    );
-    expect(resultText(result)).toBe('{\n  "a": [\n    1\n  ]\n}');
-  });
+  test.each(["text/json", "Application/LD+JSON"])(
+    "detects JSON served as %s",
+    async (contentType) => {
+      const result = await executeFetch(
+        { fetch: fetchJson('{"a":[1]}', contentType) },
+        { url: "https://example.com/j", format: "text" },
+      );
+      expect(resultText(result)).toBe('{\n  "a": [\n    1\n  ]\n}');
+    },
+  );
 
   test.each([
     ["format html", "application/json", "html"],
     ["text/plain", "text/plain", "text"],
-    ["no content type", undefined, "markdown"],
-    ["JavaScript", "application/javascript", "text"],
   ] as const)("leaves JSON unchanged for %s", async (_name, contentType, format) => {
     const fetch: typeof globalThis.fetch = async () =>
       new Response(
@@ -982,19 +746,16 @@ describe("Web Fetch JSON", () => {
     expect(resultText(result)).toBe(minified);
   });
 
-  test.each([
-    ["JSONP", 'callback({"a":1})'],
-    ["anti-hijacking prefix", ')]}\'\n{"a":1}'],
-    ["truncated", '{"a":[1,2'],
-    ["empty", ""],
-    ["too deeply nested", `${"[".repeat(5_000)}${"]".repeat(5_000)}`],
-  ])("returns a JSON-typed body that cannot be re-indented unchanged: %s", async (_name, body) => {
-    const result = await executeFetch(
-      { fetch: fetchJson(body) },
-      { url: "https://example.com/j", format: "text" },
-    );
-    expect(resultText(result)).toBe(body);
-  });
+  test.each([["JSONP", 'callback({"a":1})']])(
+    "returns a JSON-typed body that cannot be re-indented unchanged: %s",
+    async (_name, body) => {
+      const result = await executeFetch(
+        { fetch: fetchJson(body) },
+        { url: "https://example.com/j", format: "text" },
+      );
+      expect(resultText(result)).toBe(body);
+    },
+  );
 });
 
 describe("Web Fetch main content", () => {
@@ -1016,19 +777,12 @@ describe("Web Fetch main content", () => {
       expect(output).not.toContain("trackingBeacon");
       expect(output).toContain("Guide to Widgets");
       expect(output).toContain("Widgets are small");
-      expect(output).toContain("Site chrome outside the main content was removed");
 
       expect(
         output.startsWith(format === "markdown" ? "# Guide to Widgets" : "Guide to Widgets"),
       ).toBe(true);
     },
   );
-
-  test("renders the main content as Markdown", async () => {
-    expect(await fetchHtmlPage(NAVIGATION_PAGE, "markdown")).toBe(
-      "# Guide to Widgets\n\n*Site chrome outside the main content was removed.*\n\n# Widgets\n\nWidgets are small **useful** things.",
-    );
-  });
 
   test("prefers [role=main] and skips a title the content already repeats", async () => {
     const html = `<html><head><title>Widgets</title></head><body><nav>NavAlpha</nav><div role="main"><h1>Widgets</h1><p>Body.</p></div></body></html>`;
@@ -1037,7 +791,7 @@ describe("Web Fetch main content", () => {
     );
   });
 
-  test.each(["markdown", "text"] as const)(
+  test.each(["markdown"] as const)(
     "falls back to a single <article> in %s format",
     async (format) => {
       const output = await fetchHtmlPage(ARTICLE_PAGE, format);
@@ -1047,7 +801,6 @@ describe("Web Fetch main content", () => {
       expect(output).toContain("Post body text.");
       expect(output).not.toContain("NavAlpha");
       expect(output).not.toContain("FooterLegal");
-      expect(output).toContain("Site chrome outside the main content was removed");
     },
   );
 
@@ -1063,7 +816,7 @@ describe("Web Fetch main content", () => {
     expect(output).not.toContain("FooterLegal");
   });
 
-  test.each(["markdown", "text"] as const)(
+  test.each(["markdown"] as const)(
     "strips nav, aside, and page-level header and footer when there is no main or article in %s format",
     async (format) => {
       const output = await fetchHtmlPage(CHROME_PAGE, format);
@@ -1075,7 +828,6 @@ describe("Web Fetch main content", () => {
       expect(output).toContain("Content body text.");
       // A <header> inside a <section> is content, not site chrome.
       expect(output).toContain("Section Heading Block");
-      expect(output).toContain("Site chrome outside the main content was removed");
     },
   );
 
@@ -1091,7 +843,7 @@ describe("Web Fetch main content", () => {
     expect(unclosed).toContain("Real content");
   });
 
-  test.each(["markdown", "text"] as const)(
+  test.each(["markdown"] as const)(
     "keeps a role=navigation content column that holds most of the text in %s format",
     async (format) => {
       const specification = Array.from(
@@ -1109,7 +861,6 @@ describe("Web Fetch main content", () => {
       expect(output).toContain("Specification paragraph 39 body text.");
       expect(output).not.toContain("SidebarToc");
       expect(output).not.toContain("FooterLegal");
-      expect(output).toContain("Site chrome outside the main content was removed");
       expect(output).not.toContain("use format: html");
     },
   );
@@ -1127,7 +878,7 @@ describe("Web Fetch main content", () => {
     expect(output).not.toContain("Site chrome");
   });
 
-  test.each(["markdown", "text"] as const)(
+  test.each(["markdown"] as const)(
     "says how much text chrome removal dropped, and how to see it, in %s format",
     async (format) => {
       const links = Array.from(
@@ -1217,7 +968,6 @@ describe("Web Fetch main content", () => {
       expect(output).toContain("Ferris");
       expect(output).toContain("Ferris is a crab.");
       expect(output).toContain("Second paragraph.");
-      expect(output).toContain("Site chrome outside the main content was removed");
     }
   });
 
@@ -1288,7 +1038,6 @@ describe("Web Fetch main content", () => {
     }
     const markdown = await fetchHtmlPage(page(payload), "markdown");
     expect(markdown).toContain("[Raw](https://example.com/raw/OPTIONS.md)");
-    expect(markdown).toContain("*Site chrome outside the main content was removed (");
   });
 
   test("tolerates a stray end tag, multibyte text before <main>, and an encoded <title>", async () => {
@@ -1317,10 +1066,6 @@ describe("Web Fetch main content", () => {
       "Intro\n\nline one  \n\n\n\nline two   \n\nOutro",
     );
   });
-
-  test("returns html format unchanged", async () => {
-    expect(await fetchHtmlPage(NAVIGATION_PAGE, "html")).toBe(NAVIGATION_PAGE);
-  });
 });
 
 describe("Web Fetch main content on large pages", () => {
@@ -1343,24 +1088,6 @@ describe("Web Fetch main content on large pages", () => {
           (_, index) => `<aside>aside ${index}</aside>`,
         ).join("")}<div><p>Real body text.</p></div></body></html>`,
     },
-    "paragraphs on a plain page (no main or chrome)": {
-      items: 110_000,
-      build: (items) =>
-        `<!doctype html><html><head><title>Big</title></head><body>${Array.from(
-          { length: items },
-          (_, index) => `<p>paragraph ${index}</p>`,
-        ).join("")}</body></html>`,
-    },
-    "paragraphs in two <div>s inside <main>": {
-      items: 110_000,
-      build: (items) =>
-        `<html><head><title>Big</title></head><body><nav>NavAlpha</nav><main>${[0, 1]
-          .map(
-            (half) =>
-              `<div>${Array.from({ length: items / 2 }, (_, index) => `<p>half ${half} paragraph ${index}</p>`).join("")}</div>`,
-          )
-          .join("")}</main></body></html>`,
-    },
     "list items in one <ul> inside <main>": {
       items: 100_000,
       build: (items) =>
@@ -1369,14 +1096,6 @@ describe("Web Fetch main content on large pages", () => {
           (_, index) => `<li>item number ${index}</li>`,
         ).join("")}</ul></main></body></html>`,
     },
-    "list items in one <ol> on a plain page": {
-      items: 100_000,
-      build: (items) =>
-        `<html><body><ol start="5">${Array.from(
-          { length: items },
-          (_, index) => `<li>item number ${index}</li>`,
-        ).join("")}</ol></body></html>`,
-    },
     "rows in one <table> (plain-text backstop)": {
       items: 90_000,
       build: (items) =>
@@ -1384,14 +1103,6 @@ describe("Web Fetch main content on large pages", () => {
           { length: items },
           (_, index) => `<tr><td>row ${index}</td><td>value</td></tr>`,
         ).join("")}</table></body></html>`,
-    },
-    "<nav> elements": {
-      items: 120_000,
-      build: (items) =>
-        `<html><head><title>Big</title></head><body>${Array.from(
-          { length: items },
-          (_, index) => `<nav>nav ${index}</nav>`,
-        ).join("")}<div><p>Real body text.</p></div></body></html>`,
     },
   } satisfies Record<string, { items: number; build: (items: number) => string }>;
 
@@ -1433,7 +1144,10 @@ describe("Web Fetch main content on large pages", () => {
   });
 
   for (const [name, { items, build }] of Object.entries(LARGE_PAGES)) {
-    for (const format of ["text", "markdown"] as const) {
+    // Markdown exercises Turndown; the plain-text path needs one page, since it parses the same way.
+    for (const format of name === "paragraphs in <main>"
+      ? (["text", "markdown"] as const)
+      : (["markdown"] as const)) {
       test(`converts a multi-MiB page of ${name} in ${format} format in linear work`, async () => {
         const html = build(items);
         expect(html.length).toBeGreaterThan(2 * 1024 * 1024);

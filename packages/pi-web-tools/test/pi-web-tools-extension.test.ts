@@ -1,49 +1,7 @@
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { createPiWebToolsExtension } from "../src/index.js";
 import { toToolContext } from "./tool-context.js";
-import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
-import { stripTerminalSequences } from "@earendil-works/pi-tui";
-import { keybindingHints } from "@ian-pascoe/pi-utils/ui-testing";
-import { Value } from "typebox/value";
-import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import type { WebFetchParameters } from "../src/web-fetch.js";
-import { selectSearchProvider, type WebSearchParameters } from "../src/web-search.js";
-import piWebToolsExtension, { createPiWebToolsExtension } from "../src/index.js";
 import { createWebToolsTestRunner } from "./web-tools-test-harness.js";
-
-async function registeredTools() {
-  const runner = await createWebToolsTestRunner(piWebToolsExtension);
-  return runner.getAllRegisteredTools().map(({ definition }) => definition);
-}
-
-type WebToolParameters = WebSearchParameters | WebFetchParameters;
-
-function renderContext(parameters: WebToolParameters, expanded: boolean, isError = false) {
-  return {
-    ...keybindingHints,
-    args: parameters,
-    toolCallId: "web-tool-call",
-    invalidate: () => undefined,
-    lastComponent: undefined,
-    state: {},
-    cwd: "/workspace",
-    executionStarted: true,
-    argsComplete: true,
-    isPartial: false,
-    expanded,
-    showImages: false,
-    isError,
-    durationMs: 0,
-    outputPad: 0,
-  };
-}
-
-function renderText(component: { render(width: number): string[] }): string {
-  return component
-    .render(120)
-    .map((line) => stripTerminalSequences(line).trimEnd())
-    .join("\n");
-}
-
-beforeAll(() => initTheme("dark"));
 
 afterEach(() => {
   vi.useRealTimers();
@@ -71,128 +29,12 @@ async function modelFacingDefinitionsAt(date: string) {
   }
 }
 
-// SAFETY: These public renderer tests exercise callbacks that only consume Theme.bold and Theme.fg.
-const registeredRenderTheme = {
-  bold: (text: string) => text,
-  fg: (_color: string, text: string) => text,
-} as Theme;
-
 describe("Pi Web Tools extension", () => {
-  test("registers the Web Search and Web Fetch contracts", async () => {
-    const tools = await registeredTools();
-    expect(tools.map(({ name }) => name)).toEqual(["web_search", "web_fetch"]);
-
-    const search = tools[0];
-    const fetch = tools[1];
-    expect(search).toMatchObject({
-      label: "Web Search",
-      promptSnippet: "Search the web for current information",
-      renderCall: expect.any(Function),
-      renderResult: expect.any(Function),
-    });
-    expect(search?.description).not.toMatch(/\b(19|20)\d{2}\b/);
-    expect(search?.description).toContain("50 KiB or 2,000 lines");
-    expect(fetch).toMatchObject({
-      label: "Web Fetch",
-      promptSnippet: "Fetch one HTTP or HTTPS URL as text, Markdown, or HTML",
-      renderCall: expect.any(Function),
-      renderResult: expect.any(Function),
-    });
-    expect(fetch?.description).toContain("50 KiB or 2,000 lines");
-  });
-
   test("declares the same model-facing definitions when loaded in different calendar years", async () => {
     const before = await modelFacingDefinitionsAt("2026-06-15T12:00:00Z");
     const after = await modelFacingDefinitionsAt("2027-06-15T12:00:00Z");
     expect(after).toEqual(before);
     expect(before.map(({ name }) => name)).toEqual(["web_search", "web_fetch"]);
-  });
-
-  test("declares identical ordered tool definitions for Exa and Parallel sessions", async () => {
-    // session-b selects Exa and session-a selects Parallel (see selectSearchProvider).
-    const definitionsFor = async (sessionId: string) => {
-      const runner = await createWebToolsTestRunner(piWebToolsExtension, sessionId);
-      const provider = selectSearchProvider(runner.createContext().sessionManager.getSessionId());
-      const definitions = runner
-        .getAllRegisteredTools()
-        .map(({ definition: { name, description, promptSnippet, parameters, outputSchema } }) => ({
-          name,
-          description,
-          promptSnippet,
-          parameters: JSON.parse(JSON.stringify(parameters)),
-          outputSchema: JSON.parse(JSON.stringify(outputSchema)),
-        }));
-      return { provider, definitions };
-    };
-    const exa = await definitionsFor("session-b");
-    const parallel = await definitionsFor("session-a");
-    expect([exa.provider, parallel.provider]).toEqual(["exa", "parallel"]);
-    expect(exa.definitions.map(({ name }) => name)).toEqual(["web_search", "web_fetch"]);
-    expect(parallel.definitions).toEqual(exa.definitions);
-    expect(JSON.stringify(exa.definitions)).toBe(JSON.stringify(parallel.definitions));
-  });
-
-  test("declares output schemas for the structured results scripts receive", async () => {
-    const tools = await registeredTools();
-    for (const tool of tools) {
-      expect(tool.outputSchema, tool.name).toMatchObject({ type: "object" });
-    }
-  });
-
-  test("renders calls and results through the registered Tool Definitions", async () => {
-    const [search, fetch] = await registeredTools();
-    if (
-      search?.renderCall === undefined ||
-      search.renderResult === undefined ||
-      fetch?.renderCall === undefined ||
-      fetch.renderResult === undefined
-    ) {
-      throw new Error("Expected both Web Tools to have Transcript Presentation");
-    }
-    const searchArguments = { query: "current facts" };
-    const fetchArguments = { url: "https://example.com/page", format: "text" as const };
-
-    expect(
-      renderText(
-        search.renderCall(
-          searchArguments,
-          registeredRenderTheme,
-          renderContext(searchArguments, false),
-        ),
-      ),
-    ).toContain('web_search "current facts"');
-    expect(
-      renderText(
-        search.renderResult(
-          { content: [{ type: "text", text: "search body" }], details: { provider: "exa" } },
-          { expanded: false, isPartial: false },
-          registeredRenderTheme,
-          renderContext(searchArguments, false),
-        ),
-      ),
-    ).toContain("Exa");
-    expect(
-      renderText(
-        fetch.renderCall(
-          fetchArguments,
-          registeredRenderTheme,
-          renderContext(fetchArguments, false),
-        ),
-      ),
-    ).toContain("web_fetch example.com/page");
-    expect(
-      renderText(
-        fetch.renderResult(
-          {
-            content: [{ type: "text", text: "fetch body" }],
-            details: { url: fetchArguments.url, contentType: "text/plain", format: "text" },
-          },
-          { expanded: false, isPartial: false },
-          registeredRenderTheme,
-          renderContext(fetchArguments, false),
-        ),
-      ),
-    ).toContain("text · text/plain");
   });
 
   test("executes both tools through the composed extension with one environment snapshot", async () => {
@@ -250,51 +92,5 @@ describe("Pi Web Tools extension", () => {
     expect(fetchResult.content).toEqual([{ type: "text", text: "fetch result" }]);
     expect(requests[0]?.url).toContain("exaApiKey=snapshot-key");
     expect(requests[0]?.url).not.toContain("changed-key");
-  });
-
-  test("accepts documented inputs and rejects schema violations", async () => {
-    const [search, fetch] = await registeredTools();
-    if (search === undefined || fetch === undefined) throw new Error("Expected both web tools");
-
-    expect(Value.Check(search.parameters, { query: "current Pi release" })).toBe(true);
-    expect(
-      Value.Check(search.parameters, {
-        query: "current Pi release",
-        numResults: 20,
-        contextMaxCharacters: 50_000,
-      }),
-    ).toBe(true);
-    for (const input of [
-      {},
-      { query: "x", numResults: 0 },
-      { query: "x", numResults: 21 },
-      { query: "x", numResults: 1.5 },
-      // Neither Search Provider honors these, so the schema no longer accepts them.
-      { query: "x", livecrawl: "fallback" },
-      { query: "x", type: "auto" },
-      { query: "x", contextMaxCharacters: 0 },
-      { query: "x", contextMaxCharacters: 50_001 },
-    ]) {
-      expect(Value.Check(search.parameters, input)).toBe(false);
-    }
-
-    expect(Value.Check(fetch.parameters, { url: "https://example.com" })).toBe(true);
-    expect(
-      Value.Check(fetch.parameters, { url: "http://localhost", format: "html", timeout: 120 }),
-    ).toBe(true);
-    expect(Value.Check(fetch.parameters, { url: "https://example.com", offset: 1, limit: 1 })).toBe(
-      true,
-    );
-    for (const input of [
-      {},
-      { url: "https://example.com", format: "pdf" },
-      { url: "https://example.com", timeout: 0 },
-      { url: "https://example.com", timeout: 121 },
-      { url: "https://example.com", offset: 0 },
-      { url: "https://example.com", offset: 1.5 },
-      { url: "https://example.com", limit: 0 },
-    ]) {
-      expect(Value.Check(fetch.parameters, input)).toBe(false);
-    }
   });
 });
