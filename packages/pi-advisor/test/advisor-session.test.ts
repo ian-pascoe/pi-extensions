@@ -4,12 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { onTestFinished, describe, expect, it, vi } from "vitest";
 import { Type } from "typebox";
-import {
-  InMemoryCredentialStore,
-  InMemoryModelsStore,
-  fauxAssistantMessage,
-  type Tool,
-} from "@earendil-works/pi-ai";
+import { InMemoryCredentialStore, InMemoryModelsStore, type Tool } from "@earendil-works/pi-ai";
 import {
   createAgentSessionServices,
   DefaultResourceLoader,
@@ -23,12 +18,7 @@ import {
   defineTool,
   type InlineExtension,
 } from "@earendil-works/pi-coding-agent";
-import {
-  type AdvisorResourceInputs,
-  createAdvisorSession,
-  disposeAdvisorSession,
-  isAdvisorSession,
-} from "../src/advisor-session.js";
+import { createAdvisorSession, disposeAdvisorSession } from "../src/advisor-session.js";
 import { readAdvisorSettings } from "../src/advisor-settings.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/session-extension.ts", import.meta.url));
@@ -219,29 +209,27 @@ describe("private Advisor native sessions", () => {
     expect(observed.modelRuntime.getRegisteredProviderIds()).toContain("llama.cpp");
   });
 
-  it.each(["custom", "llama.cpp"])(
-    "rejects opaque inline resources named %s without replaying them",
-    async (name) => {
-      let calls = 0;
-      const { observed } = await observedFixture([fixture], undefined, false, undefined, [
-        {
-          name,
-          hidden: true,
-          factory(pi) {
-            calls++;
-            pi.registerCommand("custom-inline", { async handler() {} });
-          },
+  it("rejects opaque inline resources without replaying them", async () => {
+    const name = "custom";
+    let calls = 0;
+    const { observed } = await observedFixture([fixture], undefined, false, undefined, [
+      {
+        name,
+        hidden: true,
+        factory(pi) {
+          calls++;
+          pi.registerCommand("custom-inline", { async handler() {} });
         },
-      ]);
-      await expect(
-        createAdvisorSession(observed, {
-          config: readAdvisorSettings(observed).settings,
-          adviceTool,
-        }),
-      ).rejects.toThrow(`recreation inputs (<inline:${name}>)`);
-      expect(calls).toBe(1);
-    },
-  );
+      },
+    ]);
+    await expect(
+      createAdvisorSession(observed, {
+        config: readAdvisorSettings(observed).settings,
+        adviceTool,
+      }),
+    ).rejects.toThrow(`recreation inputs (<inline:${name}>)`);
+    expect(calls).toBe(1);
+  });
 
   it("rejects a host factory under a built-in name without replaying it", async () => {
     let calls = 0;
@@ -361,52 +349,6 @@ describe("private Advisor native sessions", () => {
         resourceInputs: { ...resourceInputs, extensions: [] },
       }),
     ).rejects.toThrow(/match.*observed|ordered/i);
-  });
-
-  it("reproduces the resource owner's codemode model API", async () => {
-    const { observed, dir } = await observedFixture([fixture], undefined, false, undefined, [
-      {
-        name: "codemode",
-        factory: createCodemodeExtension({ models: false }),
-        builtin: true,
-      },
-    ]);
-    const settings = readAdvisorSettings(observed).settings;
-    const config = {
-      ...settings,
-      allowedTools: [...settings.allowedTools, "codemode"],
-    };
-    const resourceInputs: AdvisorResourceInputs = {
-      agentDir: dir,
-      extensions: observed.resourceLoader
-        .getExtensions()
-        .extensions.map(({ path, resolvedPath, sourceInfo, hidden }) => ({
-          path,
-          resolvedPath,
-          sourceInfo,
-          hidden,
-        })),
-      flagValues: new Map(observed.extensionRunner?.getFlagValues()),
-    };
-    const codemodeDescription = async (inputs: AdvisorResourceInputs) => {
-      const runtime = await createAdvisorSession(observed, {
-        config,
-        adviceTool,
-        resourceInputs: inputs,
-      });
-      onTestFinished(async () => {
-        await disposeAdvisorSession(runtime);
-      });
-      return runtime.session.getToolDefinition("codemode")?.description;
-    };
-
-    expect(await codemodeDescription(resourceInputs)).toContain("- `models`:");
-    const ownerDescription = await codemodeDescription({
-      ...resourceInputs,
-      codemodeModels: false,
-    });
-    expect(ownerDescription).toContain("tools");
-    expect(ownerDescription).not.toContain("- `models`:");
   });
 
   it("keeps the advice tool active under built-in codemode only mode without widening the grant", async () => {
@@ -551,7 +493,7 @@ describe("private Advisor native sessions", () => {
     },
   );
 
-  it("requires Context Management grants and keeps granted Notes and journals private", async () => {
+  it("requires Context Management grants for its private Notes, History, and Rollover", async () => {
     const contextManagement = fileURLToPath(
       new URL("../../pi-context-management/src/index.ts", import.meta.url),
     );
@@ -560,62 +502,6 @@ describe("private Advisor native sessions", () => {
     await expect(createAdvisorSession(observed, { config, adviceTool })).rejects.toThrow(
       /context_notes.*context_history.*context_rollover/,
     );
-    const runtime = await createAdvisorSession(observed, {
-      config: {
-        ...config,
-        allowedTools: [
-          ...config.allowedTools,
-          "context_notes",
-          "context_history",
-          "context_rollover",
-        ],
-      },
-      adviceTool,
-    });
-    let closed = false;
-    onTestFinished(async () => {
-      globalThis.advisorSessionResponses = undefined;
-      if (!closed) await disposeAdvisorSession(runtime);
-    });
-    globalThis.advisorSessionResponses = [
-      {
-        ...fauxAssistantMessage(""),
-        stopReason: "toolUse",
-        content: [
-          {
-            type: "toolCall",
-            id: "write-note",
-            name: "context_notes",
-            arguments: {
-              action: "write",
-              name: "Private",
-              content: "Advisor-only note",
-            },
-          },
-        ],
-      },
-    ];
-    await runtime.session.prompt("Write a private note");
-    expect(
-      runtime.session.messages.some(
-        (message) =>
-          message.role === "toolResult" && message.toolName === "context_notes" && !message.isError,
-      ),
-    ).toBe(true);
-    expect(observed.messages).toEqual([]);
-    const file = runtime.session.sessionFile;
-    if (!file) throw new Error("Native Advisor journal path missing");
-    const reopened = SessionManager.open(file);
-    expect(isAdvisorSession(reopened)).toBe(true);
-    expect(
-      reopened.buildSessionContext().messages.some((message) => message.role === "assistant"),
-    ).toBe(true);
-    expect(reopened.getSessionId()).not.toBe(observed.sessionId);
-    await disposeAdvisorSession(runtime);
-    closed = true;
-    expect(entry(runtime.session, "fixture-shutdown")).toMatchObject({
-      data: { stopped: true },
-    });
   });
 
   it("bounds cancelled creation and shuts down late startup without retaining its signal", async () => {

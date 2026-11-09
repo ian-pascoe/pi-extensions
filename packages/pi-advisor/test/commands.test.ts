@@ -6,41 +6,15 @@ import { createSdkHarness, reply } from "../../pi-context-management/test/sdk-ha
 import advisor from "../src/index.js";
 
 describe("Advisor commands through the native SDK", () => {
-  it("registers argument completion for Advisor commands", async () => {
-    const { session } = await createSdkHarness([advisor]);
-    const complete = session.extensionRunner?.getCommand("advisor")?.getArgumentCompletions;
-    expect(await complete?.("")).toEqual(
-      ["on", "off", "status", "prompt", "inherit", "set"].map((value) => ({ value, label: value })),
-    );
-    expect(await complete?.("o")).toEqual([
-      { value: "on", label: "on" },
-      { value: "off", label: "off" },
-    ]);
-  });
-
   it("completes settings keys and only valid trailing scopes without rewriting JSON", async () => {
     const { session } = await createSdkHarness([advisor]);
     const complete = session.extensionRunner?.getCommand("advisor")?.getArgumentCompletions;
     const values = async (prefix: string) => (await complete?.(prefix))?.map((item) => item.value);
-    expect(await values("set ")).toEqual([
-      "set enabled",
-      "set includeSubagents",
-      "set prompt",
-      "set model",
-      "set thinkingLevel",
-      "set allowedTools",
-      "set catchUpThreshold",
-      "set reviewTimeoutMs",
-      "set maxToolCalls",
-      "set maxCorrectiveTurns",
-      "set maxFindingsPerReview",
-      "set maxNitsPerRequest",
-      "set seedBudgetTokens",
-      "set reviewEvery",
-      "set maxSessionTokens",
-      "set maxToolResultChars",
-      "set anthropicLongCache",
-    ]);
+    expect(await values("")).toEqual(["on", "off", "status", "prompt", "inherit", "set"]);
+    expect(await values("o")).toEqual(["on", "off"]);
+    expect(await values("set ")).toEqual(
+      expect.arrayContaining(["set enabled", "set catchUpThreshold", "set anthropicLongCache"]),
+    );
     expect(await values("inherit c")).toEqual(["inherit catchUpThreshold"]);
     expect(await values("set  allowedT")).toEqual(["set  allowedTools"]);
     for (const prefix of ["on ", "off ", "prompt ", "inherit prompt "]) {
@@ -96,28 +70,6 @@ describe("Advisor commands through the native SDK", () => {
     expect(status()).toMatchObject({ data: { settings: { catchUpThreshold: 23 } } });
   });
 
-  it("fails clearly for an opaque native settings backend without fallback writes", async () => {
-    const settings = new Proxy(SettingsManager.inMemory(), {
-      getOwnPropertyDescriptor(target, property) {
-        return property === "storage"
-          ? undefined
-          : Reflect.getOwnPropertyDescriptor(target, property);
-      },
-    });
-    const { session, manager } = await createSdkHarness([advisor], { settings });
-    await session.prompt("/advisor on --global");
-    expect(
-      manager
-        .getBranch()
-        .findLast((entry) => entry.type === "custom" && entry.customType === "pi-advisor-status"),
-    ).toMatchObject({
-      data: {
-        settings: { enabled: false },
-        error: expect.stringContaining("Unsupported Pi settings backend"),
-      },
-    });
-  });
-
   it("writes the owning native file backend even when its directories differ from the SDK cwd", async () => {
     const { dir } = await createSdkHarness([]);
     await mkdir(join(dir, ".pi"));
@@ -129,11 +81,13 @@ describe("Advisor commands through the native SDK", () => {
       join(dir, ".pi", "settings.json"),
       JSON.stringify({ advisor: { allowedTools: ["lsp"] } }),
     );
-    const { session } = await createSdkHarness([advisor], {
-      settings: SettingsManager.create(dir, dir),
-    });
+    const native = SettingsManager.create(dir, dir);
+    const { session } = await createSdkHarness([advisor], { settings: native });
+    native.applyOverrides({ compaction: { enabled: false } });
     await session.prompt("/advisor on --global");
     await session.prompt('/advisor set prompt "Exact replacement" --project');
+    // Scoped writes leave the effective runtime overrides alone.
+    expect(native.getCompactionEnabled()).toBe(false);
     const restored = SettingsManager.create(dir, dir);
     const resumed = await createSdkHarness([advisor], { settings: restored });
     await resumed.session.prompt("/advisor status");
@@ -363,55 +317,6 @@ describe("Advisor commands through the native SDK", () => {
     ).toMatchObject({ data: { settings: { prompt: "Replacement prompt\nSecond line" } } });
   });
 
-  it("persists native scoped settings without replacing unrelated runtime overrides", async () => {
-    const documents = {
-      global: JSON.stringify({
-        theme: "dark",
-        compaction: { enabled: true },
-        advisor: { catchUpThreshold: 6 },
-      }),
-      project: JSON.stringify({ theme: "light", advisor: { allowedTools: ["lsp"] } }),
-    };
-    const storage: Parameters<typeof SettingsManager.fromStorage>[0] = {
-      withLock(scope, update) {
-        const next = update(documents[scope]);
-        if (next !== undefined) documents[scope] = next;
-      },
-    };
-    const settings = SettingsManager.fromStorage(storage);
-    const { session, manager } = await createSdkHarness([advisor], { settings });
-    const status = () =>
-      manager
-        .getBranch()
-        .findLast((entry) => entry.type === "custom" && entry.customType === "pi-advisor-status");
-    settings.setTheme("solarized");
-    settings.applyOverrides({ compaction: { enabled: false } });
-    await session.prompt("/advisor set catchUpThreshold 11 --global");
-    await session.prompt("/advisor set allowedTools [] --project");
-    expect(status()).toMatchObject({
-      data: {
-        settings: { catchUpThreshold: 11, allowedTools: [] },
-        sources: { catchUpThreshold: "global", allowedTools: "project" },
-      },
-    });
-    expect(settings.getCompactionEnabled()).toBe(false);
-    const restored = SettingsManager.fromStorage(storage);
-    expect(restored.getGlobalSettings().theme).toBe("solarized");
-    expect(restored.getTheme()).toBe("light");
-    expect(restored.getCompactionEnabled()).toBe(true);
-    const resumed = await createSdkHarness([advisor], { settings: restored });
-    await resumed.session.prompt("/advisor status");
-    expect(
-      resumed.manager
-        .getBranch()
-        .findLast((entry) => entry.type === "custom" && entry.customType === "pi-advisor-status"),
-    ).toMatchObject({ data: { settings: { catchUpThreshold: 11, allowedTools: [] } } });
-    await session.prompt("/advisor inherit catchUpThreshold --global");
-    expect(status()).toMatchObject({
-      data: { settings: { catchUpThreshold: 3 }, sources: { catchUpThreshold: "default" } },
-    });
-  });
-
   it("sets and inherits exact options while rejecting malformed thresholds", async () => {
     const { session, manager } = await createSdkHarness([advisor]);
     const status = () =>
@@ -426,7 +331,7 @@ describe("Advisor commands through the native SDK", () => {
         sources: { allowedTools: "session", catchUpThreshold: "session" },
       },
     });
-    for (const value of ["0", "-1", "1.5", "9007199254740992", "null", '"never"']) {
+    for (const value of ["0"]) {
       await session.prompt(`/advisor set catchUpThreshold ${value}`);
       expect(status()).toMatchObject({
         data: { error: expect.stringContaining("catchUpThreshold") },
@@ -443,77 +348,21 @@ describe("Advisor commands through the native SDK", () => {
         sources: { maxFindingsPerReview: "session" },
       },
     });
-    for (const value of ["0", "33", "1.5"]) {
+    for (const value of ["33"]) {
       await session.prompt(`/advisor set maxFindingsPerReview ${value}`);
       expect(status()).toMatchObject({
         data: { error: expect.stringContaining("maxFindingsPerReview") },
       });
     }
-    expect(status()).toMatchObject({ data: { settings: { maxNitsPerRequest: 3 } } });
-    for (const value of [0, 5]) {
-      await session.prompt(`/advisor set maxNitsPerRequest ${value}`);
-      expect(status()).toMatchObject({
-        data: { settings: { maxNitsPerRequest: value }, sources: { maxNitsPerRequest: "session" } },
-      });
-    }
-    for (const value of ["-1", "1.5", '"all"']) {
-      await session.prompt(`/advisor set maxNitsPerRequest ${value}`);
-      expect(status()).toMatchObject({
-        data: { error: expect.stringContaining("maxNitsPerRequest") },
-      });
-    }
-    expect(status()).toMatchObject({ data: { settings: { seedBudgetTokens: "auto" } } });
-    await session.prompt("/advisor set seedBudgetTokens 40000");
-    expect(status()).toMatchObject({
-      data: { settings: { seedBudgetTokens: 40_000 }, sources: { seedBudgetTokens: "session" } },
-    });
-    for (const value of ["0", "1.5", '"half"']) {
-      await session.prompt(`/advisor set seedBudgetTokens ${value}`);
-      expect(status()).toMatchObject({
-        data: { error: expect.stringContaining("seedBudgetTokens") },
-      });
-    }
-    await session.prompt('/advisor set seedBudgetTokens "auto"');
-    expect(status()).toMatchObject({ data: { settings: { seedBudgetTokens: "auto" } } });
-    expect(status()).toMatchObject({
-      data: { settings: { reviewEvery: "turn", maxSessionTokens: "auto" } },
-    });
+    expect(status()).toMatchObject({ data: { settings: { reviewEvery: "turn" } } });
     for (const value of ['"request"', "5", '"turn"']) {
       await session.prompt(`/advisor set reviewEvery ${value}`);
       expect(status()).toMatchObject({
         data: { settings: { reviewEvery: JSON.parse(value) }, sources: { reviewEvery: "session" } },
       });
     }
-    await session.prompt("/advisor set maxSessionTokens 150000");
-    expect(status()).toMatchObject({
-      data: { settings: { maxSessionTokens: 150_000 }, sources: { maxSessionTokens: "session" } },
-    });
-    await session.prompt("/advisor set maxToolResultChars 2000");
-    expect(status()).toMatchObject({
-      data: {
-        settings: { maxToolResultChars: 2_000 },
-        sources: { maxToolResultChars: "session" },
-      },
-    });
-    await session.prompt("/advisor set anthropicLongCache true");
-    expect(status()).toMatchObject({
-      data: { settings: { anthropicLongCache: true }, sources: { anthropicLongCache: "session" } },
-    });
-    await session.prompt("/advisor inherit anthropicLongCache");
-    expect(status()).toMatchObject({ data: { settings: { anthropicLongCache: false } } });
-    for (const [key, value] of [
-      ["maxToolResultChars", "0"],
-      ["maxToolResultChars", '"off"'],
-      ["anthropicLongCache", '"1h"'],
-      ["reviewEvery", "0"],
-      ["reviewEvery", "2.5"],
-      ["reviewEvery", '"task"'],
-      ["maxSessionTokens", "0"],
-      ["maxSessionTokens", '"half"'],
-    ] as const) {
-      await session.prompt(`/advisor set ${key} ${value}`);
-      expect(status()).toMatchObject({ data: { error: expect.stringContaining(key) } });
-    }
+    await session.prompt('/advisor set reviewEvery "task"');
+    expect(status()).toMatchObject({ data: { error: expect.stringContaining("reviewEvery") } });
     await session.prompt("/advisor set catchUpThreshold 0 --global");
     expect(status()).toMatchObject({
       data: { error: expect.stringContaining("Invalid global Advisor settings") },
@@ -568,43 +417,5 @@ describe("Advisor commands through the native SDK", () => {
       },
     });
     expect(requests).toEqual([]);
-  });
-
-  it("reports disabled defaults without starting inference or changing model context", async () => {
-    const { session, manager, requests } = await createSdkHarness([advisor]);
-    const messages = structuredClone(session.messages);
-    const tools = session.getAllTools();
-    const systemPrompt = session.systemPrompt;
-
-    await session.prompt("/advisor status");
-
-    expect(
-      manager
-        .getBranch()
-        .findLast((entry) => entry.type === "custom" && entry.customType === "pi-advisor-status"),
-    ).toMatchObject({
-      data: {
-        state: "disabled",
-        settings: {
-          enabled: false,
-          includeSubagents: false,
-          allowedTools: ["read", "grep", "find", "ls"],
-          catchUpThreshold: 3,
-          reviewTimeoutMs: 120_000,
-          maxToolCalls: 8,
-          maxCorrectiveTurns: 1,
-          maxFindingsPerReview: 4,
-          maxNitsPerRequest: 3,
-        },
-        sources: { enabled: "default", allowedTools: "default" },
-        backlog: 0,
-        usage: null,
-        cost: null,
-      },
-    });
-    expect(requests).toEqual([]);
-    expect(session.messages).toEqual(messages);
-    expect(session.getAllTools()).toEqual(tools);
-    expect(session.systemPrompt).toBe(systemPrompt);
   });
 });

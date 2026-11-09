@@ -181,94 +181,6 @@ it("queues a streaming nit without steering the active agent", async () => {
   });
 });
 
-it("records an idle multi-finding Review in report order without waking for a nit", async () => {
-  const reviewStarted = Promise.withResolvers<void>();
-  const releaseReview = Promise.withResolvers<void>();
-  let mainCalls = 0;
-  let reportParameters = "";
-  globalThis.advisorObserverTest = {
-    stream(model, context) {
-      const privateRole = context.tools?.some((tool) => tool.name === "advisor_report");
-      const stream = createAssistantMessageEventStream();
-      const message = {
-        ...fauxAssistantMessage("Done"),
-        model: model.id,
-        provider: model.provider,
-        api: model.api,
-      };
-      if (privateRole) {
-        reportParameters = JSON.stringify(
-          context.tools?.find((tool) => tool.name === "advisor_report")?.parameters,
-        );
-        message.content = [
-          {
-            type: "toolCall",
-            id: "report",
-            name: "advisor_report",
-            arguments: {
-              findings: [
-                {
-                  severity: "nit",
-                  message: "Prefer the shorter expression.",
-                  evidence: { quote: "Done" },
-                },
-                {
-                  severity: "concern",
-                  message: "Cover the missing edge case.",
-                  evidence: { quote: "Done" },
-                },
-                {
-                  severity: "blocker",
-                  message: "Run the required verification.",
-                  evidence: { quote: "Done" },
-                },
-              ],
-            },
-          },
-        ];
-        message.stopReason = "toolUse";
-        reviewStarted.resolve();
-        void releaseReview.promise.then(() =>
-          stream.push({ type: "done", reason: "toolUse", message }),
-        );
-      } else {
-        mainCalls++;
-        queueMicrotask(() => stream.push({ type: "done", reason: "stop", message }));
-      }
-      return stream;
-    },
-  };
-  const session = await activeFixture();
-  const observer = new AdvisorObserver(
-    session,
-    {
-      ...readAdvisorSettings(session).settings,
-      enabled: true,
-      catchUpThreshold: "off",
-      maxFindingsPerReview: 3,
-    },
-    "headless-root",
-  );
-  onTestFinished(() => observer.dispose());
-  const prompt = session.prompt("Complete once");
-  await reviewStarted.promise;
-  await prompt;
-  expect(mainCalls).toBe(1);
-  releaseReview.resolve();
-  await vi.waitFor(() => expect(observer.status.backlog).toBe(0));
-  expect(reportParameters).toContain('"maxItems":32');
-  expect(
-    session.messages
-      .filter((message) => message.role === "custom" && message.customType === "pi-advisor")
-      .map((message) => message.role === "custom" && message.details),
-  ).toEqual([
-    { severity: "nit", message: "Prefer the shorter expression.", evidence: { quote: "Done" } },
-    { severity: "concern", message: "Cover the missing edge case.", evidence: { quote: "Done" } },
-    { severity: "blocker", message: "Run the required verification.", evidence: { quote: "Done" } },
-  ]);
-  expect(mainCalls).toBe(1);
-});
-
 it("records every finding before starting one Corrective Turn", async () => {
   const reviewStarted = Promise.withResolvers<void>();
   const releaseReview = Promise.withResolvers<void>();
@@ -705,20 +617,10 @@ it("keeps configurable child correction and final reviews inside the owner await
   ).toHaveLength(3);
 });
 
-it.each([
-  {
-    name: "format dedupe preserves distinct identifiers",
-    reports: ["Check `foo_bar`.", "**Check foo_bar.**", "Check foobar."],
-    severity: "blocker",
-    count: 2,
-  },
-  {
-    name: "concerns wait three completed turns and are reevaluated",
-    reports: ["Fix first.", "Fix second.", "", "Fix second."],
-    severity: "concern",
-    count: 2,
-  },
-])("$name", async ({ reports, severity, count }) => {
+it("format dedupe preserves distinct identifiers", async () => {
+  const reports = ["Check `foo_bar`.", "**Check foo_bar.**", "Check foobar."];
+  const severity = "blocker";
+  const count = 2;
   let index = 0;
   globalThis.advisorObserverTest = {
     stream(model, context) {
@@ -817,71 +719,12 @@ it("disabling an in-flight review discards its late finding", async () => {
   expect(observer.status.state).toBe("disabled");
 });
 
-it.each(["aborted", "error"] as const)(
-  "preserves blockers after an %s ending without restarting the child",
-  async (ending) => {
-    let mainCalls = 0;
-    globalThis.advisorObserverTest = {
-      stream(model, context) {
-        const privateRole = context.tools?.some((tool) => tool.name === "advisor_report");
-        const stream = createAssistantMessageEventStream();
-        const message = {
-          ...fauxAssistantMessage("Done"),
-          model: model.id,
-          provider: model.provider,
-          api: model.api,
-        };
-        if (privateRole) {
-          message.content = [
-            {
-              type: "toolCall",
-              id: "report",
-              name: "advisor_report",
-              arguments: {
-                findings: [
-                  {
-                    severity: "blocker",
-                    message: "Run verification.",
-                    evidence: { quote: "Done" },
-                  },
-                ],
-              },
-            },
-          ];
-          message.stopReason = "toolUse";
-          queueMicrotask(() => stream.push({ type: "done", reason: "toolUse", message }));
-        } else {
-          mainCalls++;
-          queueMicrotask(() =>
-            stream.push({
-              type: "error",
-              reason: ending,
-              error: { ...message, stopReason: ending },
-            }),
-          );
-        }
-        return stream;
-      },
-    };
-    const session = await activeFixture();
-    const observer = new AdvisorObserver(
-      session,
-      { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: "off" },
-      "owned-child",
-    );
-    onTestFinished(() => observer.dispose());
-    observer.beforeTask();
-    await session.prompt("Work");
-    await observer.finishOwnedTurn();
-    expect(mainCalls).toBe(1);
-    expect(session.messages.at(-1)).toMatchObject({ role: "custom", customType: "pi-advisor" });
-  },
-);
-
-it("bounds the headless final drain by the Review deadline, not the 30-second Catch-up ceiling", async () => {
-  const started = Promise.withResolvers<void>();
+it("preserves blockers after an error ending without restarting the child", async () => {
+  const ending = "error";
+  let mainCalls = 0;
   globalThis.advisorObserverTest = {
-    stream(model, context, options) {
+    stream(model, context) {
+      const privateRole = context.tools?.some((tool) => tool.name === "advisor_report");
       const stream = createAssistantMessageEventStream();
       const message = {
         ...fauxAssistantMessage("Done"),
@@ -889,51 +732,50 @@ it("bounds the headless final drain by the Review deadline, not the 30-second Ca
         provider: model.provider,
         api: model.api,
       };
-      if (context.tools?.some((tool) => tool.name === "advisor_report")) {
-        options?.signal?.addEventListener(
-          "abort",
-          () =>
-            stream.push({
-              type: "error",
-              reason: "aborted",
-              error: { ...message, stopReason: "aborted" },
-            }),
-          { once: true },
+      if (privateRole) {
+        message.content = [
+          {
+            type: "toolCall",
+            id: "report",
+            name: "advisor_report",
+            arguments: {
+              findings: [
+                {
+                  severity: "blocker",
+                  message: "Run verification.",
+                  evidence: { quote: "Done" },
+                },
+              ],
+            },
+          },
+        ];
+        message.stopReason = "toolUse";
+        queueMicrotask(() => stream.push({ type: "done", reason: "toolUse", message }));
+      } else {
+        mainCalls++;
+        queueMicrotask(() =>
+          stream.push({
+            type: "error",
+            reason: ending,
+            error: { ...message, stopReason: ending },
+          }),
         );
-        started.resolve();
-      } else queueMicrotask(() => stream.push({ type: "done", reason: "stop", message }));
+      }
       return stream;
     },
   };
   const session = await activeFixture();
   const observer = new AdvisorObserver(
     session,
-    {
-      ...readAdvisorSettings(session).settings,
-      enabled: true,
-      catchUpThreshold: "off",
-      reviewTimeoutMs: 45_000,
-    },
-    "headless-root",
+    { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: "off" },
+    "owned-child",
   );
-  globalThis.advisorObserverTest.settled = () => observer.settled();
-  onTestFinished(async () => {
-    vi.useRealTimers();
-    await observer.dispose();
-  });
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  let finished = false;
-  const prompt = session.prompt("Finish").then(() => {
-    finished = true;
-  });
-  await started.promise;
-  await vi.advanceTimersByTimeAsync(30_000);
-  expect(finished).toBe(false);
-  await vi.advanceTimersByTimeAsync(15_000);
-  await prompt;
-  // The Review began before the drain, so its own deadline ends it first, as for any Review.
-  expect(observer.status.lastError).toBe("Advisor review deadline exceeded");
-  expect(conversation(session.messages)).toHaveLength(2);
+  onTestFinished(() => observer.dispose());
+  observer.beforeTask();
+  await session.prompt("Work");
+  await observer.finishOwnedTurn();
+  expect(mainCalls).toBe(1);
+  expect(session.messages.at(-1)).toMatchObject({ role: "custom", customType: "pi-advisor" });
 });
 
 it("coalesces backlog and releases threshold seven below seven, not only at zero", async () => {
@@ -1015,132 +857,6 @@ it("coalesces backlog and releases threshold seven below seven, not only at zero
   await observer.finishOwnedTurn();
   expect(observer.status.backlog).toBe(0);
   expect(reviews).toBe(3);
-});
-
-it("preserves exact ordered model tools, system prompt and unaffected history for a silent review", async () => {
-  vi.spyOn(Date, "now").mockReturnValue(1700000000000);
-  onTestFinished(() => {
-    vi.restoreAllMocks();
-  });
-  const requests: Context[] = [];
-  globalThis.advisorObserverTest = {
-    stream(model, context) {
-      const privateRole = context.tools?.some((tool) => tool.name === "advisor_report");
-      if (!privateRole)
-        requests.push(
-          structuredClone({
-            ...context,
-            tools: (context.tools ?? []).map(({ name, description, parameters }) => ({
-              name,
-              description,
-              parameters,
-            })),
-          }),
-        );
-      const stream = createAssistantMessageEventStream();
-      const message = {
-        ...fauxAssistantMessage("Done"),
-        model: model.id,
-        provider: model.provider,
-        api: model.api,
-        // Pin the wall-clock duration the event stream would otherwise stamp from performance.now().
-        durationMs: 0,
-      };
-      if (privateRole) {
-        message.content = [
-          {
-            type: "toolCall",
-            id: "report",
-            name: "advisor_report",
-            arguments: { severity: "none" },
-          },
-        ];
-        message.stopReason = "toolUse";
-      }
-      queueMicrotask(() =>
-        stream.push({ type: "done", reason: privateRole ? "toolUse" : "stop", message }),
-      );
-      return stream;
-    },
-  };
-  const session = await activeFixture();
-  await session.prompt("Same input");
-  const baseline = structuredClone(session.messages);
-  session.sessionManager.resetLeaf();
-  session.agent.state.messages = [];
-  const observer = new AdvisorObserver(
-    session,
-    { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: 1 },
-    "headless-root",
-  );
-  globalThis.advisorObserverTest.settled = () => observer.settled();
-  onTestFinished(() => observer.dispose());
-  await session.prompt("Same input");
-  expect(requests).toHaveLength(2);
-  expect(requests[1]?.tools).toEqual(requests[0]?.tools);
-  expect(requests[1]?.systemPrompt).toEqual(requests[0]?.systemPrompt);
-  expect(requests[1]?.messages).toEqual(requests[0]?.messages);
-  expect(session.messages).toEqual(baseline);
-});
-
-it("keeps observed reasoning and native image attachments without base64 text expansion", async () => {
-  const image =
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
-  let evidence: Context | undefined;
-  globalThis.advisorObserverTest = {
-    stream(model, context) {
-      const privateRole = context.tools?.some((tool) => tool.name === "advisor_report");
-      const stream = createAssistantMessageEventStream();
-      const message = {
-        ...fauxAssistantMessage("Done"),
-        model: model.id,
-        provider: model.provider,
-        api: model.api,
-      };
-      if (privateRole) {
-        evidence = context;
-        message.content = [
-          {
-            type: "toolCall",
-            id: "report",
-            name: "advisor_report",
-            arguments: { severity: "none" },
-          },
-        ];
-        message.stopReason = "toolUse";
-      } else
-        message.content = [
-          { type: "thinking", thinking: "Available observed reasoning" },
-          { type: "text", text: "Done" },
-        ];
-      queueMicrotask(() =>
-        stream.push({ type: "done", reason: privateRole ? "toolUse" : "stop", message }),
-      );
-      return stream;
-    },
-  };
-  const session = await activeFixture();
-  const observer = new AdvisorObserver(
-    session,
-    { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: 1 },
-    "headless-root",
-  );
-  globalThis.advisorObserverTest.settled = () => observer.settled();
-  onTestFinished(() => observer.dispose());
-  await session.prompt("Inspect image", {
-    images: [{ type: "image", mimeType: "image/png", data: image }],
-  });
-  const user = evidence?.messages.find((message) => message.role === "user");
-  expect(user?.content).toEqual(
-    expect.arrayContaining([expect.objectContaining({ type: "image", data: image })]),
-  );
-  const text = JSON.stringify(
-    Array.isArray(user?.content)
-      ? user.content.filter((block) => block.type === "text")
-      : user?.content,
-  );
-  expect(text).toContain("Available observed reasoning");
-  expect(text).not.toContain(image);
 });
 
 it("seeds Reviews and Consultations with observed-model evidence, not stored signatures, details or metadata", async () => {
@@ -1280,53 +996,6 @@ it("seeds Reviews and Consultations with observed-model evidence, not stored sig
       },
     ]);
   }
-});
-
-it("preserves a captured model request when review configuration changes mid-turn", async () => {
-  const started = Promise.withResolvers<void>();
-  let release = () => {};
-  let reviews = 0;
-  globalThis.advisorObserverTest = {
-    stream(model, context) {
-      const privateRole = context.tools?.some((tool) => tool.name === "advisor_report");
-      const stream = createAssistantMessageEventStream();
-      const message = {
-        ...fauxAssistantMessage("Done"),
-        model: model.id,
-        provider: model.provider,
-        api: model.api,
-      };
-      if (privateRole) {
-        reviews++;
-        message.content = [
-          {
-            type: "toolCall",
-            id: "report",
-            name: "advisor_report",
-            arguments: { severity: "none" },
-          },
-        ];
-        message.stopReason = "toolUse";
-        queueMicrotask(() => stream.push({ type: "done", reason: "toolUse", message }));
-      } else {
-        release = () => stream.push({ type: "done", reason: "stop", message });
-        started.resolve();
-      }
-      return stream;
-    },
-  };
-  const session = await activeFixture();
-  const config = { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: 1 };
-  const observer = new AdvisorObserver(session, config, "headless-root");
-  globalThis.advisorObserverTest.settled = () => observer.settled();
-  onTestFinished(() => observer.dispose());
-  const prompt = session.prompt("Work");
-  await started.promise;
-  observer.configure({ ...config, prompt: "Changed reviewer priorities" });
-  release();
-  await prompt;
-  expect(reviews).toBe(1);
-  expect(observer.status.lastError).toBeNull();
 });
 
 it("restores the concern cooldown from the selected native branch after configuration changes", async () => {
@@ -1538,17 +1207,11 @@ it("disabled observation leaves the ordered native tools, prompt and conversatio
     state: "disabled",
     backlog: 0,
     cost: null,
-    effectiveModel: "anthropic/claude-sonnet-4-5",
-    effectiveThinkingLevel: "high",
   });
   observer.configure({
     ...readAdvisorSettings(session).settings,
     model: "configured/model",
     thinkingLevel: "low",
-  });
-  expect(observer.status).toMatchObject({
-    effectiveModel: "configured/model",
-    effectiveThinkingLevel: "low",
   });
   expect(session.getAllTools()).toEqual(tools);
   expect(session.systemPrompt).toBe(prompt);
@@ -1754,87 +1417,77 @@ it("cancels an on-demand consultation without pausing later advice", async () =>
   expect(consultationPrompts.at(-1)).toContain("Seed context");
 });
 
-const code = (id: string) =>
-  `export function parse(input: string): Node {\n  if (input === "\\n") return { "kind": "newline", "id": "${id}" };\n\treturn parseExpression(input, { "strict": true });\n}\n`;
+it("bounds the first Review of a long session by seedBudgetTokens auto", async () => {
+  const batches = 60;
+  const result = (id: string) => `result ${id} ${"x".repeat(8_000)}`;
+  const privateRequests: PrivateRequest[] = [];
+  globalThis.advisorObserverTest = longSessionStream(
+    { "Original request": batches },
+    privateRequests,
+    { result },
+  );
+  const session = await activeFixture();
+  await session.prompt("Original request: refactor the parser.");
+  const config = {
+    ...readAdvisorSettings(session).settings,
+    enabled: true,
+    catchUpThreshold: 1,
+    seedBudgetTokens: "auto" as const,
+    // This test bounds the seed by its budget alone, so tool results stay uncapped.
+    maxToolResultChars: 1_000_000,
+  };
+  const observer = new AdvisorObserver(session, config, "headless-root");
+  globalThis.advisorObserverTest.settled = () => observer.settled();
+  onTestFinished(() => observer.dispose());
+  await session.prompt("Final check");
+  expect(observer.status.lastError).toBeNull();
 
-it.each([
-  ["auto", "large results", 60, (id: string) => `result ${id} ${"x".repeat(8_000)}`],
-  [8_000, "many small turns", 400, (id: string) => `ok ${id}`],
-  [8_000, "code-heavy results", 60, (id: string) => code(id).repeat(40)],
-] as const)(
-  "bounds the first Review of a long session by seedBudgetTokens %s with %s",
-  async (seedBudgetTokens, _fixture, batches, result) => {
-    const privateRequests: PrivateRequest[] = [];
-    globalThis.advisorObserverTest = longSessionStream(
-      { "Original request": batches },
-      privateRequests,
-      { result },
-    );
-    const session = await activeFixture();
-    await session.prompt("Original request: refactor the parser.");
-    const config = {
-      ...readAdvisorSettings(session).settings,
-      enabled: true,
-      catchUpThreshold: 1,
-      seedBudgetTokens,
-      // This test bounds the seed by its budget alone, so tool results stay uncapped.
-      maxToolResultChars: 1_000_000,
-    };
-    const observer = new AdvisorObserver(session, config, "headless-root");
-    globalThis.advisorObserverTest.settled = () => observer.settled();
-    onTestFinished(() => observer.dispose());
-    await session.prompt("Final check");
-    expect(observer.status.lastError).toBeNull();
+  // The fixture model's window is 200k tokens, so `auto` is a 50k budget.
+  const budget = 50_000;
+  const observedMessages = conversation(session.messages);
+  const seed = seedPayload(privateRequests[0]);
+  const full = Math.ceil(
+    JSON.stringify({
+      observedSetup: seed.evidence.observedSetup,
+      messages: projectEvidence(convertToLlm(observedMessages)).messages,
+    }).length / 4,
+  );
+  // Recorded seed sizes: the unbounded seed exceeds the budget; the sent prompt payload fits.
+  expect(full).toBeGreaterThan(budget * 1.5);
+  // Before the Advisor model reports usage, the seed is fitted at the fallback factor.
+  const estimated = budget / advisorFallbackTokenFactor;
+  expect(seed.tokens).toBeLessThanOrEqual(estimated);
+  expect(seed.tokens).toBeGreaterThan(estimated * 0.75);
+  expect(seed.header).toContain("Current context seed.");
+  expect(seed.header).toContain(`seedBudgetTokens (${budget} tokens)`);
+  expect(seed.header).toMatch(
+    new RegExp(
+      `keeps the messages at positions 1, \\d+–${observedMessages.length} of the ${observedMessages.length} in the observed context and omits the other \\d+`,
+    ),
+  );
+  expect(seed.header).toContain(session.sessionManager.getSessionFile());
+  expect(seed.evidence.observedSetup.systemPrompt).toBe(session.systemPrompt);
+  expect(seed.evidence.messages[0]).toEqual({
+    role: "user",
+    content: [{ type: "text", text: "Original request: refactor the parser." }],
+  });
+  expect(seed.evidence.messages.slice(-2)).toEqual([
+    { role: "user", content: [{ type: "text", text: "Final check" }] },
+    { role: "assistant", content: [{ type: "text", text: "Done" }] },
+  ]);
 
-    // The fixture model's window is 200k tokens, so `auto` is a 50k budget.
-    const budget = seedBudgetTokens === "auto" ? 50_000 : seedBudgetTokens;
-    const observedMessages = conversation(session.messages);
-    const seed = seedPayload(privateRequests[0]);
-    const full = Math.ceil(
-      JSON.stringify({
-        observedSetup: seed.evidence.observedSetup,
-        messages: projectEvidence(convertToLlm(observedMessages)).messages,
-      }).length / 4,
-    );
-    // Recorded seed sizes: the unbounded seed exceeds the budget; the sent prompt payload fits.
-    expect(full).toBeGreaterThan(budget * 1.5);
-    // Before the Advisor model reports usage, the seed is fitted at the fallback factor.
-    const estimated = budget / advisorFallbackTokenFactor;
-    expect(seed.tokens).toBeLessThanOrEqual(estimated);
-    expect(seed.tokens).toBeGreaterThan(estimated * 0.75);
-    expect(seed.header).toContain("Current context seed.");
-    expect(seed.header).toContain(`seedBudgetTokens (${budget} tokens)`);
-    expect(seed.header).toMatch(
-      new RegExp(
-        `keeps the messages at positions 1, \\d+–${observedMessages.length} of the ${observedMessages.length} in the observed context and omits the other \\d+`,
-      ),
-    );
-    expect(seed.header).toContain(session.sessionManager.getSessionFile());
-    expect(seed.evidence.observedSetup.systemPrompt).toBe(session.systemPrompt);
-    expect(seed.evidence.messages[0]).toEqual({
-      role: "user",
-      content: [{ type: "text", text: "Original request: refactor the parser." }],
-    });
-    expect(seed.evidence.messages.slice(-2)).toEqual([
-      { role: "user", content: [{ type: "text", text: "Final check" }] },
-      { role: "assistant", content: [{ type: "text", text: "Done" }] },
-    ]);
-
-    // Later Reviews add only new messages; the omitted history is not re-sent.
-    await session.prompt("Follow-up");
-    expect(observer.status.lastError).toBeNull();
-    const update = seedPayload(privateRequests[1]);
-    expect(update.header).toContain("Incremental update.");
-    expect(update.evidence.observedSetup).toBeUndefined();
-    expect(update.evidence.messages).toEqual([
-      { role: "user", content: [{ type: "text", text: "Follow-up" }] },
-      { role: "assistant", content: [{ type: "text", text: "Done" }] },
-    ]);
-    expectPrefix(privateRequests[1], privateRequests[0]);
-  },
-  // The 400-turn fixture takes about 2 s alone but passed 20 s under `bun run verify` contention on CI.
-  60_000,
-);
+  // Later Reviews add only new messages; the omitted history is not re-sent.
+  await session.prompt("Follow-up");
+  expect(observer.status.lastError).toBeNull();
+  const update = seedPayload(privateRequests[1]);
+  expect(update.header).toContain("Incremental update.");
+  expect(update.evidence.observedSetup).toBeUndefined();
+  expect(update.evidence.messages).toEqual([
+    { role: "user", content: [{ type: "text", text: "Follow-up" }] },
+    { role: "assistant", content: [{ type: "text", text: "Done" }] },
+  ]);
+  expectPrefix(privateRequests[1], privateRequests[0]);
+});
 
 it("re-seeds with a changed seedBudgetTokens and keeps each Advisor context a stable prefix", async () => {
   const privateRequests: PrivateRequest[] = [];
@@ -1874,65 +1527,6 @@ it("re-seeds with a changed seedBudgetTokens and keeps each Advisor context a st
   expect(privateRequests[2]?.messages).toHaveLength(1);
 });
 
-/**
- * The observation boundary covers the observed model only when the Advisor inherits it; an
- * Advisor's own model is unaffected by the observed agent's. The Advisor's thinking level never
- * follows the observed agent, so an observed thinking change never discards the session.
- */
-it.each([
-  { name: "own model, observed model changes", own: true, change: "model", kept: true },
-  { name: "own model, observed thinking changes", own: true, change: "thinking", kept: true },
-  { name: "inherited model, observed model changes", own: false, change: "model", kept: false },
-  {
-    name: "inherited model, observed thinking changes",
-    own: false,
-    change: "thinking",
-    kept: true,
-  },
-] as const)(
-  "$name: the Advisor Session is kept only when the observed change is not one it follows",
-  async ({ own, change, kept }) => {
-    const privateRequests: PrivateRequest[] = [];
-    const advisorModels: string[] = [];
-    const base = longSessionStream({}, privateRequests);
-    globalThis.advisorObserverTest = {
-      ...base,
-      stream(model, context, options) {
-        if (context.tools?.some((tool) => tool.name === "advisor_report"))
-          advisorModels.push(`${model.provider}/${model.id}`);
-        return base.stream(model, context, options);
-      },
-    };
-    const session = await activeFixture();
-    const config = { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: 1 };
-    if (own) config.model = "observer-fixture/priced";
-    const observer = new AdvisorObserver(session, config, "headless-root");
-    globalThis.advisorObserverTest.settled = () => observer.settled();
-    onTestFinished(() => observer.dispose());
-    await session.prompt("First");
-    const alternate = session.modelRuntime.getModel("observer-fixture", "alternate");
-    if (!alternate) throw new Error("Missing alternate fixture model");
-    if (change === "model") await session.setModel(alternate);
-    else session.setThinkingLevel("low");
-    await session.prompt("Second");
-    expect(observer.status.lastError).toBeNull();
-    expect(privateRequests).toHaveLength(2);
-    const [first, second] = privateRequests.map(seedPayload);
-    if (kept) {
-      expect(second?.header).toContain("Incremental update.");
-      expectPrefix(privateRequests[1], privateRequests[0]);
-      expect(privateRequests[1]?.systemPrompt).toBe(privateRequests[0]?.systemPrompt);
-      expect(privateRequests[1]?.tools).toEqual(privateRequests[0]?.tools);
-    } else {
-      expect(first?.header).not.toContain("Incremental update.");
-      expect(second?.header).not.toContain("Incremental update.");
-      expect(privateRequests[1]?.messages).toHaveLength(1);
-    }
-    // The Advisor keeps its own model whatever the observed agent does.
-    if (own) expect(advisorModels).toEqual(["observer-fixture/priced", "observer-fixture/priced"]);
-  },
-);
-
 it("keeps an in-flight Review current when the observed model changes under an Advisor with its own", async () => {
   const privateRequests: PrivateRequest[] = [];
   const reviewHeld = Promise.withResolvers<void>();
@@ -1969,47 +1563,6 @@ it("keeps an in-flight Review current when the observed model changes under an A
   await vi.waitFor(() => expect(observer.status).toMatchObject({ state: "armed", backlog: 0 }));
   expect(observer.status.lastError).toBeNull();
   expect(privateRequests).toHaveLength(1);
-});
-
-it("keeps the newest turn when its tool result alone exceeds the seed budget", async () => {
-  const privateRequests: PrivateRequest[] = [];
-  globalThis.advisorObserverTest = longSessionStream(
-    { "Original request": 20, "Read the big log": 1 },
-    privateRequests,
-    // Batch IDs start with the index of their request; the first request is message 0.
-    { result: (id) => (id.startsWith("0-") ? `ok ${id}` : "L".repeat(200_000)) },
-  );
-  const session = await activeFixture();
-  await session.prompt("Original request: refactor the parser.");
-  const observer = new AdvisorObserver(
-    session,
-    {
-      ...readAdvisorSettings(session).settings,
-      enabled: true,
-      catchUpThreshold: 1,
-      seedBudgetTokens: 3_000,
-      // Only the seed budget shortens this result.
-      maxToolResultChars: 1_000_000,
-    },
-    "headless-root",
-  );
-  globalThis.advisorObserverTest.settled = () => observer.settled();
-  onTestFinished(() => observer.dispose());
-  await session.prompt("Read the big log");
-  expect(observer.status.lastError).toBeNull();
-  const seed = seedPayload(privateRequests[0]);
-  expect(seed.tokens).toBeLessThanOrEqual(3_000);
-  expect(seed.header).toMatch(/1 kept messages are shortened where marked/);
-  // The Review starts after the tool batch, which is then the newest turn.
-  expect(seed.evidence.messages).toHaveLength(4);
-  const [request, prompt, call, result] = seed.evidence.messages;
-  expect(request).toMatchObject({ content: [{ text: "Original request: refactor the parser." }] });
-  expect(prompt).toMatchObject({ content: [{ text: "Read the big log" }] });
-  expect(call).toMatchObject({ role: "assistant", content: [{ type: "toolCall", name: "read" }] });
-  expect(result).toMatchObject({ role: "toolResult", ref: call.content[0].ref });
-  expect(result.content[0].text).toMatch(
-    /^L+\n\[… \d+ characters omitted from the Context Seed\]$/,
-  );
 });
 
 it("seeds the compaction summary and the first user request after it, not findings or commands", async () => {

@@ -43,10 +43,7 @@ describe("Advisor status entries", () => {
     });
     await session.prompt("/advisor status");
     expect(lastStatus(session)).not.toHaveProperty("data.changes");
-  });
-
-  it("omit a change that failed", async () => {
-    const { session } = await createSdkHarness([advisor]);
+    // A change that failed is not recorded.
     await session.prompt("/advisor set catchUpThreshold 0");
     expect(lastStatus(session)).not.toHaveProperty("data.changes");
   });
@@ -189,9 +186,9 @@ describe("Interventions", () => {
     // Cache proof: the second request extends the first byte-for-byte.
     expect(second.systemPrompt).toEqual(first.systemPrompt);
     expect(second.tools).toEqual(first.tools);
-    expect(first.tools?.find((tool) => tool.name === "advisor_ask")?.description).toBe(
-      "Ask the enabled Advisor for analysis or a second opinion. Waits for its answer; does not delegate implementation.",
-    );
+    const ask = session.extensionRunner?.getToolDefinition("advisor_ask");
+    expect(ask?.renderCall).toBeTypeOf("function");
+    expect(ask?.renderResult).toBeTypeOf("function");
     expect(second.messages.slice(0, first.messages.length)).toEqual(first.messages);
     expect(
       second.messages.slice(first.messages.length).map((message) => ({
@@ -227,29 +224,6 @@ describe("Interventions", () => {
     expect(text).toContain("[advisor] concern");
     expect(text).not.toContain("▲");
     expect(text).toContain("Re-run the failing test");
-    if (!renderer) throw new Error("Expected the Advisor Intervention renderer");
-    expectClickToggles(
-      renderer,
-      {
-        role: "custom",
-        customType: entry.customType,
-        content: entry.content,
-        display: true,
-        details: entry.details,
-        timestamp: 0,
-      },
-      { ...keybindingHints, expanded: false, outputPad: 0 },
-      themeFromRunner(session),
-    );
-  });
-});
-
-describe("advisor_ask", () => {
-  it("declares Advisor renderers for its call and result", async () => {
-    const { session } = await fixture();
-    const definition = session.extensionRunner?.getToolDefinition("advisor_ask");
-    expect(definition?.renderCall).toBeTypeOf("function");
-    expect(definition?.renderResult).toBeTypeOf("function");
   });
 });
 

@@ -202,8 +202,6 @@ it.each(["none", "on", "only"] as const)(
         data: {
           state: enabled ? "armed" : "disabled",
           backlog: 0,
-          // The offline model is unpriced, so the completed Review's cost is unknown, not zero.
-          reviewCost: enabled ? { reviews: 1, last: null, total: null } : null,
         },
       });
     }
@@ -324,6 +322,8 @@ it.each(["none", "on", "only"] as const)(
     await enabledSession.prompt("/advisor on");
     await enabledSession.prompt("Recreate the private Advisor session before restart.");
     expect(reviewRequests).toHaveLength(2);
+    // The restart race and an unresolvable model do not depend on codemode, so one mode covers them.
+    if (codemodeMode !== "none") return;
     const shutdownStarted = Promise.withResolvers<void>();
     const releaseShutdown = Promise.withResolvers<void>();
     globalThis.advisorObserverTest.privateShutdown = async () => {

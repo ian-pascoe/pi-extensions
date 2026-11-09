@@ -4,12 +4,10 @@ import { endpointContext } from "./endpoint-context.js";
 import {
   createAssistantMessageEventStream,
   fauxAssistantMessage,
-  type AssistantMessage,
   type Tool,
 } from "@earendil-works/pi-ai";
 
 declare global {
-  var advisorSessionResponses: AssistantMessage[] | undefined;
   var advisorSessionDeactivatedTool: string | undefined;
   /** Ordered tool definitions of each model request, when a test installs the array. */
   var advisorSessionRequestTools: Tool[][] | undefined;
@@ -42,8 +40,7 @@ export default function sessionFixture(pi: ExtensionAPI): void {
       );
       const stream = createAssistantMessageEventStream();
       const message = {
-        ...(globalThis.advisorSessionResponses?.shift() ??
-          fauxAssistantMessage("Offline review complete")),
+        ...fauxAssistantMessage("Offline review complete"),
         provider: model.provider,
         model: model.id,
         api: model.api,

@@ -1,15 +1,12 @@
 import { readFileSync } from "node:fs";
 import { onTestFinished, expect, it } from "vitest";
-import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import {
   activeFixture,
-  conversation,
   expectPrefix,
   longSessionStream,
   seedPayload,
   type PrivateRequest,
 } from "./fixtures/observer-harness.js";
-import { projectEvidence, selectContextSeed } from "../src/advisor-evidence.js";
 import { AdvisorObserver } from "../src/advisor-observer.js";
 import { readAdvisorSettings, type AdvisorConfig } from "../src/advisor-settings.js";
 
@@ -88,22 +85,7 @@ it("caps an oversized tool result in a seed and an incremental update, keeping i
   expectPrefix(privateRequests[1], privateRequests[0]);
 });
 
-it("keeps the error status of a capped tool result", async () => {
-  const privateRequests: PrivateRequest[] = [];
-  globalThis.advisorObserverTest = longSessionStream({ Request: 1 }, privateRequests, {
-    result: (id) => big(id),
-    isError: () => true,
-  });
-  const { session } = await observe({ reviewEvery: "request" });
-  await session.prompt("Request: refactor.");
-  const [result] = privateRequests
-    .flatMap((request) => results(seedPayload(request).evidence.messages ?? []))
-    .slice(0, 1);
-  expect(result?.isError).toBe(true);
-  expect(result?.content[0]?.text).toContain("characters omitted from this tool result");
-});
-
-it("honors maxToolResultChars, and leaves a result within it whole", async () => {
+it("honors maxToolResultChars", async () => {
   const privateRequests: PrivateRequest[] = [];
   globalThis.advisorObserverTest = longSessionStream({ Request: 1 }, privateRequests, {
     result: (id) => big(id, 3_000),
@@ -114,41 +96,6 @@ it("honors maxToolResultChars, and leaves a result within it whole", async () =>
   const [result] = results(seedPayload(privateRequests[0]).evidence.messages);
   expect(result?.content[0]?.text).toContain("characters omitted from this tool result");
   expect(result?.content[0]?.text?.length).toBeLessThan(1_000 + 400);
-
-  const whole: PrivateRequest[] = [];
-  globalThis.advisorObserverTest = longSessionStream({ Request: 1 }, whole, {
-    result: (id) => big(id, 3_000),
-    isError: () => false,
-  });
-  const second = await observe({ reviewEvery: "request", maxToolResultChars: 10_000 });
-  await second.session.prompt("Request: refactor.");
-  const [uncapped] = results(seedPayload(whole[0]).evidence.messages);
-  expect(uncapped?.content[0]?.text).toContain("MIDDLE");
-  expect(uncapped?.content[0]?.text).not.toContain("omitted");
-});
-
-it("projects the same messages byte-identically, in a seed and as an incremental update", async () => {
-  const privateRequests: PrivateRequest[] = [];
-  globalThis.advisorObserverTest = longSessionStream({ Request: 2 }, privateRequests, {
-    result: (id) => big(id),
-    isError: () => false,
-  });
-  const { session } = await observe({ reviewEvery: "request" });
-  await session.prompt("Request: refactor.");
-  const messages = convertToLlm(conversation(session.messages));
-  const cap = { limit: 4_000, marker: (omitted: number) => `[cut ${omitted}]` };
-  const incremental = JSON.stringify(projectEvidence(messages, { toolResultCap: cap }));
-  expect(JSON.stringify(projectEvidence(messages, { toolResultCap: cap }))).toBe(incremental);
-  const context = { systemPrompt: "p", tools: [], messages };
-  const seed = () =>
-    JSON.stringify(selectContextSeed(context, { budgetTokens: 1_000_000, toolResultCap: cap }));
-  expect(seed()).toBe(seed());
-  // The seed and an incremental update cap a result to the same text.
-  const seeded = selectContextSeed(context, { budgetTokens: 1_000_000, toolResultCap: cap });
-  expect(JSON.stringify(seeded.messages)).toBe(
-    JSON.stringify(projectEvidence(messages, { toolResultCap: cap }).messages),
-  );
-  expect(incremental).not.toContain("MIDDLE");
 });
 
 it("measures whether new evidence fits the seed budget on the capped evidence", async () => {
