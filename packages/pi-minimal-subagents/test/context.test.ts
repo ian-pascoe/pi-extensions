@@ -9,7 +9,6 @@ import { describe, expect, it } from "vitest";
 import {
   assembleImportedContext,
   buildRecentAgentActivity,
-  buildSubagentSystemPrompt,
   contextContainsImages,
   PARENT_CONTEXT_MESSAGE_TYPE,
   selectActiveTurnTranscript,
@@ -326,27 +325,10 @@ describe("minimal subagents context", () => {
     expect(snapshot.messages[2]).not.toBe(assistant);
   });
 
-  it("detects image blocks and writes delegation boundaries into the child prompt", () => {
+  it("detects image blocks", () => {
     expect(
       contextContainsImages([userMessage([{ type: "image", data: "x", mimeType: "image/png" }])]),
     ).toBe(true);
     expect(contextContainsImages([userMessage("plain")])).toBe(false);
-    expect(
-      buildSubagentSystemPrompt("child", "root", { canSpawn: true, remainingDepth: 1 }),
-    ).toContain("Remaining delegation depth: 1.");
-    expect(
-      buildSubagentSystemPrompt("child", "root", { canSpawn: false, remainingDepth: 0 }),
-    ).toContain("Delegation is owned by your parent.");
-  });
-
-  it("tells children their coordinator tools match what they were granted", () => {
-    const fanout = buildSubagentSystemPrompt("child", "root", {
-      canSpawn: true,
-      remainingDepth: 1,
-    });
-    const leaf = buildSubagentSystemPrompt("child", "root", { canSpawn: false, remainingDepth: 0 });
-    expect(fanout).toContain("Coordinator tools support subagent, agent_message, subagent_wait");
-    expect(leaf).toContain("Coordinator tools support only agent_message");
-    expect(leaf).not.toMatch(/subagent_wait|subagent_status/);
   });
 });

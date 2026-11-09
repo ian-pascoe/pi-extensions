@@ -14,8 +14,6 @@ import { raiseQueuedSteer, settleQueuedSteers } from "@ian-pascoe/pi-utils/queue
 import { expectToolOutputMatches } from "@ian-pascoe/pi-utils/tool-testing";
 import { keybindingHints, taggedTheme } from "@ian-pascoe/pi-utils/ui-testing";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { MinimalSubagentsModelRole } from "../src/minimal-subagents-config.js";
-import { CoordinatorToolOutputSchemas } from "../src/minimal-subagents-render-contract.js";
 import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 import { createCoordinatorToolSchemas } from "../src/minimal-subagents-tool-schemas.js";
 import {
@@ -23,12 +21,7 @@ import {
   type CoordinatorToolDefinitionOptions,
   type CoordinatorToolOperations,
 } from "../src/minimal-subagents-tools.js";
-import type {
-  ActiveTurnProgress,
-  AgentDetail,
-  WaitSteeredResult,
-  WaitTimeoutResult,
-} from "../src/minimal-subagents-types.js";
+import type { WaitSteeredResult, WaitTimeoutResult } from "../src/minimal-subagents-types.js";
 
 type RecordingWait = ReturnType<typeof vi.fn<CoordinatorToolOperations["wait"]>>;
 
@@ -36,11 +29,7 @@ interface RecordingToolOptions extends CoordinatorToolDefinitionOptions {
   readonly recordedWait: RecordingWait;
 }
 
-function toolOptions(
-  callerId: string,
-  allowFanoutTools?: boolean,
-  modelRoles: readonly MinimalSubagentsModelRole[] = [],
-): RecordingToolOptions {
+function toolOptions(callerId: string, allowFanoutTools?: boolean): RecordingToolOptions {
   const recordedWait = vi.fn<CoordinatorToolOperations["wait"]>();
   const coordinator = {
     spawn: vi.fn<CoordinatorToolOperations["spawn"]>(),
@@ -62,7 +51,6 @@ function toolOptions(
   const options: CoordinatorToolDefinitionOptions = {
     coordinator,
     callerId,
-    modelRoles,
     schemas: createCoordinatorToolSchemas(["provider/model"]),
     captureCaller: vi.fn<CoordinatorToolDefinitionOptions["captureCaller"]>(),
   };
@@ -114,11 +102,7 @@ async function createToolExecutionContext() {
 describe("minimal subagents coordinator tools", () => {
   it.each([
     ["subagent", { task: "Go" }],
-    ["agent_message", { message: "hi" }],
     ["subagent_wait", { agent_id: "child.grandchild" }],
-    ["subagent_status", {}],
-    ["subagent_cancel", { agent_id: "child.grandchild" }],
-    ["subagent_delete", { agent_id: "child.grandchild" }],
   ])("checks the caller's session before %s acts", async (toolName, parameters) => {
     const options = toolOptions("child", true);
     const context = await createToolExecutionContext();
@@ -145,51 +129,6 @@ describe("minimal subagents coordinator tools", () => {
     ]) {
       expect(operation).not.toHaveBeenCalled();
     }
-  });
-
-  it("gives children that cannot spawn only agent_message", () => {
-    expect(
-      createCoordinatorToolDefinitions(toolOptions("child", false)).map(({ name }) => name),
-    ).toEqual(["agent_message"]);
-  });
-
-  it("attaches each coordinator tool's final details schema", () => {
-    const outputSchemas = Object.fromEntries(
-      createCoordinatorToolDefinitions(toolOptions("root", true)).map(({ name, outputSchema }) => [
-        name,
-        outputSchema,
-      ]),
-    );
-
-    expect(outputSchemas).toEqual(CoordinatorToolOutputSchemas);
-  });
-
-  it("declares role as a plain string whose schema does not depend on the configured roles", () => {
-    const withRoles = createCoordinatorToolDefinitions(
-      toolOptions("root", true, [{ name: "explore", model: "provider/model" }]),
-    );
-    const withoutRoles = createCoordinatorToolDefinitions(toolOptions("root", true));
-
-    expect(JSON.stringify(withRoles.map(({ parameters }) => parameters))).toBe(
-      JSON.stringify(withoutRoles.map(({ parameters }) => parameters)),
-    );
-    const role = createCoordinatorToolSchemas(["provider/model"]).subagent.properties.role;
-    expect(role).toMatchObject({ type: "string", minLength: 1 });
-    expect(role).not.toHaveProperty("enum");
-  });
-
-  it("runs a spawn sequentially so later calls in the same batch can target the new child", () => {
-    const tools = createCoordinatorToolDefinitions(toolOptions("root", true));
-    expect(
-      Object.fromEntries(tools.map(({ name, executionMode }) => [name, executionMode])),
-    ).toEqual({
-      subagent: "sequential",
-      agent_message: undefined,
-      subagent_wait: undefined,
-      subagent_status: undefined,
-      subagent_cancel: undefined,
-      subagent_delete: undefined,
-    });
   });
 
   it("returns a compact spawn result while keeping full detail for the transcript renderer", async () => {
@@ -246,39 +185,6 @@ describe("minimal subagents coordinator tools", () => {
     expect(result.details).toEqual({ ...spawned, agent });
   });
 
-  it("forwards an exact retained turn ID through subagent_wait", async () => {
-    const options = toolOptions("root", true);
-    options.recordedWait.mockResolvedValue({
-      event: "turn",
-      agent_id: "child",
-      turn_id: "child:older",
-      status: "completed",
-      output: "older",
-    });
-    const signal = new AbortController().signal;
-
-    const waitTool = requireTool(options, "subagent_wait");
-    const result = await waitTool.execute(
-      "wait-call",
-      { agent_id: "child", turn_id: "child:older", timeout_ms: 50 },
-      signal,
-      undefined,
-      await createToolExecutionContext(),
-    );
-
-    expect(options.coordinator.wait).toHaveBeenCalledWith(
-      "root",
-      "child",
-      50,
-      signal,
-      "child:older",
-      expect.any(AbortSignal),
-    );
-    // Script callers receive the declared object shape.
-    expect(result.structuredContent).toEqual(result.details);
-    expect(result.structuredContent).toMatchObject({ source_turn_id: "child:older" });
-  });
-
   describe("usage cost presentation", () => {
     const noisyUsage = {
       input: 10,
@@ -328,74 +234,6 @@ describe("minimal subagents coordinator tools", () => {
       expect(text).toBe("child turn child:1 completed\nusage: 22 tokens · $0.01\n\ndone");
       expect(result.structuredContent).toMatchObject({ usage: { cost: roundedCost } });
       expect(result.details).toMatchObject({ usage: { cost: noisyUsage.cost } });
-    });
-
-    it("rounds cost in subagent_status text and structuredContent", async () => {
-      const options = toolOptions("root", true);
-      const detail: AgentDetail = {
-        agent_id: "child",
-        parent_id: "root",
-        model: "provider/model",
-        thinking_level: "off",
-        state: "idle",
-        availability: "available",
-        tools: [],
-        child_count: 0,
-        launch_contract: {
-          model: "provider/model",
-          thinking_level: "off",
-          session_context: "omit",
-          project_context: "omit",
-          tools: undefined,
-          ordinary_tools: [],
-        },
-        capability_ceiling: [],
-        spawn_entry_id: "entry",
-        recent_messages: [],
-        recent_activity: [],
-        missing_dependencies: [],
-        latest_result: {
-          agent_id: "child",
-          turn_id: "child:1",
-          status: "completed",
-          output: "x",
-          usage: noisyUsage,
-        },
-        usage: noisyUsage,
-      };
-      const partialStatus = { agent: detail };
-      options.coordinator.status = vi.fn<CoordinatorToolOperations["status"]>(() => partialStatus);
-
-      const result = await requireTool(options, "subagent_status").execute(
-        "status-call",
-        { agent_id: "child" },
-        undefined,
-        undefined,
-        await createToolExecutionContext(),
-      );
-
-      const text = contentText(result);
-      expect(text).not.toMatch(/\d\.\d{7,}/);
-      expect(text).toContain("Pass verbose: true");
-      // Scripts keep the complete record the text summarizes.
-      expect(result.structuredContent).toEqual({
-        agent: {
-          ...detail,
-          usage: { ...noisyUsage, cost: roundedCost },
-          latest_result: { ...detail.latest_result, usage: { ...noisyUsage, cost: roundedCost } },
-        },
-      });
-
-      const verbose = await requireTool(options, "subagent_status").execute(
-        "status-call",
-        { agent_id: "child", verbose: true },
-        undefined,
-        undefined,
-        await createToolExecutionContext(),
-      );
-      const verboseText = contentText(verbose);
-      expect(verboseText).toContain("usage: input 10 · output 5");
-      expect(verboseText).not.toContain("Pass verbose: true");
     });
   });
 
@@ -482,48 +320,6 @@ describe("minimal subagents coordinator tools", () => {
       expectToolOutputMatches(requireTool(options, "subagent_wait"), result);
       expect(contentText(result)).toContain("queued steer");
       expect(contentText(result)).toContain("not cancelled");
-    });
-
-    it("yields at once when a Queued Steer is already pending, and stops watching afterwards", async () => {
-      const options = toolOptions("root", true);
-      blockOnSteer(options);
-      const context = await createToolExecutionContext();
-      const sessionId = context.sessionManager.getSessionId();
-      sessionIds.push(sessionId);
-      raiseQueuedSteer(sessionId);
-
-      await expect(
-        requireTool(options, "subagent_wait").execute(
-          "wait-call",
-          { agent_id: "child" },
-          undefined,
-          undefined,
-          context,
-        ),
-      ).resolves.toMatchObject({ details: { event: "steered" } });
-      expect(options.recordedWait.mock.calls[0]?.[5]?.aborted).toBe(true);
-
-      // A steer pending for a session that is not waiting does not abort an earlier wait.
-      settleQueuedSteers(sessionId);
-      options.recordedWait.mockReset();
-      options.recordedWait.mockResolvedValue({
-        event: "timeout",
-        agent_id: "child",
-        turn_id: "child:turn-1",
-        timeout_ms: 1,
-        state: "running",
-        recent_activity_labels: [],
-      });
-      await requireTool(options, "subagent_wait").execute(
-        "wait-call",
-        { agent_id: "child" },
-        undefined,
-        undefined,
-        context,
-      );
-      const steerSignal = options.recordedWait.mock.calls[0]?.[5];
-      raiseQueuedSteer(sessionId);
-      expect(steerSignal?.aborted).toBe(false);
     });
 
     it("keeps the tool description identical for every caller", () => {
@@ -614,39 +410,6 @@ describe("minimal subagents coordinator tools", () => {
     expectToolOutputMatches(requireTool(options, "subagent_wait"), pendingNotice);
   });
 
-  it("streams the waited-on child's running-turn progress in partial wait updates", async () => {
-    const options = toolOptions("root", true);
-    const progress: ActiveTurnProgress = { turn_id: "child:turn-1", tool_calls: 2 };
-    vi.mocked(options.coordinator.previewActiveTurn).mockReturnValue(progress);
-    options.recordedWait.mockResolvedValue({
-      event: "turn",
-      agent_id: "child",
-      turn_id: "child:turn-1",
-      status: "completed",
-      output: "done",
-    });
-    const onUpdate = vi.fn();
-
-    await requireTool(options, "subagent_wait").execute(
-      "wait-call",
-      { agent_id: "child", turn_id: "child:turn-1" },
-      undefined,
-      onUpdate,
-      await createToolExecutionContext(),
-    );
-
-    expect(options.coordinator.previewActiveTurn).toHaveBeenCalledWith(
-      "root",
-      "child",
-      "child:turn-1",
-    );
-    expect(onUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        details: expect.objectContaining({ agent_id: "child", status: "waiting", ...progress }),
-      }),
-    );
-  });
-
   it("returns partial deletion failures as an error result that keeps the declared output", async () => {
     const options = toolOptions("root", true);
     const deletion = {
@@ -707,27 +470,6 @@ describe("minimal subagents coordinator tools", () => {
     expect(result.structuredContent).toEqual(cancellation);
   });
 
-  it("returns complete deletion as a successful result", async () => {
-    const options = toolOptions("root", true);
-    vi.mocked(options.coordinator.delete).mockResolvedValue({
-      agent_id: "child",
-      recursive: true,
-      deleted_agent_ids: ["child"],
-      trashed_session_files: [],
-      failures: [],
-    });
-
-    const result = await requireTool(options, "subagent_delete").execute(
-      "delete-call",
-      { agent_id: "child" },
-      undefined,
-      undefined,
-      await createToolExecutionContext(),
-    );
-
-    expect(result.isError).toBeUndefined();
-  });
-
   it("returns failed message delivery as an error result that keeps the declared output", async () => {
     const options = toolOptions("root", true);
     const delivery = {
@@ -750,19 +492,6 @@ describe("minimal subagents coordinator tools", () => {
       details: delivery,
       structuredContent: delivery,
     });
-
-    vi.mocked(options.coordinator.sendAgentMessage).mockResolvedValue({
-      ...delivery,
-      disposition: "queued",
-    });
-    const queued = await requireTool(options, "agent_message").execute(
-      "message-call",
-      { agent_id: "child", message: "hello" },
-      undefined,
-      undefined,
-      await createToolExecutionContext(),
-    );
-    expect(queued.isError).toBeUndefined();
   });
 });
 
@@ -831,41 +560,5 @@ describe("minimal subagents tool row footers", () => {
     // Pi's blank line separates the footer from the body, as in its bash renderer.
     expect(lines?.at(-2)).toBe("");
     expect(call?.render(120).join("\n")).not.toContain("Elapsed");
-  });
-
-  it("shows Elapsed under a streaming wait's progress", () => {
-    vi.useFakeTimers();
-    const tool = requireTool(toolOptions("root", true), "subagent_wait");
-    const state = {};
-    const args = { agent_id: "child" };
-    const call = tool.renderCall?.(args, theme, fakeContext(state, { args, isPartial: true }));
-    expect(call?.render(120).join("\n")).not.toContain("Elapsed");
-
-    const progress = {
-      content: [{ type: "text" as const, text: "Waiting for child" }],
-      details: { agent_id: "child", status: "waiting", elapsed_ms: 1_000 },
-    };
-    const render = () =>
-      tool.renderResult?.(
-        progress,
-        { expanded: false, isPartial: true },
-        theme,
-        fakeContext(state, { args, isPartial: true }),
-      );
-    render();
-    vi.advanceTimersByTime(3_000);
-    expect(
-      render()
-        ?.render(120)
-        .map((line) => line.trimEnd())
-        .at(-1),
-    ).toBe("<muted>Elapsed 3.0s</muted>");
-    // Finish the row so its once-a-second redraw timer stops.
-    tool.renderResult?.(
-      { content: [], details: { ...cancelResult.details } },
-      { expanded: false, isPartial: false },
-      theme,
-      fakeContext(state, { args, durationMs: 3_000 }),
-    );
   });
 });

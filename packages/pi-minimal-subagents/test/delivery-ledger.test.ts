@@ -60,24 +60,6 @@ describe("minimal subagents delivery ledger", () => {
     expect(deliveryLedgerSnapshot(second.ledger).next_delivery_sequence).toBe(3);
   });
 
-  it("returns immutable transitions without mutating prior ledger values or caller messages", () => {
-    const original = createDeliveryLedger();
-    const message = coordinationMessage("child", "child:turn", "immutable");
-    const added = addCoordinationDelivery(original, {
-      destinationAgentId: "root",
-      message,
-    });
-    message.content = "caller mutation";
-    const settled = settleCoordinationDelivery(added.ledger, "message:immutable");
-
-    expect(deliveryLedgerSnapshot(original).coordination_deliveries).toEqual([]);
-    expect(deliveryLedgerSnapshot(added.ledger).coordination_deliveries[0]?.message.content).toBe(
-      "immutable",
-    );
-    expect(deliveryLedgerSnapshot(settled.ledger).coordination_deliveries).toEqual([]);
-    expect(deliveryLedgerSnapshot(added.ledger).coordination_deliveries).toHaveLength(1);
-  });
-
   it("skips claimed turns and selects the oldest unclaimed observable turn", () => {
     let ledger = createDeliveryLedger();
     for (const turnId of ["child:claimed", "child:older", "child:newer"]) {

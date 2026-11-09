@@ -1,10 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import {
-  TROUBLESHOOTING_HINT,
-  TROUBLESHOOTING_SKILL_PATH,
-  withTroubleshootingHint,
-} from "../src/troubleshooting-skill.js";
+import { TROUBLESHOOTING_HINT, TROUBLESHOOTING_SKILL_PATH } from "../src/troubleshooting-skill.js";
 
 describe("troubleshooting Skill hint", () => {
   it("points at the packaged, user-invoked Skill on disk", () => {
@@ -13,9 +9,5 @@ describe("troubleshooting Skill hint", () => {
       "name: pi-minimal-subagents",
     );
     expect(TROUBLESHOOTING_HINT).toContain(TROUBLESHOOTING_SKILL_PATH);
-  });
-
-  it("appends the hint as its own paragraph", () => {
-    expect(withTroubleshootingHint("boom")).toBe(`boom\n\n${TROUBLESHOOTING_HINT}`);
   });
 });

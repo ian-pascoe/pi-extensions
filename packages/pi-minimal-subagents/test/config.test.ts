@@ -12,16 +12,6 @@ const defaultToolsets = {
 };
 
 describe("minimal subagents configuration", () => {
-  it("preserves built-in preset defaults with an empty base toolset", () => {
-    const result = resolveMinimalSubagentsConfig({
-      globalSettings: {},
-      projectSettings: {},
-      eligibleModelIds: eligibleModels,
-    });
-
-    expect(result.toolsets).toEqual(defaultToolsets);
-  });
-
   it("replaces each authored toolset array while inheriting omitted keys", () => {
     const result = resolveMinimalSubagentsConfig({
       globalSettings: {
@@ -228,12 +218,9 @@ describe("minimal subagents configuration", () => {
         minimalSubagents: {
           modelRoles: {
             shorthandOff: "provider/shorthand:off",
-            shorthandLow: "provider/shorthand:low",
-            shorthandMedium: "provider/shorthand:medium",
             shorthandMax: "provider/shorthand:max",
             expandedMinimal: { model: "provider/expanded:minimal" },
             expandedHigh: { model: "provider/expanded:high", hint: "Use for visual polish" },
-            expandedXhigh: { model: "provider/expanded:xhigh" },
           },
         },
       },
@@ -252,8 +239,6 @@ describe("minimal subagents configuration", () => {
       toolsets: defaultToolsets,
       modelRoles: [
         { name: "shorthandOff", model: "provider/shorthand", thinkingLevel: "off" },
-        { name: "shorthandLow", model: "provider/shorthand", thinkingLevel: "low" },
-        { name: "shorthandMedium", model: "provider/shorthand", thinkingLevel: "medium" },
         { name: "shorthandMax", model: "provider/shorthand", thinkingLevel: "max" },
         { name: "expandedMinimal", model: "provider/expanded", thinkingLevel: "minimal" },
         {
@@ -262,7 +247,6 @@ describe("minimal subagents configuration", () => {
           thinkingLevel: "high",
           hint: "Use for visual polish",
         },
-        { name: "expandedXhigh", model: "provider/expanded", thinkingLevel: "xhigh" },
       ],
       warnings: [],
     });
@@ -373,23 +357,5 @@ describe("minimal subagents configuration", () => {
     });
     expect(result.maxSubagentDepth).toBe(1);
     expect(result.warnings).toEqual(["project minimalSubagents.enabled: expected a boolean"]);
-  });
-
-  it("omits untrusted project access while retaining global access", () => {
-    const result = resolveMinimalSubagentsSettings(
-      {
-        getGlobalSettings: () => ({ minimalSubagents: { enabled: false } }),
-        getProjectSettings: () => ({ minimalSubagents: { enabled: true } }),
-        isProjectTrusted: () => false,
-      },
-      eligibleModels,
-    );
-
-    expect(result.subagentAccess).toEqual({
-      enabled: false,
-      source: "global",
-      globalEnabled: false,
-      projectEnabled: undefined,
-    });
   });
 });

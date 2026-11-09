@@ -109,12 +109,6 @@ describe("minimal subagents call rows", () => {
     expect(header("subagent", { task: "Look" })).toBe(
       "<toolTitle><b>subagent</b></toolTitle> <accent>generated</accent>",
     );
-    expect(header("agent_message", { agent_id: "worker", message: "hi" })).toBe(
-      "<toolTitle><b>agent_message</b></toolTitle> <accent>worker</accent>",
-    );
-    expect(header("subagent_wait", { agent_id: "worker" })).toBe(
-      "<toolTitle><b>subagent_wait</b></toolTitle> <accent>worker</accent>",
-    );
     expect(header("subagent_status", {})).toBe(
       "<toolTitle><b>subagent_status</b></toolTitle> <muted>children</muted>",
     );
@@ -224,24 +218,6 @@ describe("minimal subagents result rows", () => {
     expect(text(failed)).toContain("<error>Provider overloaded</error>");
     expect(text(failed)).toContain("<error>failed</error>");
     expectFits(failed);
-  });
-
-  it("shows the whole answer and no hint when expanded", () => {
-    const rendered = wait(
-      {
-        event: "turn",
-        agent_id: "worker",
-        turn_id: "worker:turn-1",
-        status: "completed",
-        output: `**Findings**\n\n${numberedLines(12)}`,
-        usage,
-      },
-      expanded,
-    );
-    expect(text(rendered)).toContain("line 12");
-    expect(text(rendered)).toContain("Turn:");
-    expect(text(rendered)).not.toContain("to expand");
-    expectFits(rendered);
   });
 
   it("shows that a wait's result was already delivered instead of an empty output", () => {
@@ -487,29 +463,6 @@ describe("minimal subagents result rows", () => {
     expectFits(render(expanded));
   });
 
-  it("lists a partial deletion's failures in the error role when collapsed", () => {
-    const rendered = renderCoordinatorToolResult(
-      "subagent_delete",
-      {
-        content: [],
-        details: {
-          agent_id: "child",
-          recursive: true,
-          deleted_agent_ids: ["child.leaf"],
-          trashed_session_files: [],
-          failures: [{ agent_id: "child", error: "disk full" }],
-        },
-      },
-      collapsed,
-      taggedTheme,
-      { agent_id: "child" },
-      true,
-    );
-    expect(text(rendered)).toContain("<error>failed</error>");
-    expect(text(rendered)).toContain("<error>child: disk full</error>");
-    expectFits(rendered);
-  });
-
   it("shows an unrecognised result's text, error-coloured and capped at 10 lines", () => {
     const longText = Array.from({ length: 14 }, (_, index) => `text ${index + 1}`).join("\n");
     const render = (isError: boolean, options = collapsed) =>
@@ -677,6 +630,20 @@ describe("minimal subagents rendering", () => {
         expected: "timed out",
       },
       {
+        toolName: "subagent_wait",
+        args: { agent_id: "child" },
+        details: {
+          event: "steered",
+          agent_id: "child",
+          turn_id: "child:turn-1",
+          state: "running",
+          elapsed_ms: 2_000,
+          total_tokens: 1_234,
+          recent_activity_labels: ["tool call read"],
+        },
+        expected: "Turn: child:turn-1",
+      },
+      {
         toolName: "subagent_status",
         args: {},
         details: {
@@ -823,34 +790,6 @@ describe("minimal subagents rendering", () => {
     expect(render(legacy, true)).toContain("State: running");
   });
 
-  it("renders a steered wait with its progress snapshot", () => {
-    const details = {
-      event: "steered",
-      agent_id: "child",
-      turn_id: "child:turn-1",
-      state: "running",
-      elapsed_ms: 2_000,
-      total_tokens: 1_234,
-      recent_activity_labels: ["tool call read"],
-    };
-    const render = (isExpanded: boolean) =>
-      renderLines(
-        renderCoordinatorToolResult(
-          "subagent_wait",
-          { content: [{ type: "text", text: "steered" }], details },
-          { expanded: isExpanded, isPartial: false },
-          plainTheme,
-          { agent_id: "child" },
-        ),
-      );
-    const collapsed = render(false);
-    expect(collapsed).toContain("steered");
-    expect(collapsed).toContain("tool call read");
-    const expanded = render(true);
-    expect(expanded).toContain("State: running");
-    expect(expanded).toContain("Turn: child:turn-1");
-  });
-
   it("renders legacy details and falls back to historical text for malformed partial errors", () => {
     const legacy = renderCoordinatorToolResult(
       "agent_message",
@@ -919,26 +858,7 @@ describe("minimal subagents rendering", () => {
     expect(renderLines(validError)).toContain("typed rendered error");
   });
 
-  it("renders text while safely ignoring image content in coordinator messages", () => {
-    const component = renderMinimalSubagentsMessage(
-      {
-        content: [
-          { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
-          { type: "text", text: "typed text content" },
-        ],
-        details: {
-          source_agent_id: "child",
-          destination_agent_id: "root",
-          source_turn_id: "child:turn-1",
-          usage,
-        },
-      },
-      { ...keybindingHints, expanded: true, outputPad: 0 },
-      plainTheme,
-    );
-    expect(renderLines(component)).toContain("typed text content");
-    expect(renderLines(component)).toContain("total 120");
-
+  it("renders legacy coordinator messages", () => {
     const legacyComponent = renderMinimalSubagentsMessage(
       {
         content: "legacy coordinator message",

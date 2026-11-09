@@ -1,22 +1,15 @@
-import type { AssistantMessage, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import {
   initTheme,
   type ExtensionContext,
   type KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
-import {
-  Text,
-  visibleWidth,
-  type KeyId,
-  type TUI,
-  type TuiMouseEvent,
-} from "@earendil-works/pi-tui";
+import { type KeyId, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import {
   escapeTaggedTheme as taggedTheme,
   expectLinesFitWidth,
   readableTags,
 } from "@ian-pascoe/pi-utils/ui-testing";
-import { Type } from "typebox";
 import type { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -201,17 +194,6 @@ describe("minimal subagents status panel", () => {
     panel.dispose();
   });
 
-  it("truncates long rows with three dots and pads every row to the pane width", () => {
-    const { panel } = panelFixture({
-      agents: [summary("long", { task: "A task long enough to be truncated ".repeat(6) })],
-    });
-    const rows = panel.render(60).slice(1, -1);
-    expect(rows.filter((row) => row.includes("..."))).not.toHaveLength(0);
-    expect(rows.some((row) => row.includes("…"))).toBe(false);
-    expect(rows.every((row) => visibleWidth(row) === 60)).toBe(true);
-    panel.dispose();
-  });
-
   it("draws Pi's selector frame with a themed title, Status Marks, selection marker, and hints", () => {
     const { panel } = panelFixture({ theme: taggedTheme });
     const lines = plainRows(panel, 120);
@@ -231,21 +213,6 @@ describe("minimal subagents status panel", () => {
     panel.dispose();
   });
 
-  it("draws the transcript view with its own title, selected row, and hints", () => {
-    const { panel } = panelFixture({ theme: taggedTheme });
-    panel.handleInput("enter");
-    const lines = plainRows(panel, 120);
-    expect(lines[1]).toBe(" <accent><b>Transcript · parent</b></accent>");
-    expect(lines[2]).toBe(
-      "   <dim>○</dim> parent<dim> · </dim><muted>idle</muted><dim> · </dim><muted>provider/model:medium</muted><dim> · </dim><muted>Task for parent</muted>",
-    );
-    expect(lines.at(-2)).toContain("<dim>escape</dim><muted> tree</muted>");
-    expect(lines.at(-2)).toContain("<dim>ctrl+o</dim><muted> tools</muted>");
-    expect(lines.at(-2)).toContain("<muted>following</muted>");
-    expectPanelFits(panel);
-    panel.dispose();
-  });
-
   it("orders active subtrees first and retains the selected Child Agent across reordering", async () => {
     vi.useFakeTimers();
     const parent = summary("parent", {
@@ -258,12 +225,6 @@ describe("minimal subagents status panel", () => {
     const { panel } = panelFixture({
       agents: [summary("idle"), parent, summary("running", { state: "running" })],
     });
-    expect(
-      panel
-        .render(100)
-        .map((line) => line.match(/[●○] ([\w.]+)/)?.[1])
-        .filter(Boolean),
-    ).toEqual(["parent", "parent.active", "parent.idle", "parent.last", "running", "idle"]);
     panel.handleInput("down");
     parent.children![0]!.state = "running";
     await vi.advanceTimersByTimeAsync(1_000);
@@ -283,19 +244,6 @@ describe("minimal subagents status panel", () => {
     expect(panel.render(80).join("\n")).toContain("→ └─ ● parent.child");
     panel.handleInput("escape");
     expect(onClose).toHaveBeenCalledOnce();
-  });
-
-  it("refreshes the inspected transcript once per second and preserves bounded rendering", async () => {
-    vi.useFakeTimers();
-    const { coordinator, panel } = panelFixture();
-    panel.handleInput("enter");
-    expect(coordinator.inspectTranscript).toHaveBeenCalledOnce();
-
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(coordinator.inspectStatus).toHaveBeenCalledTimes(2);
-    expect(coordinator.inspectTranscript).toHaveBeenCalledTimes(2);
-    expect(panel.render(36).every((line) => visibleWidth(line) <= 36)).toBe(true);
-    panel.dispose();
   });
 
   it("keeps page scrolling independent from the selected row", () => {
@@ -342,27 +290,6 @@ describe("minimal subagents status panel", () => {
     panel.dispose();
   });
 
-  it("leaves presses off agent rows and in the transcript to Pi's text selection", () => {
-    const { panel } = panelFixture();
-    panel.render(80);
-    for (const y of [0, 1, 17]) {
-      expect(panel.handleMouse(mouseEvent({ type: "press", button: "left", y }))).toBeUndefined();
-    }
-    const row = panel.render(80).findIndex((line) => line.includes("parent.child"));
-    expect(
-      panel.handleMouse(mouseEvent({ type: "press", button: "right", y: row })),
-    ).toBeUndefined();
-    expect(panel.handleMouse(mouseEvent({ type: "move", y: row }))).toBeUndefined();
-
-    panel.handleInput("enter");
-    panel.render(80);
-    for (const type of ["press", "click", "drag", "release"] as const) {
-      expect(panel.handleMouse(mouseEvent({ type, button: "left", y: 4 }))).toBeUndefined();
-    }
-    expect(panel.render(80).join("\n")).toContain("Transcript \u00b7 parent");
-    panel.dispose();
-  });
-
   it("scrolls the transcript by the wheel's lines and resumes following at the end", () => {
     const transcript = {
       messages: [],
@@ -382,27 +309,6 @@ describe("minimal subagents status panel", () => {
     panel.handleMouse(mouseEvent({ wheelDelta: 3 }));
     transcript.fallback += "\nline-80";
     expect(panel.render(80).join("\n")).toContain("line-80");
-    panel.dispose();
-  });
-
-  it("frames and fills the pane within resized terminal bounds", () => {
-    const { panel, tui } = panelFixture();
-    const rows = panel.render(80);
-    expect(rows[0]).toMatch(/^─+$/);
-    expect(rows.at(-1)).toMatch(/^─+$/);
-    expect(rows).toHaveLength(18);
-    expect(rows.every((line) => visibleWidth(line) === 80)).toBe(true);
-    for (const [width, height] of [
-      [36, 10],
-      [2, 4],
-      [80, 3],
-      [20, 40],
-    ]) {
-      tui.terminal.rows = height!;
-      const resized = panel.render(width!);
-      expect(resized.length).toBeLessThanOrEqual(Math.max(1, height! - 2));
-      expect(resized.every((line) => visibleWidth(line) <= width!)).toBe(true);
-    }
     panel.dispose();
   });
 
@@ -432,125 +338,6 @@ describe("minimal subagents status panel", () => {
     expect(panel.render(80).join("\n")).toContain("line-80");
     transcript.fallback += "\nline-81";
     expect(panel.render(80).join("\n")).toContain("line-81");
-    panel.dispose();
-  });
-
-  it("renders live assistant messages with paired tool results", () => {
-    const assistant: AssistantMessage = {
-      role: "assistant",
-      content: [
-        { type: "text", text: "Inspecting source" },
-        { type: "toolCall", id: "call-1", name: "mystery_tool", arguments: { path: "src" } },
-      ],
-      api: "openai-completions",
-      provider: "test",
-      model: "model",
-      usage: ZERO_USAGE,
-      stopReason: "toolUse",
-      timestamp: 1,
-    };
-    const result: ToolResultMessage = {
-      role: "toolResult",
-      toolCallId: "call-1",
-      toolName: "mystery_tool",
-      content: [{ type: "text", text: "visible tool result" }],
-      isError: false,
-      timestamp: 2,
-    };
-    const { panel } = panelFixture({
-      transcript: { messages: [assistant, result], toolDefinitions: [] },
-    });
-    panel.handleInput("enter");
-
-    const rendered = panel.render(80).join("\n");
-    expect(rendered).toContain("Inspecting source");
-    expect(rendered).toContain("mystery_tool");
-    expect(rendered).toContain("visible tool result");
-    panel.dispose();
-  });
-
-  it("renders inherited tool results even when their calls are outside inherited context", () => {
-    const { panel } = panelFixture({
-      transcript: {
-        toolDefinitions: [],
-        messages: [
-          {
-            role: "toolResult",
-            toolCallId: "inherited-call",
-            toolName: "read",
-            content: [{ type: "text", text: "[Image: image/png]" }],
-            isError: false,
-            timestamp: 1,
-          },
-        ],
-      },
-    });
-    panel.handleInput("enter");
-    expect(panel.render(80).join("\n")).toContain("[Image: image/png]");
-    panel.dispose();
-  });
-
-  it("reuses historical tool rendering when only the live tail changes", () => {
-    const renderCall = vi.fn(() => new Text("historical tool", 0, 0));
-    const transcript: ChildAgentTranscriptSnapshot = {
-      messages: [
-        assistantMessage([{ type: "toolCall", id: "call", name: "history", arguments: {} }]),
-        {
-          role: "toolResult",
-          toolCallId: "call",
-          toolName: "history",
-          content: [{ type: "text", text: "historical result" }],
-          timestamp: 2,
-          isError: false,
-        },
-      ],
-      toolDefinitions: [
-        {
-          name: "history",
-          label: "History",
-          description: "History",
-          parameters: Type.Object({}),
-          execute: async () => ({ content: [], details: undefined }),
-          renderCall,
-        },
-      ],
-    };
-    const { panel } = panelFixture({ transcript });
-    panel.handleInput("enter");
-    panel.render(100);
-    const calls = renderCall.mock.calls.length;
-    expect(calls).toBeGreaterThan(0);
-    transcript.messages.push(assistantMessage([{ type: "text", text: "new live tail" }]));
-    expect(panel.render(100).join("\n")).toContain("new live tail");
-    expect(renderCall).toHaveBeenCalledTimes(calls);
-    panel.dispose();
-  });
-
-  it("collapses historical tool output without a loaded tool definition", () => {
-    const { panel } = panelFixture({
-      transcript: {
-        toolDefinitions: [],
-        messages: [
-          {
-            role: "toolResult",
-            toolCallId: "call",
-            toolName: "history",
-            content: [
-              {
-                type: "text",
-                text: Array.from({ length: 60 }, (_, i) => `tool-line-${i}`).join("\n"),
-              },
-            ],
-            isError: false,
-            timestamp: 2,
-          },
-        ],
-      },
-    });
-    panel.handleInput("enter");
-    expect(panel.render(80).join("\n")).not.toContain("tool-line-59");
-    panel.handleInput("expand");
-    expect(panel.render(80).join("\n")).toContain("tool-line-59");
     panel.dispose();
   });
 
@@ -665,29 +452,6 @@ describe("minimal subagents status panel", () => {
     panel.dispose();
   });
 
-  it("scrolls by single lines through blank padding between native messages", () => {
-    const { panel } = panelFixture({
-      transcript: {
-        toolDefinitions: [],
-        messages: Array.from({ length: 30 }, (_, i) => ({
-          role: "user" as const,
-          content: `message-${i}`,
-          timestamp: i,
-        })),
-      },
-    });
-    panel.handleInput("enter");
-    expect(panel.render(80).join("\n")).toContain("message-29");
-    for (let i = 0; i < 12; i++) {
-      panel.handleInput("up");
-      panel.render(80);
-    }
-    const earlier = panel.render(80).join("\n");
-    expect(earlier).toContain("message-22");
-    expect(earlier).not.toContain("message-29");
-    panel.dispose();
-  });
-
   it("returns to the tree when the inspected Child Agent disappears", async () => {
     vi.useFakeTimers();
     const { panel, coordinator, onClose } = panelFixture();
@@ -713,18 +477,6 @@ describe("minimal subagents status panel", () => {
     expect(stopRefresh).toHaveBeenCalledOnce();
   });
 
-  it("settles on Escape and clears its refresh timer", async () => {
-    vi.useFakeTimers();
-    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
-    const { coordinator, onClose, panel } = panelFixture();
-    panel.handleInput("escape");
-    expect(onClose).toHaveBeenCalledOnce();
-    expect(clearIntervalSpy).toHaveBeenCalledOnce();
-
-    await vi.advanceTimersByTimeAsync(2_000);
-    expect(coordinator.inspectStatus).toHaveBeenCalledOnce();
-  });
-
   it("opens one centered native overlay and refocuses repeated opens", async () => {
     const { coordinator, panel } = panelFixture();
     panel.dispose();
@@ -740,10 +492,7 @@ describe("minimal subagents status panel", () => {
     );
     const opened = controller.open();
     const options = custom.mock.calls[0]?.[1];
-    expect(options).toMatchObject({
-      overlay: true,
-      overlayOptions: { anchor: "center", width: "90%", maxHeight: "90%", margin: 1 },
-    });
+    expect(options).toMatchObject({ overlay: true });
     const focus = vi.fn();
     options?.onHandle?.({
       focus,

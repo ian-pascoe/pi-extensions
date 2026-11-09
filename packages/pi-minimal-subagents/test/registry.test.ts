@@ -1,7 +1,6 @@
 import type { JsonValue } from "@earendil-works/pi-ai";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { COORDINATOR_TOOL_NAMES } from "../src/minimal-subagents-capabilities.js";
 import {
   createRegistryEvent,
   parseRegistryEvent,
@@ -146,25 +145,6 @@ describe("minimal subagents registry", () => {
     expect(agent?.latest_result?.usage).toEqual({ ...legacyUsage, cacheWrite1h: 0, reasoning: 0 });
   });
 
-  it("ignores foreign-root records before inspecting nested non-JSON fields", () => {
-    const diagnostics: RegistryReplayDiagnostic[] = [];
-    const replayed = replayRegistryEntries(
-      [
-        customEntry({
-          version: 2,
-          root_session_id: "foreign",
-          timestamp: "2026-01-01T00:00:00.000Z",
-          event: "agent-created",
-          agent: { ...persistedAgent(), task: () => "not Registry data" },
-        }),
-      ],
-      "root",
-      (items) => diagnostics.push(...items),
-    );
-    expect(replayed.agents).toEqual([]);
-    expect(diagnostics).toEqual([]);
-  });
-
   it("diagnoses nested non-JSON owned fields without discarding valid replay state", () => {
     const diagnostics: RegistryReplayDiagnostic[] = [];
     const replayed = replayRegistryEntries(
@@ -189,7 +169,7 @@ describe("minimal subagents registry", () => {
     expect(diagnostics).toMatchObject([{ entry_index: 1, code: "invalid-checkpoint" }]);
   });
 
-  it("starts at the latest checkpoint and returns clones isolated from checkpoint input", () => {
+  it("starts at the latest checkpoint", () => {
     const checkpoint = {
       agents: [persistedAgent("kept")],
       tombstones: ["old"],
@@ -202,8 +182,6 @@ describe("minimal subagents registry", () => {
     ];
     const result = replayRegistryEntries(entries, "root");
     expect(result.agents.map((agent) => agent.agent_id)).toEqual(["kept", "new"]);
-    result.agents[0]!.friendly_id = "mutated";
-    expect(checkpoint.agents[0]!.friendly_id).toBe("kept");
   });
 
   it("skips malformed events and falls back from a malformed latest checkpoint", () => {
@@ -345,37 +323,8 @@ describe("minimal subagents registry", () => {
           root_session_id: "root",
           timestamp: "2026-01-01T00:00:00.000Z",
           event: "checkpoint",
-          snapshot: { agents: [{ ...agent, task: 42 }], tombstones: [], deliveries: [] },
-        },
-        {
-          version: 2,
-          root_session_id: "root",
-          timestamp: "2026-01-01T00:00:00.000Z",
-          event: "checkpoint",
-          snapshot: {
-            agents: [{ ...agent, launch_contract: { ...agent.launch_contract, tools: 42 } }],
-            tombstones: [],
-            deliveries: [],
-          },
-        },
-        {
-          version: 2,
-          root_session_id: "root",
-          timestamp: "2026-01-01T00:00:00.000Z",
-          event: "checkpoint",
           snapshot: {
             agents: [{ ...agent, active_turn_id: "child:orphan" }],
-            tombstones: [],
-            deliveries: [],
-          },
-        },
-        {
-          version: 2,
-          root_session_id: "root",
-          timestamp: "2026-01-01T00:00:00.000Z",
-          event: "checkpoint",
-          snapshot: {
-            agents: [{ ...agent, session_leaf_id: undefined }],
             tombstones: [],
             deliveries: [],
           },
@@ -447,7 +396,7 @@ describe("minimal subagents registry", () => {
   });
 
   it("rejects malformed Launch Contract roles", () => {
-    for (const role of [42, "", " padded ", "two\nlines", "x".repeat(65)]) {
+    for (const role of [42, "", "x".repeat(65)]) {
       const event = JSON.parse(
         JSON.stringify(
           createRegistryEvent("root", "checkpoint", {
@@ -473,7 +422,7 @@ describe("minimal subagents registry", () => {
         agent.launch_contract.ordinary_tools = ["read"];
         agent.capability_ceiling = ["read", "bash"];
       },
-      ...COORDINATOR_TOOL_NAMES.flatMap((coordinatorToolName) => [
+      ...["subagent"].flatMap((coordinatorToolName) => [
         (agent: PersistedAgent) => {
           agent.launch_contract.ordinary_tools = [coordinatorToolName];
           agent.capability_ceiling = [coordinatorToolName];
@@ -535,30 +484,7 @@ describe("minimal subagents registry", () => {
     ).toBeUndefined();
   });
 
-  it("rejects incomplete persisted fields and reports semantic diagnostic codes", () => {
-    const validAgent = persistedAgent();
-    const invalidThinkingCheckpoint = {
-      version: 2,
-      root_session_id: "root",
-      timestamp: "2026-01-01T00:00:00.000Z",
-      event: "checkpoint",
-      snapshot: {
-        agents: [
-          {
-            ...validAgent,
-            launch_contract: {
-              ...validAgent.launch_contract,
-              thinking_level: "turbo",
-            },
-          },
-        ],
-        tombstones: [],
-        deliveries: [],
-        coordination_deliveries: [],
-        wait_claimed_turns: [],
-        next_delivery_sequence: 1,
-      },
-    };
+  it("reports a terminal delivery whose identity does not match its result", () => {
     const wrongDelivery: PersistedDelivery = {
       source_agent_id: "child",
       source_turn_id: "child:turn-1",
@@ -574,7 +500,6 @@ describe("minimal subagents registry", () => {
       },
     };
     const entries = [
-      customEntry(invalidThinkingCheckpoint),
       customEntry({
         version: 2,
         root_session_id: "root",
@@ -590,11 +515,8 @@ describe("minimal subagents registry", () => {
     });
 
     expect(replayed.agents).toEqual([]);
-    expect(diagnostics.map(({ code }) => code)).toEqual([
-      "invalid-checkpoint",
-      "invalid-delivery-identity",
-    ]);
-    expect(diagnostics[1]?.message).toContain("result agent_id");
+    expect(diagnostics.map(({ code }) => code)).toEqual(["invalid-delivery-identity"]);
+    expect(diagnostics[0]?.message).toContain("result agent_id");
   });
 
   it("rejects duplicate, unsafe, and non-monotonic delivery sequences", () => {

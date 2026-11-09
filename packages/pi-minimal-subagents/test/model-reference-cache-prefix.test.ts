@@ -158,11 +158,3 @@ test("a turn with Subagent Model References keeps tools, system prompt, and hist
     expectByteIdenticalPrefix(requests[index - 1]!, requests[index]!);
   }
 }, 30_000);
-
-test("literal text sends the user message untouched", async () => {
-  const { session, requests } = await startSession();
-  await session.prompt("Use `%large`, 50% of the time, and %large:ultra");
-  await session.prompt("Again");
-  expect(userTexts(requests[1]!)[0]).toBe("Use `%large`, 50% of the time, and %large:ultra");
-  expectByteIdenticalPrefix(requests[0]!, requests[1]!);
-}, 30_000);

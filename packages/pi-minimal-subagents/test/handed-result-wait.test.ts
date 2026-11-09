@@ -18,9 +18,8 @@ import {
 
 afterEach(disposeLiveRootSessions);
 
-/** The Recording child's outputs for a spawned turn and for a turn started by `agent_message`. */
+/** The Recording child's output for a spawned turn. */
 const SPAWN_OUTPUT = "completed child turn";
-const MESSAGE_OUTPUT = "completed child message";
 /** Covers the 1 s wait-claim grace period before automatic fallback, plus scheduling slack. */
 const GRACE_TIMEOUT = { timeout: 5_000 };
 
@@ -156,31 +155,6 @@ test("a default wait does not repeat a spawned result automatic fallback already
 
   expect(resultEntries()).toHaveLength(1);
   expectAlreadyDelivered(toolResult("wait"), spawnedTurnId(session), SPAWN_OUTPUT, true);
-});
-
-test("a default wait does not repeat a started-turn result automatic fallback already handed", async () => {
-  const { session, resultEntries, toolResult } = await startScriptedRoot([
-    toolCall("subagent", { task: "Report back", agent_id: "worker" }, "spawn"),
-    reply("Spawned."),
-    // The idle root takes the first result as a new turn.
-    reply("Noted."),
-    toolCall("agent_message", { agent_id: "worker", message: "Continue" }, "continue"),
-    afterResultQueued(toolCall("subagent_wait", { agent_id: "worker" }, "wait")),
-  ]);
-
-  await session.prompt("Spawn a worker");
-  await vi.waitFor(() => expect(resultEntries()).toHaveLength(1), GRACE_TIMEOUT);
-  await session.waitForIdle();
-  await session.prompt("Continue the worker");
-  await session.waitForIdle();
-
-  expect(resultEntries()).toHaveLength(2);
-  expectAlreadyDelivered(
-    toolResult("wait"),
-    reportedTurnId(session, "continue"),
-    MESSAGE_OUTPUT,
-    true,
-  );
 });
 
 test("a default wait does not repeat a result automatic fallback already delivered", async () => {

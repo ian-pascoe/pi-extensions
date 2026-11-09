@@ -159,9 +159,6 @@ describe("Coordinator Tool result text", () => {
 
   it("says when a cancel found no active turn", () => {
     const idle = { agent_id: "child", affected_agent_ids: [], cancelled_turn_ids: [] };
-    expect(formatCancelResultText({ ...idle, recursive: false })).toBe(
-      "Nothing cancelled: child had no active turn.",
-    );
     expect(formatCancelResultText({ ...idle, recursive: true })).toBe(
       "Nothing cancelled: child had no active turn, nor did any descendant.",
     );

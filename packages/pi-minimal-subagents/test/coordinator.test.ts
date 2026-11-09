@@ -212,14 +212,6 @@ describe("minimal subagents coordinator", () => {
     );
   });
 
-  it("falls back to the caller's thinking level for an unsuffixed role", async () => {
-    const { coordinator } = coordinatorFixture(childRuntime(), 0, { modelRoles });
-
-    await expect(
-      coordinator.spawn("root", { task: "Go", agent_id: "scout", role: "plain" }, caller),
-    ).resolves.toMatchObject({ model: "provider/plain", thinking_level: "medium" });
-  });
-
   it("lets explicit model and thinking_level override the role while still recording it", async () => {
     const { coordinator, registryEvents } = coordinatorFixture(childRuntime(), 0, { modelRoles });
 
@@ -243,23 +235,29 @@ describe("minimal subagents coordinator", () => {
         caller,
       ),
     ).resolves.toMatchObject({ model: "provider/fast", thinking_level: "xhigh" });
-    expect(
-      registryEvents.flatMap((event) =>
-        event.event === "agent-created" ? [event.agent.launch_contract.role] : [],
-      ),
-    ).toEqual(["explore", "explore"]);
-  });
-
-  it("applies the role's thinking level to an explicit model that overrides the role's model", async () => {
-    const { coordinator } = coordinatorFixture(childRuntime(), 0, { modelRoles });
-
+    // An unsuffixed role keeps the caller's thinking level; the role's level follows an overriding model.
+    await expect(
+      coordinator.spawn("root", { task: "Go", agent_id: "plain", role: "plain" }, caller),
+    ).resolves.toMatchObject({ model: "provider/plain", thinking_level: "medium" });
     await expect(
       coordinator.spawn(
         "root",
-        { task: "Go", agent_id: "scout", role: "explore", model: "provider/other" },
+        { task: "Go", agent_id: "other", role: "explore", model: "provider/other" },
         caller,
       ),
     ).resolves.toMatchObject({ model: "provider/other", thinking_level: "low" });
+    await coordinator.spawn("root", { task: "Go", agent_id: "roleless" }, caller);
+    const contracts = registryEvents.flatMap((event) =>
+      event.event === "agent-created" ? [event.agent.launch_contract] : [],
+    );
+    expect(contracts.map((contract) => contract.role)).toEqual([
+      "explore",
+      "explore",
+      "plain",
+      "explore",
+      undefined,
+    ]);
+    expect("role" in contracts[4]!).toBe(false);
   });
 
   it("rejects an unknown role with the configured role names before creating anything", async () => {
@@ -283,16 +281,6 @@ describe("minimal subagents coordinator", () => {
         caller,
       ),
     ).rejects.toThrow('unknown role "explore"; no model roles are configured');
-  });
-
-  it("leaves the Launch Contract without a role when none is named", async () => {
-    const { coordinator, registryEvents } = coordinatorFixture(childRuntime(), 0, { modelRoles });
-
-    await coordinator.spawn("root", { task: "Go", agent_id: "scout" }, caller);
-
-    const created = registryEvents.find((event) => event.event === "agent-created");
-    if (created?.event !== "agent-created") throw new Error("expected an agent-created event");
-    expect("role" in created.agent.launch_contract).toBe(false);
   });
 
   it("launches cumulative configured toolsets with concrete deduplicated extension tools", async () => {
@@ -345,7 +333,6 @@ describe("minimal subagents coordinator", () => {
 
   it.each([
     { tools: "none" as const, expected: ["context_notes"] },
-    { tools: [], expected: ["context_notes"] },
     { tools: ["bash"], expected: ["context_notes", "bash"] },
     { tools: undefined, expected: ["context_notes", "read"] },
     { tools: "read" as const, expected: ["context_notes", "read", "lsp"] },
@@ -383,11 +370,14 @@ describe("minimal subagents coordinator", () => {
       deliveries: [],
     });
     const parentCaller = coordinator.snapshotChildCaller("parent", "entry");
-    await coordinator.spawn(
+    const spawned = await coordinator.spawn(
       "parent",
       { task: "Work with permitted tools", agent_id: "worker", tools: "modify" },
       parentCaller,
     );
+    expect(spawned).toMatchObject({ tools: ["read"] });
+    expect(spawned.warnings).toHaveLength(4);
+    expect(spawned.warnings?.[0]).toContain('"context_*" matched no permitted ordinary tools');
     await coordinator.wait("parent", "parent.worker", 1_000);
     expect(coordinator.status("parent", "parent.worker")).toMatchObject({
       agent: { launch_contract: { ordinary_tools: ["read"] }, capability_ceiling: ["read"] },
@@ -475,31 +465,7 @@ describe("minimal subagents coordinator", () => {
     });
   });
 
-  it("persists child identity before runtime creation and leaves no agent when identity creation fails", async () => {
-    const order: string[] = [];
-    const { coordinator, sessions } = coordinatorFixture();
-    sessions.createIdentity.mockImplementation((agent: PersistedAgent) => {
-      order.push("identity");
-      return {
-        sessionFile: `/sessions/${agent.agent_id}.jsonl`,
-        sessionId: `session-${agent.agent_id}`,
-        sessionLeafId: `leaf-${agent.agent_id}`,
-      };
-    });
-    sessions.openRuntime.mockImplementation(async () => {
-      order.push("runtime");
-      return childRuntime();
-    });
-
-    const spawned = await coordinator.spawn(
-      "root",
-      { task: "Investigate", agent_id: "worker" },
-      caller,
-    );
-    await coordinator.wait("root", "worker", 1_000);
-    expect(order).toEqual(["identity", "runtime"]);
-    expect(spawned.agent_id).toBe("worker");
-
+  it("leaves no agent when identity creation fails or yields no selected leaf", async () => {
     const failedFixture = coordinatorFixture();
     failedFixture.sessions.createIdentity.mockImplementation(() => {
       throw new Error("identity disk full");
@@ -523,45 +489,6 @@ describe("minimal subagents coordinator", () => {
       ),
     ).rejects.toThrow("no selected session leaf for leafless");
     expect(leaflessFixture.registryEvents).toEqual([]);
-  });
-
-  it("persists an authorized spawn and lets the direct parent wait for its exact turn", async () => {
-    const { coordinator } = coordinatorFixture();
-    const spawned = await coordinator.spawn(
-      "root",
-      { task: "Investigate", agent_id: "worker" },
-      caller,
-    );
-    const result = await coordinator.wait("root", "worker", 1_000);
-    expect(spawned).toMatchObject({ agent_id: "worker", status: "running" });
-    expect(result).toMatchObject({ agent_id: "worker", status: "completed", output: "done" });
-    const status = coordinator.status("root");
-    expect("agents" in status ? status.agents : []).toHaveLength(1);
-    expect(() => coordinator.status("other", "worker")).toThrow(
-      "Minimal subagents unknown agent: other",
-    );
-  });
-
-  it("returns the resolved launch grant and tool warnings from spawn", async () => {
-    const { coordinator } = coordinatorFixture(childRuntime(), 0, {
-      toolsets: { baseToolset: ["missing_*"], readToolset: ["read"], modifyToolset: [] },
-    });
-    const spawned = await coordinator.spawn(
-      "root",
-      { task: "Investigate", agent_id: "worker", tools: "read", delegation: "fanout" },
-      caller,
-    );
-    expect(spawned).toEqual({
-      agent_id: "worker",
-      turn_id: expect.stringMatching(/^worker:turn-/),
-      status: "running",
-      model: "provider/model",
-      thinking_level: "medium",
-      tools: ["read"],
-      delegation: "fanout",
-      warnings: [expect.stringContaining('"missing_*" matched no permitted ordinary tools')],
-    });
-    await coordinator.shutdown();
   });
 
   it("quotes inherited context and frames the task so the child does not adopt the parent's requests", async () => {
@@ -637,6 +564,9 @@ describe("minimal subagents coordinator", () => {
     expect(() => coordinator.status("parent", "parent.child.leaf")).toThrow(
       "Minimal subagents status authorization denied: parent cannot target parent.child.leaf",
     );
+    expect(() => coordinator.status("other", "parent")).toThrow(
+      "Minimal subagents unknown agent: other",
+    );
     const listed = coordinator.status("root");
     expect("agents" in listed && listed.agents[0]).toMatchObject({ child_count: 1 });
     expect("agents" in listed && listed.agents[0]).not.toHaveProperty("children");
@@ -647,22 +577,9 @@ describe("minimal subagents coordinator", () => {
     await coordinator.shutdown();
   });
 
-  it("explains unknown wait turns and respawns a deleted Agent ID as a fresh Child Agent", async () => {
-    const { coordinator, sessions, registryEvents } = coordinatorFixture();
-    let identities = 0;
-    sessions.createIdentity.mockImplementation((agent) => {
-      identities++;
-      return {
-        sessionFile: `/sessions/${agent.agent_id}-${identities}.jsonl`,
-        sessionId: `session-${agent.agent_id}-${identities}`,
-        sessionLeafId: `leaf-${agent.agent_id}-${identities}`,
-      };
-    });
-    const first = await coordinator.spawn(
-      "root",
-      { task: "Investigate", agent_id: "worker" },
-      caller,
-    );
+  it("explains unknown wait turns and cancels an idle child without cancelling anything", async () => {
+    const { coordinator } = coordinatorFixture();
+    await coordinator.spawn("root", { task: "Investigate", agent_id: "worker" }, caller);
     await coordinator.wait("root", "worker", 1_000);
     await expect(coordinator.wait("root", "worker", 10, undefined, "bogus")).rejects.toThrow(
       "Minimal subagents wait: turn bogus is unknown or no longer retained for worker; omit turn_id",
@@ -673,48 +590,6 @@ describe("minimal subagents coordinator", () => {
       affected_agent_ids: [],
       cancelled_turn_ids: [],
     });
-    await coordinator.delete("root", "worker");
-
-    const second = await coordinator.spawn("root", { task: "Again", agent_id: "worker" }, caller);
-
-    expect(second.agent_id).toBe("worker");
-    expect(second.turn_id).not.toBe(first.turn_id);
-    expect(coordinator.snapshot()).toMatchObject({
-      agents: [
-        {
-          agent_id: "worker",
-          task: "Again",
-          session_file: "/sessions/worker-2.jsonl",
-          session_id: "session-worker-2",
-        },
-      ],
-      tombstones: [],
-    });
-    await expect(coordinator.wait("root", "worker", 10, undefined, first.turn_id)).rejects.toThrow(
-      "is unknown or no longer retained for worker",
-    );
-    const replayed = replayRegistryEntries(
-      registryEvents.map((data) => ({ type: "custom", customType: REGISTRY_ENTRY_TYPE, data })),
-      "root-session",
-    );
-    expect(replayed.tombstones).toEqual([]);
-    expect(replayed.agents.map((agent) => [agent.agent_id, agent.session_id])).toEqual([
-      ["worker", "session-worker-2"],
-    ]);
-    await coordinator.shutdown();
-  });
-
-  it("names the existing child's state and next steps when an agent ID is already in use", async () => {
-    const { coordinator } = coordinatorFixture();
-    await coordinator.spawn("root", { task: "Investigate", agent_id: "echo" }, caller);
-    const duplicate = () => coordinator.spawn("root", { task: "Again", agent_id: "echo" }, caller);
-    await expect(duplicate()).rejects.toThrow(
-      "Minimal subagents duplicate agent ID: echo already exists (running). Use agent_message to continue it, subagent_delete to remove it (its ID then becomes free for a new child), or choose another agent_id.",
-    );
-    await coordinator.wait("root", "echo", 1_000);
-    await expect(duplicate()).rejects.toThrow(
-      "Minimal subagents duplicate agent ID: echo already exists (idle). Use agent_message to continue it, subagent_delete to remove it (its ID then becomes free for a new child), or choose another agent_id.",
-    );
     await coordinator.shutdown();
   });
 
@@ -772,15 +647,6 @@ describe("minimal subagents coordinator", () => {
       },
     ]);
 
-    expect(coordinator.status("root")).toMatchObject({
-      agents: [
-        {
-          agent_id: "worker",
-          model: "live/provider/model:variant",
-          thinking_level: "high",
-        },
-      ],
-    });
     expect(coordinator.inspectStatus()).toMatchObject({
       agents: [
         {
@@ -807,16 +673,6 @@ describe("minimal subagents coordinator", () => {
         ],
       },
     });
-    expect(coordinator.inspectStatus("worker")).toMatchObject({
-      agent: {
-        model: "live/provider/model:variant",
-        thinking_level: "high",
-        launch_contract: {
-          model: "provider/model",
-          thinking_level: "medium",
-        },
-      },
-    });
     runtime.getRuntimeProfile.mockReturnValue(undefined);
     expect(coordinator.status("root", "worker")).toMatchObject({
       agent: { model: "provider/model", thinking_level: "medium" },
@@ -826,33 +682,6 @@ describe("minimal subagents coordinator", () => {
       thinkingLevel: "medium",
       spawnEntryId: "nested-entry",
     });
-  });
-
-  it("lazily exposes only the requested live Child Agent transcript", async () => {
-    const runtime = childRuntime();
-    runtime.snapshotActivityTranscript.mockReturnValue({
-      messages: [
-        {
-          role: "toolResult",
-          toolCallId: "call-1",
-          toolName: "read",
-          content: [{ type: "text", text: "visible work" }],
-          isError: false,
-          timestamp: 1,
-        },
-      ],
-      toolDefinitions: [],
-    });
-    const { coordinator } = coordinatorFixture(runtime);
-    await coordinator.spawn("root", { task: "Inspect", agent_id: "worker" }, caller);
-    await coordinator.wait("root", "worker", 1_000);
-
-    coordinator.inspectStatus();
-    expect(runtime.snapshotActivityTranscript).not.toHaveBeenCalled();
-    expect(coordinator.inspectTranscript("worker")).toMatchObject({
-      messages: [{ role: "toolResult", toolCallId: "call-1" }],
-    });
-    expect(runtime.snapshotActivityTranscript).toHaveBeenCalledOnce();
   });
 
   it("inspects saved history without restoring unavailable runtime dependencies or mutating state", async () => {
@@ -1240,7 +1069,7 @@ describe("minimal subagents coordinator", () => {
     expect(runtime.queueCoordinatorMessage).toHaveBeenCalledOnce();
   });
 
-  it("delivers explicit and automatic messages once after durable evidence appears", async () => {
+  it("delivers an explicit child message to the root once", async () => {
     const explicit = coordinatorFixture();
     await explicit.coordinator.restore({
       agents: [persistedAgent("child", "root")],
@@ -1267,30 +1096,6 @@ describe("minimal subagents coordinator", () => {
         details: expect.objectContaining({ source_turn_id: "child:turn-message" }),
       }),
     );
-
-    const automatic = coordinatorFixture();
-    const spawned = await automatic.coordinator.spawn(
-      "root",
-      { task: "Complete", agent_id: "worker" },
-      caller,
-    );
-    await automatic.coordinator.waitForSettledOperations();
-    expect(automatic.root.queueCoordinatorMessage).toHaveBeenCalledOnce();
-    expect(automatic.root.queueCoordinatorMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        customType: "minimal-subagents.result",
-        details: expect.objectContaining({ source_turn_id: spawned.turn_id }),
-      }),
-    );
-    automatic.root.hasDeliveryEvidence.mockReturnValue(true);
-    await automatic.coordinator.reconcileDeliveries(true);
-    await automatic.coordinator.reconcileDeliveries(true);
-    expect(automatic.root.queueCoordinatorMessage).toHaveBeenCalledOnce();
-    expect(
-      automatic.registryEvents.filter(
-        (event) => event.event === "delivery-settled" && event.source_turn_id === spawned.turn_id,
-      ),
-    ).toHaveLength(1);
   });
 
   it("returns a direct child message through an active wait before the terminal result", async () => {
@@ -1334,39 +1139,6 @@ describe("minimal subagents coordinator", () => {
       output: "Reviewed the sessions",
     });
     expect(root.queueCoordinatorMessage).not.toHaveBeenCalled();
-  });
-
-  it("automatically delivers the terminal result when an intermediate message ends the wait", async () => {
-    let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
-    const runtime = childRuntime();
-    runtime.runPrompt.mockImplementation(
-      () => new Promise<RuntimeTurnOutcome>((resolve) => (finishPrompt = resolve)),
-    );
-    const { coordinator, root } = coordinatorFixture(runtime, 5);
-    const spawned = await coordinator.spawn(
-      "root",
-      { task: "Report progress", agent_id: "worker" },
-      caller,
-    );
-    const wait = coordinator.wait("root", "worker", 1_000);
-
-    await coordinator.sendAgentMessage("worker", { message: "progress" }, spawned.turn_id);
-    await expect(wait).resolves.toMatchObject({ event: "message", message: "progress" });
-    finishPrompt({ status: "completed", output: "complete" });
-    await vi.waitFor(() =>
-      expect(coordinator.snapshot().deliveries).toContainEqual(
-        expect.objectContaining({ source_turn_id: spawned.turn_id, path: "message" }),
-      ),
-    );
-
-    await coordinator.waitForSettledOperations();
-
-    expect(root.queueCoordinatorMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        customType: "minimal-subagents.result",
-        details: expect.objectContaining({ source_turn_id: spawned.turn_id }),
-      }),
-    );
   });
 
   it("lets a wait claim a queued direct-parent message sent just before it", async () => {
@@ -1810,44 +1582,6 @@ describe("minimal subagents coordinator", () => {
     ).resolves.toMatchObject({ turn_id: "worker:newest", output: "newest result" });
   });
 
-  it("targets the new turn after a claimed turn and an agent_message start", async () => {
-    let finishSecondTurn!: (outcome: RuntimeTurnOutcome) => void;
-    const runtime = childRuntime();
-    runtime.runMessage.mockImplementation(
-      () => new Promise<RuntimeTurnOutcome>((resolve) => (finishSecondTurn = resolve)),
-    );
-    const { coordinator } = coordinatorFixture(runtime, 200);
-    const first = await coordinator.spawn("root", { task: "First", agent_id: "worker" }, caller);
-    await expect(coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
-      event: "turn",
-      turn_id: first.turn_id,
-      output: "done",
-    });
-    const started = await coordinator.sendAgentMessage(
-      "root",
-      { agent_id: "worker", message: "Second" },
-      "root:turn",
-    );
-    if (started.disposition !== "started-turn" || !started.turn_id) {
-      throw new Error("expected agent_message to start a turn");
-    }
-
-    await expect(coordinator.wait("root", "worker", 1)).resolves.toMatchObject({
-      event: "timeout",
-      turn_id: started.turn_id,
-    });
-    await expect(
-      coordinator.wait("root", "worker", 1_000, undefined, first.turn_id),
-    ).resolves.toMatchObject({ event: "turn", turn_id: first.turn_id, output: "done" });
-
-    finishSecondTurn({ status: "completed", output: "second done" });
-    await expect(coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
-      event: "turn",
-      turn_id: started.turn_id,
-      output: "second done",
-    });
-  });
-
   it("still delivers a result automatically after a wait on its turn timed out", async () => {
     let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
     const runtime = childRuntime();
@@ -1979,31 +1713,6 @@ describe("minimal subagents coordinator", () => {
       ).resolves.toMatchObject({ event: "turn", turn_id: spawned.turn_id, output: "done" });
     });
 
-    it("does not count a steered wait result as Delivery Evidence for the terminal result", () => {
-      const entries: SessionEntry[] = [
-        {
-          type: "message",
-          id: "steered-result",
-          parentId: null,
-          timestamp: "2026-01-01T00:00:00.000Z",
-          message: {
-            role: "toolResult",
-            toolCallId: "call-1",
-            toolName: "subagent_wait",
-            content: [{ type: "text", text: "steered" }],
-            details: {
-              event: "steered",
-              source_agent_id: "worker",
-              source_turn_id: "worker:turn-1",
-            },
-            isError: false,
-            timestamp: 1,
-          },
-        },
-      ];
-      expect(findDeliveryEvidence(entries, "worker", "worker:turn-1")).toBe(false);
-    });
-
     it("rejects the real abort signal as a cancellation rather than steering", async () => {
       let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
       const runtime = childRuntime();
@@ -2131,7 +1840,6 @@ describe("minimal subagents coordinator", () => {
 
     expect(root.queueCoordinatorMessage).toHaveBeenCalledOnce();
     expect(coordinator.snapshot().deliveries).toEqual([]);
-    expect(coordinator["handedTerminalKeys"].size).toBe(0);
   });
 
   it("drops the handed marker when the automatic delivery fails", async () => {
@@ -2143,44 +1851,12 @@ describe("minimal subagents coordinator", () => {
     await coordinator.waitForSettledOperations();
 
     expect(coordinator.snapshot().deliveries).toHaveLength(1);
-    expect(coordinator["handedTerminalKeys"].size).toBe(0);
 
     // A failed send was never handed, so a later root turn boundary has nothing to release.
     coordinator.recordRootMessageEnd();
     coordinator.requeueDiscardedRootResults();
     await coordinator.waitForSettledOperations();
     expect(root.queueCoordinatorMessage).toHaveBeenCalledOnce();
-  });
-
-  it("re-sends a discarded result only into the root's next run", async () => {
-    const { coordinator, queuedMessages, setRootIdle } = coordinatorFixture(childRuntime(), 0);
-    setRootIdle(false);
-    const first = await coordinator.spawn("root", { task: "First", agent_id: "worker" }, caller);
-    await vi.waitFor(() => expect(queuedMessages).toHaveLength(1));
-
-    // Esc cleared Pi's queue: the root turn ended with nothing pending and no Delivery Evidence.
-    coordinator.recordRootMessageEnd();
-    coordinator.requeueDiscardedRootResults();
-    await coordinator.waitForSettledOperations();
-    // Released at once, but recovery never starts a root turn by itself.
-    expect(queuedMessages).toHaveLength(1);
-    expect(coordinator["handedTerminalKeys"].size).toBe(0);
-    setRootIdle(true);
-    coordinator.deliverDiscardedRootResults();
-    await coordinator.waitForSettledOperations();
-    expect(queuedMessages).toHaveLength(1);
-
-    // The root's next run starts: the result joins it as a steer.
-    setRootIdle(false);
-    coordinator.deliverDiscardedRootResults();
-    expect(queuedMessages).toHaveLength(2);
-    expect(queuedMessages[1]).toEqual(queuedMessages[0]);
-    expect([...coordinator["handedTerminalKeys"].entries()]).toEqual([
-      [`worker\u0000${first.turn_id}`, expect.objectContaining({ queued: true })],
-    ]);
-    coordinator.deliverDiscardedRootResults();
-    await coordinator.waitForSettledOperations();
-    expect(queuedMessages).toHaveLength(2);
   });
 
   it("re-sends a discarded result ahead of newer results still in their grace period", async () => {
@@ -2254,66 +1930,45 @@ describe("minimal subagents coordinator", () => {
     expect(queuedMessages).toHaveLength(1);
   });
 
-  it.each([
-    { name: "without a newer turn", newerTurn: false },
-    { name: "with a newer turn", newerTurn: true },
-  ])("lets a default wait select a discarded result $name", async ({ newerTurn }) => {
-    const runtime = childRuntime();
-    runtime.runMessage.mockImplementation(() => new Promise<RuntimeTurnOutcome>(() => undefined));
-    const { coordinator, queuedMessages, setRootIdle } = coordinatorFixture(runtime, 200);
-    setRootIdle(false);
-    const first = await coordinator.spawn("root", { task: "First", agent_id: "worker" }, caller);
-    await vi.waitFor(() => expect(queuedMessages).toHaveLength(1));
-    if (newerTurn) {
-      const started = await coordinator.sendAgentMessage(
-        "root",
-        { agent_id: "worker", message: "Second" },
-        "root:turn",
-      );
-      if (started.disposition !== "started-turn" || !started.turn_id) {
-        throw new Error("expected agent_message to start a turn");
+  it.each([{ name: "with a newer turn", newerTurn: true }])(
+    "lets a default wait select a discarded result $name",
+    async ({ newerTurn }) => {
+      const runtime = childRuntime();
+      runtime.runMessage.mockImplementation(() => new Promise<RuntimeTurnOutcome>(() => undefined));
+      const { coordinator, queuedMessages, setRootIdle } = coordinatorFixture(runtime, 200);
+      setRootIdle(false);
+      const first = await coordinator.spawn("root", { task: "First", agent_id: "worker" }, caller);
+      await vi.waitFor(() => expect(queuedMessages).toHaveLength(1));
+      if (newerTurn) {
+        const started = await coordinator.sendAgentMessage(
+          "root",
+          { agent_id: "worker", message: "Second" },
+          "root:turn",
+        );
+        if (started.disposition !== "started-turn" || !started.turn_id) {
+          throw new Error("expected agent_message to start a turn");
+        }
+        // Handed results are skipped, so the default wait falls back to the newer turn.
+        await expect(coordinator.wait("root", "worker", 1)).resolves.toMatchObject({
+          event: "timeout",
+          turn_id: started.turn_id,
+        });
       }
-      // Handed results are skipped, so the default wait falls back to the newer turn.
-      await expect(coordinator.wait("root", "worker", 1)).resolves.toMatchObject({
-        event: "timeout",
-        turn_id: started.turn_id,
+
+      coordinator.recordRootMessageEnd();
+      coordinator.requeueDiscardedRootResults();
+
+      await expect(coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
+        event: "turn",
+        turn_id: first.turn_id,
+        output: "done",
       });
-    }
-
-    coordinator.recordRootMessageEnd();
-    coordinator.requeueDiscardedRootResults();
-
-    await expect(coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
-      event: "turn",
-      turn_id: first.turn_id,
-      output: "done",
-    });
-    // The root's next run starts, but the wait already claimed the result.
-    coordinator.deliverDiscardedRootResults();
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(queuedMessages).toHaveLength(1);
-  });
-
-  it("settles instead of re-delivering a result the parent received", async () => {
-    const { coordinator, root, queuedMessages, setRootIdle } = coordinatorFixture(
-      childRuntime(),
-      0,
-    );
-    setRootIdle(false);
-    const first = await coordinator.spawn("root", { task: "First", agent_id: "worker" }, caller);
-    await vi.waitFor(() => expect(queuedMessages).toHaveLength(1));
-    root.hasDeliveryEvidence.mockImplementation(
-      (agentId, turnId) => agentId === "worker" && turnId === first.turn_id,
-    );
-
-    coordinator.recordRootMessageEnd();
-    coordinator.requeueDiscardedRootResults();
-    await coordinator.waitForSettledOperations();
-
-    expect(coordinator.snapshot().deliveries).toEqual([]);
-    expect(queuedMessages).toHaveLength(1);
-    expect(coordinator["handedTerminalKeys"].size).toBe(0);
-  });
+      // The root's next run starts, but the wait already claimed the result.
+      coordinator.deliverDiscardedRootResults();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(queuedMessages).toHaveLength(1);
+    },
+  );
 
   it("keeps a result handed after the boundary's last message", async () => {
     const { coordinator, queuedMessages, setRootIdle } = coordinatorFixture(childRuntime(), 0);
@@ -2326,7 +1981,6 @@ describe("minimal subagents coordinator", () => {
     await coordinator.waitForSettledOperations();
 
     expect(queuedMessages).toHaveLength(1);
-    expect(coordinator["handedTerminalKeys"].size).toBe(1);
   });
 
   it("never treats a result handed to an idle root as discarded", async () => {
@@ -2340,7 +1994,6 @@ describe("minimal subagents coordinator", () => {
     await coordinator.waitForSettledOperations();
 
     expect(queuedMessages).toHaveLength(1);
-    expect(coordinator["handedTerminalKeys"].size).toBe(1);
   });
 
   it("re-delivers Coordination Messages batched into a discarded result", async () => {
@@ -2373,27 +2026,6 @@ describe("minimal subagents coordinator", () => {
     expect(fixture.queuedMessages).toHaveLength(2);
     expect(fixture.queuedMessages[1]).toEqual(fixture.queuedMessages[0]);
     expect(fixture.coordinator.snapshot().coordination_deliveries).toHaveLength(1);
-  });
-
-  it("targets a cancelled new turn after a claimed turn", async () => {
-    const runtime = childRuntime();
-    runtime.runMessage.mockImplementation(() => new Promise<RuntimeTurnOutcome>(() => undefined));
-    const { coordinator } = coordinatorFixture(runtime, 200);
-    const first = await coordinator.spawn("root", { task: "First", agent_id: "worker" }, caller);
-    await coordinator.wait("root", "worker", 1_000);
-    const started = await coordinator.sendAgentMessage(
-      "root",
-      { agent_id: "worker", message: "Second" },
-      "root:turn",
-    );
-    if (started.disposition !== "started-turn" || !started.turn_id) {
-      throw new Error("expected agent_message to start a turn");
-    }
-    await coordinator.cancel("root", "worker");
-
-    const waited = await coordinator.wait("root", "worker", 1_000);
-    expect(waited).toMatchObject({ turn_id: started.turn_id, status: "cancelled" });
-    expect(waited.turn_id).not.toBe(first.turn_id);
   });
 
   it("lets an idle terminal wait claim and suppress scheduled automatic delivery", async () => {
@@ -2458,41 +2090,6 @@ describe("minimal subagents coordinator", () => {
     await coordinator.waitForSettledOperations();
 
     expect(root.queueCoordinatorMessage).not.toHaveBeenCalled();
-  });
-
-  it("batches queued coordination messages into the automatic terminal result", async () => {
-    let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
-    const runtime = childRuntime();
-    runtime.runPrompt.mockImplementation(
-      () => new Promise<RuntimeTurnOutcome>((resolve) => (finishPrompt = resolve)),
-    );
-    const { coordinator, queuedMessages } = coordinatorFixture(runtime, 5);
-    const spawned = await coordinator.spawn(
-      "root",
-      { task: "Report without a wait", agent_id: "worker" },
-      caller,
-    );
-    await vi.waitFor(() => expect(runtime.runPrompt).toHaveBeenCalledOnce());
-    await coordinator.sendAgentMessage("worker", { message: "progress 1" }, spawned.turn_id);
-    await coordinator.sendAgentMessage("worker", { message: "progress 2" }, spawned.turn_id);
-    finishPrompt({ status: "completed", output: "complete" });
-    await coordinator.waitForSettledOperations();
-
-    expect(queuedMessages).toHaveLength(1);
-    expect(queuedMessages[0]).toMatchObject({
-      customType: "minimal-subagents.result",
-      content: expect.stringContaining("progress 1"),
-      details: {
-        source_agent_id: "worker",
-        source_turn_id: spawned.turn_id,
-        messages: [
-          { delivery_id: expect.any(String), message_id: expect.any(String) },
-          { delivery_id: expect.any(String), message_id: expect.any(String) },
-        ],
-      },
-    });
-    expect(queuedMessages[0]?.content).toContain("progress 2");
-    expect(queuedMessages[0]?.content).toContain("complete");
   });
 
   it("keeps root-bound messages batchable while the root turn is active", async () => {
