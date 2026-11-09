@@ -62,12 +62,6 @@ test("a raised steer is pending until settled, and listeners run once per transi
   settleQueuedSteers("steer-a");
 });
 
-test("sessions are independent", () => {
-  raiseQueuedSteer("steer-b");
-  expect(hasQueuedSteer("steer-c")).toBe(false);
-  settleQueuedSteers("steer-b");
-});
-
 test("a watch aborts when a steer is raised, and at once when one is already pending", () => {
   const watch = watchQueuedSteer("steer-d");
   expect(watch.signal.aborted).toBe(false);

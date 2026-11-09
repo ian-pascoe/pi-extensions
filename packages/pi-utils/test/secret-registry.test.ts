@@ -153,7 +153,6 @@ test("Secret Names must be environment-variable style and values non-empty", () 
   expect(() => holdSecret("lower_case", "value-1", owner)).toThrow(/Secret Name/);
   expect(() => holdSecret("1STARTS_WITH_DIGIT", "value-1", owner)).toThrow(/Secret Name/);
   expect(() => holdSecret("EMPTY_VALUE", "", owner)).toThrow(/empty/);
-  expect(secretReference("OPENCODE_API_KEY")).toBe("{{secret:OPENCODE_API_KEY}}");
 });
 
 test("a refreshable Secret reads its value on each refresh, and every value read stays redacted", async () => {

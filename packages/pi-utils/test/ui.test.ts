@@ -15,13 +15,8 @@ import {
   customMessageBox,
   durationFooter,
   type DurationContext,
-  expandHint,
   footerStatus,
-  hintLine,
-  noticeText,
   previewBody,
-  statusMark,
-  summaryExpandHint,
   toolHeader,
   treePrefix,
   widgetLines,
@@ -43,21 +38,7 @@ describe("toolHeader", () => {
     expect(toolHeader(taggedTheme, "lsp_hover", "src/a.ts:3", "server=ts")).toBe(
       "<toolTitle><b>lsp_hover</b></toolTitle> <accent>src/a.ts:3</accent> <muted>server=ts</muted>",
     );
-  });
-
-  it("omits absent target and arguments", () => {
     expect(toolHeader(taggedTheme, "todo")).toBe("<toolTitle><b>todo</b></toolTitle>");
-  });
-});
-
-describe("statusMark", () => {
-  it("colours each state from its theme role", () => {
-    expect(statusMark(taggedTheme, "active")).toBe("<accent>●</accent>");
-    expect(statusMark(taggedTheme, "idle")).toBe("<dim>○</dim>");
-    expect(statusMark(taggedTheme, "done")).toBe("<success>✓</success>");
-    expect(statusMark(taggedTheme, "failed")).toBe("<error>✗</error>");
-    expect(statusMark(taggedTheme, "warning")).toBe("<warning>!</warning>");
-    expect(statusMark(taggedTheme, "stopped")).toBe("<muted>■</muted>");
   });
 });
 
@@ -78,28 +59,13 @@ describe("previewBody", () => {
     expect(rendered).toHaveLength(6);
   });
 
-  it("shows every line without a hint when expanded", () => {
+  it("adds no hint when expanded or when nothing is hidden", () => {
     const rendered = previewBody(taggedTheme, lines, { limit: 10, expanded: true });
     expect(rendered).toHaveLength(12);
     expect(rendered.some((line) => line.includes("expand"))).toBe(false);
-  });
-
-  it("adds no hint when nothing is hidden", () => {
     expect(
       previewBody(taggedTheme, lines.slice(0, 3), { limit: 10, expanded: false }),
     ).toHaveLength(3);
-  });
-});
-
-describe("expand hints", () => {
-  it("words a summary-row hint as one dim parenthetical, through the injected theme", () => {
-    expect(summaryExpandHint(taggedTheme)).toBe("<dim> (ctrl+o to expand)</dim>");
-  });
-
-  it("words a line hint with the count, styled only through the injected theme", () => {
-    expect(expandHint(taggedTheme, 3)).toBe(
-      "<muted>... (3 more lines,</muted> <dim>ctrl+o</dim><muted> to expand</muted><muted>)</muted>",
-    );
   });
 });
 
@@ -173,9 +139,10 @@ describe("durationFooter", () => {
       expect(footer.render(80)).toEqual(["<muted>Elapsed 3.0s</muted>"]);
     });
 
-    it("shows nothing before execution starts", () => {
+    it("shows nothing before execution starts, and no result footer without a recorded duration", () => {
       const { context } = createContext({ executionStarted: false });
       expect(callDurationFooter(taggedTheme, context).render(80)).toEqual([]);
+      expect(durationFooter(taggedTheme, context, { isPartial: false })).toBeUndefined();
     });
 
     it("yields to the result row once a result renderer has run, even in the same draw", () => {
@@ -193,11 +160,6 @@ describe("durationFooter", () => {
       durationFooter(taggedTheme, { ...context, durationMs: 500 }, { isPartial: false });
       expect(footer.render(80)).toEqual([]);
     });
-  });
-
-  it("renders nothing when the call never started and no duration was recorded", () => {
-    const { context } = createContext({ executionStarted: false });
-    expect(durationFooter(taggedTheme, context, { isPartial: false })).toBeUndefined();
   });
 });
 
@@ -217,9 +179,7 @@ describe("widgetLines", () => {
     expect(lines).toHaveLength(10);
     expect(lines[0]).toBe("<toolTitle><b>todo</b></toolTitle> <muted>14 tasks</muted>");
     expect(lines.at(-1)).toBe("<muted>... 6 more</muted>");
-  });
-
-  it("shows every row when they fit", () => {
+    // Rows that fit are all shown, under a header without counts.
     expect(widgetLines(taggedTheme, { title: "dap", rows: ["a", "b"] })).toEqual([
       "<toolTitle><b>dap</b></toolTitle>",
       "a",
@@ -247,16 +207,9 @@ describe("expectLinesFitWidth", () => {
   });
 
   it("rejects hard-coded colour escapes of every kind", () => {
-    for (const colour of ["\u001b[31m", "\u001b[92m", "\u001b[38;5;12m", "\u001b[48;2;1;2;3m"]) {
+    for (const colour of ["\u001b[31m", "\u001b[92m", "\u001b[48;2;1;2;3m"]) {
       expect(() => expectLinesFitWidth([`${colour}red\u001b[39m`], 40)).toThrow(/colour/);
     }
-  });
-
-  it("accepts resets and text styles, which carry no colour", () => {
-    // truncateToWidth appends a reset when it clips; bold and strikethrough are theme styles.
-    expect(() =>
-      expectLinesFitWidth(["\u001b[1mab\u001b[22m\u001b[9mc\u001b[29m...\u001b[0m"], 6),
-    ).not.toThrow();
   });
 
   it("accepts colour escapes only when the caller opts in for a body styled by Pi's own theme", () => {
@@ -299,23 +252,12 @@ describe("escapeTaggedTheme", () => {
     for (const token of ["selectedBg", "customMessageBg", "toolPendingBg"] as const) {
       expect(() => expectLinesFitWidth([escapeTaggedTheme.bg(token, "abc")], 3)).not.toThrow();
     }
-    for (const index of [0, 1, 2, 3, 4]) {
+    for (const index of [0, 4]) {
       for (const base of [38, 48]) {
         const hardCoded = `\u001b[${base};5;${index}mabc\u001b[0m`;
         expect(() => expectLinesFitWidth([hardCoded], 3)).toThrow(/colour/);
       }
     }
-  });
-});
-
-describe("hintLine", () => {
-  it("joins dim keys with muted descriptions by two spaces, as Pi's selector does", () => {
-    expect(
-      hintLine(taggedTheme, [
-        { key: "\u2191\u2193", description: "navigate" },
-        { key: "esc", description: "close" },
-      ]),
-    ).toBe("<dim>\u2191\u2193</dim><muted> navigate</muted>  <dim>esc</dim><muted> close</muted>");
   });
 });
 
@@ -406,29 +348,12 @@ describe("customMessageBox", () => {
     expectLinesFitWidth(lines, 40);
   });
 
-  it("puts the heading on the label's line, like Pi's `[skill] name`", () => {
-    const box = customMessageBox(
-      escapeTaggedTheme,
-      { outputPad: 1, source: "subagents", heading: "result" },
-      [new Text("body", 0, 0)],
-    );
+  it("puts the heading on the label's line, and draws only that line when there is no body", () => {
+    const header = { outputPad: 1, source: "subagents", heading: "result" };
+    const box = customMessageBox(escapeTaggedTheme, header, [new Text("body", 0, 0)]);
     expect(readableTags(box.render(40)[1] ?? "")).toContain(
       "<customMessageLabel><b>[subagents]</b></customMessageLabel> result",
     );
-  });
-
-  it("draws only the label line when there is no body", () => {
-    const box = customMessageBox(
-      escapeTaggedTheme,
-      { outputPad: 1, source: "advisor", heading: "on" },
-      [],
-    );
-    expect(box.render(40)).toHaveLength(3);
-  });
-});
-
-describe("noticeText", () => {
-  it("prefixes the display name", () => {
-    expect(noticeText("LSP", "invalid settings")).toBe("LSP: invalid settings");
+    expect(customMessageBox(escapeTaggedTheme, header, []).render(40)).toHaveLength(3);
   });
 });

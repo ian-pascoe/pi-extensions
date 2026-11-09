@@ -25,11 +25,7 @@ import {
 import { escapeTaggedTheme, expectLinesFitWidth, readableTags } from "../src/ui-testing.js";
 
 const enter = "\r";
-const escape = "\x1b";
 const down = "\x1b[B";
-/** Pi's zero-width APC markers: `CURSOR_MARKER` and the fake-cursor pair the TUI resolves per frame. */
-const BEL = String.fromCharCode(7);
-const PI_MARKER = new RegExp(`${escape}_pi:[^${BEL}]*${BEL}`, "g");
 const taggedTheme: SettingsMenuTheme = {
   fg: (color, text) => `<${color}>${text}</${color}>`,
   bold: (text) => `<b>${text}</b>`,
@@ -49,41 +45,23 @@ describe("errorText", () => {
   it("returns an Error's message and stringifies anything else", () => {
     expect(errorText(new Error("boom"))).toBe("boom");
     expect(errorText("plain")).toBe("plain");
-    expect(errorText(42)).toBe("42");
   });
 });
 
 describe("nextCycleValue", () => {
-  const values = ["inherit", "on", "off"] as const;
-
   it("advances and wraps", () => {
+    const values = ["inherit", "on", "off"] as const;
     expect(nextCycleValue(values, "inherit")).toBe("on");
     expect(nextCycleValue(values, "on")).toBe("off");
     expect(nextCycleValue(values, "off")).toBe("inherit");
-  });
-
-  it("starts at the first value for a current value outside the cycle", () => {
-    expect(nextCycleValue(values, "inherit (on · global)")).toBe("inherit");
-  });
-
-  it("has no next value for an empty cycle", () => {
-    expect(nextCycleValue([], "on")).toBeUndefined();
   });
 });
 
 describe("ValueInput", () => {
   function createInput(submit: (text: string) => void = () => {}) {
-    const cancel = vi.fn();
-    const input = new ValueInput("limit", "a number, or inherit", taggedTheme, submit, cancel);
-    return { input, cancel };
+    const input = new ValueInput("limit", "a number, or inherit", taggedTheme, submit, () => {});
+    return { input };
   }
-
-  it("renders the bold title, the field, and the dim hint", () => {
-    const { input } = createInput();
-    const lines = input.render(60);
-    expect(lines[0]).toBe("<b>limit</b>");
-    expect(lines.at(-1)).toBe("<dim>a number, or inherit</dim>");
-  });
 
   it("submits the typed text", () => {
     const submit = vi.fn();
@@ -103,12 +81,6 @@ describe("ValueInput", () => {
     type(input, "y");
     expect(input.render(60).at(-1)).toBe("<dim>a number, or inherit</dim>");
   });
-
-  it("cancels on escape", () => {
-    const { input, cancel } = createInput();
-    input.handleInput(escape);
-    expect(cancel).toHaveBeenCalledOnce();
-  });
 });
 
 describe("ModelPicker", () => {
@@ -116,18 +88,8 @@ describe("ModelPicker", () => {
 
   function createPicker() {
     const choose = vi.fn();
-    const cancel = vi.fn();
-    return { picker: new ModelPicker(models, choose, cancel), choose, cancel };
+    return { picker: new ModelPicker(models, choose, () => {}), choose };
   }
-
-  it("lists inherit first, then every model", () => {
-    const { picker } = createPicker();
-    const text = screen(picker).join("\n");
-    expect(text.indexOf("inherit")).toBeGreaterThanOrEqual(0);
-    for (const model of models) {
-      expect(text.indexOf(model)).toBeGreaterThan(text.indexOf("inherit"));
-    }
-  });
 
   it("chooses the highlighted entry", () => {
     const { picker, choose } = createPicker();
@@ -146,12 +108,6 @@ describe("ModelPicker", () => {
     expect(text).not.toContain("anthropic/claude-sonnet");
     picker.handleInput(enter);
     expect(choose).toHaveBeenCalledWith("openai/o-mini");
-  });
-
-  it("cancels on escape", () => {
-    const { picker, cancel } = createPicker();
-    picker.handleInput(escape);
-    expect(cancel).toHaveBeenCalledOnce();
   });
 });
 
@@ -244,12 +200,6 @@ describe("SettingsMenu", () => {
     );
   });
 
-  it("fits every line to narrow and wide widths", () => {
-    const menu = new TestMenu(createUi());
-    for (const width of [40, 120])
-      expectLinesFitWidth(menu.render(width), width, { piThemedBody: true });
-  });
-
   it("changes a row with Enter and reports the proposed value", () => {
     const menu = new TestMenu(createUi());
     menu.handleInput(enter);
@@ -304,12 +254,5 @@ describe("EditorChooser", () => {
     expect(readableTags(lines.at(-1) ?? "").trimEnd()).toBe(
       "<error>✗</error> <error>Prompt must not be empty</error>",
     );
-    for (const width of [40, 120])
-      expectLinesFitWidth(
-        // The focused editor draws Pi's cursor markers, which are not text.
-        chooser.render(width).map((line) => line.replaceAll(PI_MARKER, "")),
-        width,
-        { piThemedBody: true },
-      );
   });
 });

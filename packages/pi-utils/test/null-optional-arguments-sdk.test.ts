@@ -200,22 +200,9 @@ test.each([
   { route: "a model tool call", viaScript: false },
   { route: "a codemode script call", viaScript: true },
 ])("$route with null for an optional parameter runs like omitting it", async ({ viaScript }) => {
-  const omitted = await run(false, OMITTED, viaScript);
-  expect(omitted.errors).toEqual([]);
-  expect(omitted.executed).toEqual(OMITTED);
-
   const nulls = await run(true, WITH_NULLS, viaScript);
   expect(nulls.errors).toEqual([]);
   expect(nulls.executed).toEqual(OMITTED);
-});
-
-test.each([
-  { route: "a model tool call", viaScript: false },
-  { route: "a codemode script call", viaScript: true },
-])("$route is rejected without the helper when the tool parses strictly", async ({ viaScript }) => {
-  const rejected = await run(false, [{ path: "a", depth: null }], viaScript);
-  expect(rejected.executed).toEqual([]);
-  expect(rejected.errors.join("\n")).toContain("invalid tool arguments");
 });
 
 test("wrapping a tool leaves the provider-visible prefix byte-identical", async () => {

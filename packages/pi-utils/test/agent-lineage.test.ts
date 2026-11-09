@@ -22,23 +22,14 @@ describe("Agent Lineage Record", () => {
     const { manager, lineage } = childSession();
     manager.appendCustomEntry(AGENT_LINEAGE_ENTRY_TYPE, agentLineageRecord(lineage));
     expect(readAgentLineage(manager.getSessionId(), manager.getBranch())).toEqual(lineage);
-  });
-
-  it("names a nested child's parent agent", () => {
-    const { manager, lineage } = childSession();
     const nested = { ...lineage, agentId: "explorer.reader", parentAgentId: "explorer" };
     manager.appendCustomEntry(AGENT_LINEAGE_ENTRY_TYPE, agentLineageRecord(nested));
     expect(readAgentLineage(manager.getSessionId(), manager.getBranch())).toEqual(nested);
   });
 
-  it("a session without a record has no lineage", () => {
-    const { manager } = childSession();
-    manager.appendCustomEntry("unrelated", { sessionId: manager.getSessionId() });
-    expect(readAgentLineage(manager.getSessionId(), manager.getBranch())).toBeUndefined();
-  });
-
-  it("ignores a record copied from another session, as a fork clone inherits it", () => {
+  it("ignores unrelated entries and a record copied from another session, as a fork clone inherits it", () => {
     const { manager, lineage } = childSession();
+    manager.appendCustomEntry("unrelated", { sessionId: manager.getSessionId() });
     manager.appendCustomEntry(
       AGENT_LINEAGE_ENTRY_TYPE,
       agentLineageRecord({ ...lineage, sessionId: "source-child-session" }),
