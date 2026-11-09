@@ -143,6 +143,26 @@ describe("Trusted Evidence comes from Pi, not the agent", () => {
     expect(harness.entries("pi-guardian-extension-message")).toHaveLength(1);
   });
 
+  it("matches extension messages exactly, not by prefix", async () => {
+    const harness = await createGuardianHarness({
+      guardianSettings: reviewer,
+      after: [
+        (pi) => {
+          // A later input handler consumes the extension's message, so it never arrives.
+          pi.on("input", (event) =>
+            event.source === "extension" ? { action: "handled" as const } : undefined,
+          );
+        },
+      ],
+    });
+    await harness.session.sendUserMessage("Deploy");
+    harness.responses.push(toolCalls(["deploy", { target: "prod" }, "call-1"]), reply("Ok."));
+    harness.guardianReplies.push(assessment("low", "high", "Requested."));
+    await harness.session.prompt("Deploy prod.");
+    expect(blocks(harness, 0)[0]).toMatch(/^Evidence \(TRUSTED, origin: user\):/);
+    expect(harness.entries("pi-guardian-extension-message")).toEqual([]);
+  });
+
   it("forgets an extension message that never arrived once a later run ends", async () => {
     const harness = await createGuardianHarness({
       guardianSettings: reviewer,

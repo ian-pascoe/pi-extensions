@@ -81,6 +81,9 @@ describe("publish-manifest", () => {
       expect(applied.exports).toEqual(sourceManifest.publishConfig.exports);
       expect(applied.publishConfig).toEqual({ access: "public", provenance: true });
       expect(Object.keys(applied)).toEqual(Object.keys(sourceManifest));
+      expect((await readFile(join(packageDirectory, "package.json"), "utf8")).endsWith("}\n")).toBe(
+        true,
+      );
       expect({ ...applied, main: 0, types: 0, exports: 0, publishConfig: 0 }).toEqual({
         ...sourceManifest,
         main: 0,

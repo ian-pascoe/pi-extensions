@@ -48,6 +48,7 @@ const warnings = [
   "",
 ].join("\n");
 
+// Every test below starts a fake language server process, so each sets a 30 s timeout above the 20 s default.
 describe("Post-edit Diagnostics against the changed file's Pre-edit Baseline", () => {
   test("lists only the finding an edit introduced, and counts the existing ones", async () => {
     const session = await startContentSession({ "src/a.ts": warnings });

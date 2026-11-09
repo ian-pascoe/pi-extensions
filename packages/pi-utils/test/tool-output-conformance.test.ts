@@ -93,6 +93,7 @@ afterEach(async () => {
   );
 });
 
+const retired = new Set<string>();
 const text = (value: string) => [{ type: "text" as const, text: value }];
 
 const tools = [
@@ -140,6 +141,16 @@ const tools = [
     },
   }),
   defineTool({
+    name: "retire",
+    label: "Retire",
+    description: "Removes `good` from the tool set the recorder looks up.",
+    parameters: Type.Object({}),
+    async execute() {
+      retired.add("good");
+      return { content: text("ok"), details: undefined };
+    },
+  }),
+  defineTool({
     name: "failing",
     label: "Failing",
     description: "Throws, so its error result has no structuredContent.",
@@ -159,15 +170,12 @@ const breakingRedactor: ExtensionFactory = (pi) => {
 };
 
 /** A real session that plays `turns` as the model's responses, then finishes. */
-async function session(
-  before: ExtensionFactory[],
-  turns: readonly AssistantMessage[],
-  unknownTool?: string,
-) {
+async function session(before: ExtensionFactory[], turns: readonly AssistantMessage[]) {
+  retired.clear();
   let running: AgentSession | undefined;
-  /** What a harness passes: the session's tool definitions, except one the test hides. */
+  /** What a harness passes: the session's tool definitions, minus any a test retired. */
   const lookup = (name: string): ToolOutputDeclaration | undefined =>
-    name === unknownTool ? undefined : running?.getToolDefinition(name);
+    retired.has(name) ? undefined : running?.getToolDefinition(name);
   const recorder = recordToolOutputs(lookup);
   const cwd = await mkdtemp(join(tmpdir(), "pi-utils-tool-output-"));
   directories.push(cwd);
@@ -249,7 +257,7 @@ async function session(
   };
   await session.bindExtensions({ mode: "rpc" });
   await session.prompt("Go");
-  return { recorder };
+  return { session, recorder, lookup };
 }
 
 const script = (...names: string[]) =>
@@ -298,8 +306,18 @@ describe("recordToolOutputs", () => {
     expect(() => recorder.check()).toThrow(/good \(call [^)]*\): structuredContent \/count /);
   });
 
-  test("records a tool the lookup does not know as undeclared", async () => {
-    const { recorder } = await session([], [script("good")], "good");
+  test("judges each result by the tool as it was when the result fired", async () => {
+    const { recorder, lookup } = await session([], [script("good", "retire")]);
+    const good = recorder.outputs.find(({ toolName }) => toolName === "good");
+    expect(good?.declaration?.outputSchema).toBe(Output);
+    // A lookup at the end would no longer find the tool, and would flag its structuredContent.
+    expect(lookup("good")).toBeUndefined();
+    expect(() => recorder.check()).not.toThrow();
+  });
+
+  test("records an absent tool as undeclared", async () => {
+    const { recorder } = await session([], [script("retire", "good")]);
+    // `retire` ran first, so `good` was already gone when its result fired.
     expect(
       recorder.outputs.find(({ toolName }) => toolName === "good")?.declaration,
     ).toBeUndefined();

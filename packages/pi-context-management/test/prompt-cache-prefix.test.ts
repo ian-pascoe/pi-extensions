@@ -112,6 +112,7 @@ function expectPayloadPrefix(
   );
 }
 
+// Runs three prompts, a Rollover compaction, and two provider serializations in one SDK session, so it needs more than the 20 s default.
 it("keeps ordered tool definitions and system prompt stable around model-only Rollover under codemode only", async () => {
   const f = await createSdkHarness([contextManagement, createCodemodeExtension()], {
     settings: SettingsManager.inMemory({

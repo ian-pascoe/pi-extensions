@@ -6,7 +6,11 @@ import { Value } from "typebox/value";
 import { afterEach, describe, expect, test } from "vitest";
 import { DapSessionError, type DapSessionResult } from "../src/dap-session.js";
 import { createDapSessionFiles } from "../src/dap-session-files.js";
-import { DAP_OPERATIONS, type DapOperation } from "../src/dap-tool-contract.js";
+import {
+  DAP_OPERATIONS,
+  DapToolOutputSchemas,
+  type DapOperation,
+} from "../src/dap-tool-contract.js";
 import { createDapToolDefinitions, type DapToolRuntime } from "../src/dap-tool.js";
 
 const tools = createDapToolDefinitions(() => undefined);
@@ -89,6 +93,17 @@ function tool(name: string) {
 }
 
 describe("DAP tool family", () => {
+  test("declares one dap_<operation> tool per operation with its output schema, run sequentially", () => {
+    expect(tools.map(({ name }) => name)).toEqual(
+      DAP_OPERATIONS.map((operation) => `dap_${operation}`),
+    );
+    for (const operation of DAP_OPERATIONS) {
+      const definition = tool(`dap_${operation}`);
+      expect(definition.outputSchema).toBe(DapToolOutputSchemas[operation]);
+      expect(definition.executionMode).toBe("sequential");
+    }
+  });
+
   test("annotates each tool by what it does to the Debuggee", async () => {
     for (const operation of DAP_OPERATIONS) {
       const definition = tool(`dap_${operation}`);
