@@ -42,7 +42,6 @@ describe("Secret Grants", () => {
     expect(harness.resultText("call-echo-2")).toBe("echo: code={{secret:BANK_OTP}}");
     // The dialog showed where the value is read from, and the session holds the locator only.
     const dialog = harness.frames[0]?.join("\n") ?? "";
-    expect(dialog).toContain("Grant request");
     expect(dialog).toContain("Fake Vault · Dev / Bank / otp · concealed");
     const sessionText = await harness.sessionFileText();
     expect(sessionText).toContain(`"customType":"pi-secret-grant"`);

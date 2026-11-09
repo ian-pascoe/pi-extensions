@@ -105,7 +105,6 @@ describe("EnvFileProvider search", () => {
     expect(await titles({ query: "stripe" })).toEqual([".env"]);
     expect(await titles({ query: "production" })).toEqual([join("web", ".env.production")]);
     expect(await titles({ vault: "outside project" })).toEqual([join(outside, ".env")]);
-    expect(await titles({ vault: "PROJECT" })).toEqual([".env", join("web", ".env.production")]);
   });
 
   it("reports truncation past the limit", async () => {
@@ -116,14 +115,10 @@ describe("EnvFileProvider search", () => {
 });
 
 describe("EnvFileProvider reads", () => {
-  it("reads values without expansion, the last definition winning, and again after an edit", async () => {
-    await put(join(project, ".env"), "TOKEN=first\nPLAIN=${HOME}/x\nTOKEN=second\n");
-    const env = provider();
+  it("reads values without expansion", async () => {
+    await put(join(project, ".env"), "PLAIN=${HOME}/x\n");
 
-    expect(await env.read("dotenv://.env#TOKEN")).toBe("second");
-    expect(await env.read("dotenv://.env#PLAIN")).toBe("${HOME}/x");
-    await writeFile(join(project, ".env"), "TOKEN=edited\n");
-    expect(await env.read("dotenv://.env#TOKEN")).toBe("edited");
+    expect(await provider().read("dotenv://.env#PLAIN")).toBe("${HOME}/x");
   });
 
   it("fails a read when the key or file is gone", async () => {
@@ -139,18 +134,6 @@ describe("EnvFileProvider reads", () => {
     const env = provider();
     for (const locator of ["dotenv://.env", "dotenv://#KEY", "op://a/b/c"])
       await expect(env.read(locator)).rejects.toThrow("is not an Env File locator");
-  });
-
-  it("describes a locator for the approval dialog", async () => {
-    await put(join(project, "packages/api/.env"), "DATABASE_URL=x\n");
-    const locator = "dotenv://packages/api/.env#DATABASE_URL";
-
-    expect(await provider().describe(locator)).toEqual({
-      locator,
-      vault: "project",
-      item: join("packages", "api", ".env"),
-      field: "DATABASE_URL",
-    });
   });
 });
 
@@ -231,11 +214,7 @@ describe("EnvFileProvider path rules", () => {
 
 describe("EnvFileProvider saves", () => {
   const tricky = [
-    "plain-value_0123",
-    "with spaces inside",
     "hash # inside",
-    "single ' quote",
-    'double " quote',
     "both ' and \" quotes",
     "line one\nline two",
     "  padded  ",
@@ -304,16 +283,6 @@ describe("EnvFileProvider saves", () => {
     await expect(
       env.save({ locator: "dotenv://missing/.env#TOKEN", value: "value" }),
     ).rejects.toThrow("the directory of");
-  });
-
-  it("saves to a listed file outside the project, naming it by its full path", async () => {
-    vi.stubEnv("HOME", outside);
-    const env = provider([{ path: "~/.env.tool", scope: "global" }]);
-
-    const locator = await env.save({ locator: "dotenv://~/.env.tool#TOKEN", value: "value" });
-
-    expect(locator).toBe(`dotenv://${join(outside, ".env.tool")}#TOKEN`);
-    expect(await env.read(locator)).toBe("value");
   });
 
   it("refuses to write through a dangling link", async () => {

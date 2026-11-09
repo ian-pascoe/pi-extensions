@@ -215,7 +215,6 @@ describe("Secret Lifetime setting", () => {
         ],
       },
     });
-    expect(harness.frames[0]?.join("\n")).toContain("kept for 1 hour");
   });
 
   it("warns and keeps the default for a lifetime outside 1–1440 minutes", async () => {

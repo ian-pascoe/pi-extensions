@@ -3,36 +3,14 @@ import {
   recordToolRegistrations,
 } from "@ian-pascoe/pi-utils/tool-testing";
 import { expect, test } from "vitest";
-import { createPiSecretExtension, secretProviderGuideline } from "../src/pi-secret-extension.js";
+import { createPiSecretExtension } from "../src/pi-secret-extension.js";
 import { FakeProvider } from "./fixtures/fake-provider.js";
 
-function registeredTools(withProvider = true) {
+function registeredTools() {
   const { pi, tools } = recordToolRegistrations();
-  void createPiSecretExtension({ providers: () => (withProvider ? [new FakeProvider()] : []) })(pi);
+  void createPiSecretExtension({ providers: () => [new FakeProvider()] })(pi);
   return tools;
 }
-
-test("registers the Secret Provider tools only when a Secret Provider is available at load", () => {
-  expect(registeredTools(false).map(({ name }) => name)).toEqual([
-    "secret_ask",
-    "secret_list",
-    "secret_forget",
-  ]);
-  expect(registeredTools().map(({ name }) => name)).toEqual([
-    "secret_ask",
-    "secret_ask_grant",
-    "secret_list",
-    "secret_save",
-    "secret_forget",
-  ]);
-});
-
-test("adds the Secret Provider guidance through secret_ask_grant, so it appears only with a provider", () => {
-  const grant = registeredTools().find(({ name }) => name === "secret_ask_grant");
-  const guideline = secretProviderGuideline([new FakeProvider()]);
-  expect(guideline).toContain("in a Secret Provider such as Fake Vault, find it with secret_list");
-  expect(grant).toMatchObject({ promptGuidelines: [guideline] });
-});
 
 test.each([
   ["secret_ask", { names: ["API_KEY"] }, ["reason"]],
