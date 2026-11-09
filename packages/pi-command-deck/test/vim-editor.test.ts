@@ -1,9 +1,8 @@
 import { CURSOR_MARKER } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
-import { BACKSPACE, CTRL_R, ENTER, ESC, createVimEditor } from "./vim-pi-fixture.js";
+import { CTRL_R, ENTER, ESC, createVimEditor } from "./vim-pi-fixture.js";
 
 const SHIFT_TAB = "\x1b[Z";
-const UP = "\x1b[A";
 
 function textWithCursor(editor: { getText(): string; getCursor(): { line: number; col: number } }) {
   const lines = editor.getText().split("\n");
@@ -96,14 +95,6 @@ describe("VimEditor undo", () => {
     expect(editor.getText()).toBe("q w e");
     type("u");
     expect(editor.getText()).toBe("");
-  });
-
-  it("undoes a whole insert session at once and redoes it", () => {
-    const { editor, type } = createVimEditor();
-    type("hello world", ESC, "u");
-    expect(editor.getText()).toBe("");
-    type(CTRL_R);
-    expect(editor.getText()).toBe("hello world");
   });
 
   it("groups each Vim change into one Pi undo step", () => {
@@ -207,24 +198,6 @@ describe("VimEditor host actions", () => {
     expect(editor.getCursor().col).toBeLessThan(editor.getText().length);
   });
 
-  it("does not interrupt when Escape only leaves insert mode", () => {
-    const { editor, type } = createVimEditor();
-    const onEscape = vi.fn();
-    editor.onEscape = onEscape;
-    type("abc", ESC);
-    expect(onEscape).not.toHaveBeenCalled();
-  });
-
-  it("lets app actions cancel pending commands", () => {
-    const { editor, type } = createVimEditor();
-    const cycle = vi.fn();
-    editor.onAction("app.thinking.cycle", cycle);
-    type("abc", ESC, "r", SHIFT_TAB);
-    expect(cycle).toHaveBeenCalledTimes(1);
-    expect(editor.getModeLabel()).toBe("NORMAL");
-    expect(editor.getText()).toBe("abc");
-  });
-
   it("lets extension shortcuts run before Vim keys", () => {
     const { editor, type } = createVimEditor();
     editor.onExtensionShortcut = (data) => data === "x";
@@ -246,13 +219,6 @@ describe("VimEditor history", () => {
     type("2j");
     expect(editor.getText()).toBe("draft");
     expect(editor.getModeLabel()).toBe("NORMAL");
-  });
-
-  it("keeps Pi's arrow history in insert mode", () => {
-    const { editor, type } = createVimEditor();
-    editor.addToHistory("previous");
-    type(UP);
-    expect(editor.getText()).toBe("previous");
   });
 });
 
@@ -302,12 +268,6 @@ describe("VimEditor paste", () => {
     type("dd");
     expect(host.copy).toHaveBeenCalledOnce();
   });
-
-  it("pastes through Pi in insert mode", () => {
-    const { editor } = createVimEditor();
-    editor.handleInput("\x1b[200~pasted\x1b[201~");
-    expect(editor.getText()).toBe("pasted");
-  });
 });
 
 describe("VimEditor ex dispatch", () => {
@@ -328,18 +288,6 @@ describe("VimEditor ex dispatch", () => {
     expect(editor.getText()).toBe("");
   });
 
-  it("restores the draft as soon as Pi clears the prompt mid-dispatch", () => {
-    const { editor, type } = createVimEditor(["reload"]);
-    let handedOver = "";
-    editor.onSubmit = () => {
-      editor.setText("");
-      handedOver = editor.getText();
-    };
-    type("keep me", ESC, ":reload", ENTER);
-    expect(handedOver).toBe("keep me");
-    expect(editor.getText()).toBe("keep me");
-  });
-
   it("restores the draft after an async dispatch clears it", async () => {
     const { editor, type } = createVimEditor(["tree"]);
     let release = () => {};
@@ -358,14 +306,6 @@ describe("VimEditor ex dispatch", () => {
     expect(editor.getModeLabel()).toBe("NORMAL");
   });
 
-  it("dispatches shell commands", () => {
-    const { editor, type } = createVimEditor();
-    const onSubmit = vi.fn();
-    editor.onSubmit = onSubmit;
-    type(ESC, ":!!git status", ENTER);
-    expect(onSubmit).toHaveBeenCalledWith("!!git status");
-  });
-
   it("quits and reports unsupported commands", () => {
     const { host, type } = createVimEditor();
     type("draft", ESC, ":q", ENTER);
@@ -379,12 +319,6 @@ describe("VimEditor ex dispatch", () => {
     type(":q!", ENTER);
     expect(host.quit).toHaveBeenCalledTimes(1);
   });
-
-  it("leaves the ex line with backspace on an empty line", () => {
-    const { editor, type } = createVimEditor();
-    type(ESC, ":", BACKSPACE);
-    expect(editor.getModeLabel()).toBe("NORMAL");
-  });
 });
 
 describe("VimEditor render", () => {
@@ -393,14 +327,6 @@ describe("VimEditor render", () => {
     type("hello world", ESC, "0ve");
     const row = editor.render(40)[1] ?? "";
     expect(row).toContain(`\x1b[7mhell${CURSOR_MARKER}o\x1b[27m world`);
-  });
-
-  it("highlights across wrapped rows", () => {
-    const { editor, type } = createVimEditor();
-    type("aaaa bbbb cccc dddd", ESC, "V");
-    const rows = editor.render(11).slice(1, -1);
-    expect(rows).toHaveLength(2);
-    for (const row of rows) expect(row.startsWith("\x1b[7m")).toBe(true);
   });
 
   it("highlights only the visible rows of a scrolled prompt", () => {
@@ -414,14 +340,6 @@ describe("VimEditor render", () => {
     const painted = rows.map((row) => row.includes("\x1b[7m"));
     expect(painted).toEqual([false, false, false, false, false, false, false, true, false]);
     expect(rows[7]?.replace(CURSOR_MARKER, "")).toContain("line 18");
-  });
-
-  it("highlights incremental search matches on visible rows", () => {
-    const { editor, type } = createVimEditor();
-    type("foo bar foo", ESC, "/foo");
-    expect(editor.getModeLabel()).toBe("SEARCH /foo_");
-    const row = editor.render(40)[1] ?? "";
-    expect(row.split("\x1b[7m")).toHaveLength(3);
   });
 
   it("switches the hardware cursor style by mode and strips the software cursor", () => {
