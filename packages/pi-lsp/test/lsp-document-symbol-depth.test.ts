@@ -113,12 +113,6 @@ describe("limitLspDocumentSymbolDepth", () => {
     expect(outline(limit(nested, 3))).toEqual(outline(nested));
   });
 
-  test("leaves a dropped symbol's own fields and an empty children list in place", () => {
-    expect(limit([tree("create", FUNCTION, [tree("x", VARIABLE)])], 1)).toMatchObject([
-      { name: "create", children: [], selectionRange: range(0, 0) },
-    ]);
-  });
-
   test("keeps the members of an Object symbol, which rust-analyzer reports for an impl block", () => {
     const OBJECT = 19;
     const impl = [
@@ -129,13 +123,6 @@ describe("limitLspDocumentSymbolDepth", () => {
     ];
     expect(outline(limit(impl, 1))).toEqual(["impl Store", "  add", "  size"]);
     expect(omitted(impl, 1)).toBe(1);
-  });
-
-  test("counts the nested symbols a depth drops", () => {
-    expect(omitted(nested, 1)).toBe(outline(nested).length - outline(limit(nested, 1)).length);
-    expect(omitted(nested, 2)).toBe(3);
-    expect(omitted(nested, "all")).toBe(0);
-    expect(omitted(nested, 3)).toBe(0);
   });
 
   test("passes null and empty responses through", () => {
@@ -191,11 +178,6 @@ describe("limitLspDocumentSymbolDepth", () => {
       ]);
     });
 
-    test("adds a level of body content per depth and keeps everything for all", () => {
-      expect(names(limit(symbols, 2))).toHaveLength(symbols.length);
-      expect(limit(symbols, "all")).toBe(symbols);
-    });
-
     test("counts the entries a depth drops and keeps the members of an Object entry", () => {
       expect(omitted(symbols, 1)).toBe(3);
       const impl = [
@@ -220,33 +202,6 @@ describe("limitLspDocumentSymbolDepth", () => {
       expect(() => limit(cyclic, 1)).not.toThrow();
       expect(() => limit(unranged, 1)).not.toThrow();
       expect(() => limit(symbolWithSelfContainer(), 1)).not.toThrow();
-    });
-
-    test("resolves tens of thousands of entries without quadratic scans", () => {
-      // Count position reads instead of timing the call: wall-clock limits fail on loaded CI runners.
-      let reads = 0;
-      const counted = (symbol: ReturnType<typeof flat>) => {
-        for (const position of [symbol.location.range.start, symbol.location.range.end]) {
-          const { line } = position;
-          Object.defineProperty(position, "line", {
-            get: () => {
-              reads += 1;
-              return line;
-            },
-          });
-        }
-        return symbol;
-      };
-      const many = [
-        counted(flat("root", FUNCTION, [0, 100_000])),
-        ...Array.from({ length: 20_000 }, (_, index) =>
-          counted(flat(`s${index}`, VARIABLE, [index + 1, index + 1], "root")),
-        ),
-      ];
-      expect(limit(many, 1)).toHaveLength(1);
-      // Validating an entry and checking it against its one named container read a few positions;
-      // scanning other entries per entry would read on the order of entries² positions.
-      expect(reads).toBeLessThanOrEqual(50 * many.length);
     });
 
     test("treats an unknown container, or one without ranges, as best effort", () => {

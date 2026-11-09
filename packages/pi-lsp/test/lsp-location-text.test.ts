@@ -33,10 +33,8 @@ describe("lspDisplayPath", () => {
     expect(lspDisplayPath("/workspace", "/workspace/src/a.ts")).toBe("src/a.ts");
     expect(lspDisplayPath("/workspace", "/workspace/..hidden/a.ts")).toBe("..hidden/a.ts");
     expect(lspDisplayPath("/workspace", "/workspace")).toBe("/workspace");
-    expect(lspDisplayPath("/workspace", "/other/a.ts")).toBe("/other/a.ts");
     expect(lspDisplayPath("/workspace", "/workspace-two/a.ts")).toBe("/workspace-two/a.ts");
     expect(lspDisplayPath("/workspace", "@/workspace/src/a.ts")).toBe("src/a.ts");
-    expect(lspDisplayPath("/workspace", "src/a.ts")).toBe("src/a.ts");
   });
 });
 

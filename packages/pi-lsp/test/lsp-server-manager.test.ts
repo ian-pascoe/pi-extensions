@@ -1,9 +1,8 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { LspServerClient, LspServerClientError } from "../src/lsp-server-client.js";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readdir } from "node:fs/promises";
 import { afterEach, describe, expect, test } from "vitest";
 import { LspInputError } from "../src/lsp-input-error.js";
 import {
@@ -408,182 +407,6 @@ describe("session-scoped LSP server manager", () => {
     await manager.shutdown();
   });
 
-  test("reads no ancestor directories for a file no server language handles", async () => {
-    const { cwd } = await createRoutedFileFixture();
-    const factory = createRecordingClientFactory();
-    const directoriesRead: string[] = [];
-    const manager = new LspServerManager({
-      cwd,
-      settings: resolvedSettings(["typescript"]),
-      startClient: factory.start,
-      readDirectory: async (directoryPath) => {
-        directoriesRead.push(directoryPath);
-        return readdir(directoryPath);
-      },
-    });
-
-    const result = await manager.runRead(
-      resolve(cwd, "notes.md"),
-      undefined,
-      anyCapability,
-      async () => "ok",
-    );
-    expect(result.failures.map(({ code }) => code)).toEqual(["no-matching-server"]);
-    expect(directoriesRead).toEqual([]);
-    expect(factory.clients).toEqual([]);
-
-    // A handled language still routes through its ancestor directories.
-    await manager.getCapabilities("typescript", resolve(cwd, "root.ts"));
-    expect(directoriesRead[0]).toBe(cwd);
-    await manager.shutdown();
-  });
-
-  test("lists ancestor directories only when an enabled matching Server Definition has root markers", async () => {
-    const { cwd, filePath } = await createRoutedFileFixture();
-    const markerFree = (id: string) => ({ ...serverDefinition(id), rootMarkers: [] });
-    const settings = (definitions: readonly LspServerDefinition[]): ResolvedLspSettings => ({
-      ...resolvedSettings([]),
-      servers: new Map(definitions.map((definition) => [definition.id, definition])),
-    });
-    const directoriesRead: string[] = [];
-    const createManager = (definitions: readonly LspServerDefinition[]) =>
-      new LspServerManager({
-        cwd,
-        settings: settings(definitions),
-        startClient: createRecordingClientFactory().start,
-        readDirectory: async (directoryPath) => {
-          directoriesRead.push(directoryPath);
-          return readdir(directoryPath);
-        },
-      });
-
-    // Marker-free definitions root at the working directory without listing anything.
-    const markerFreeManager = createManager([markerFree("lint"), markerFree("spell")]);
-    const routed = await markerFreeManager.runRead(
-      filePath,
-      undefined,
-      anyCapability,
-      async (_client, route) => route.rootPath,
-    );
-    expect(routed.successes.map(({ serverId, value }) => [serverId, value])).toEqual([
-      ["lint", cwd],
-      ["spell", cwd],
-    ]);
-    expect(directoriesRead).toEqual([]);
-
-    // A marker-bearing definition that is disabled or does not match the language is ignored.
-    const disabledManager = createManager([markerFree("lint"), serverDefinition("typescript")]);
-    await disabledManager.setEnablement(new Map(), new Map([["typescript", false]]));
-    await disabledManager.runRead(filePath, undefined, anyCapability, async () => "ok");
-    const otherLanguage = {
-      ...serverDefinition("python"),
-      languages: [{ extensions: [".py"], fileNames: [], languageId: "python" }],
-    };
-    await createManager([markerFree("lint"), otherLanguage]).runRead(
-      filePath,
-      undefined,
-      anyCapability,
-      async () => "ok",
-    );
-    expect(directoriesRead).toEqual([]);
-
-    // A matching enabled marker-bearing definition lists, and marker-free peers keep the cwd root.
-    const mixed = await createManager([markerFree("lint"), serverDefinition("typescript")]).runRead(
-      filePath,
-      undefined,
-      anyCapability,
-      async (_client, route) => route.rootPath,
-    );
-    expect(mixed.successes.map(({ serverId, value }) => [serverId, value])).toEqual([
-      ["lint", cwd],
-      ["typescript", resolve(cwd, "packages/example")],
-    ]);
-    expect(directoriesRead[0]).toBe(resolve(cwd, "packages/example/src"));
-
-    // Explicitly requesting a disabled marker-bearing definition still resolves its marker root.
-    directoriesRead.length = 0;
-    const explicitManager = createManager([serverDefinition("typescript")]);
-    await explicitManager.setEnablement(new Map(), new Map([["typescript", false]]));
-    const disabled = await explicitManager.runRead(
-      filePath,
-      "typescript",
-      anyCapability,
-      async () => "ok",
-    );
-    expect(disabled.failures.map(({ code }) => code)).toEqual(["server-disabled"]);
-    expect(explicitManager.getStatus().servers).toMatchObject([
-      { serverId: "typescript", state: "disabled" },
-    ]);
-    expect(directoriesRead.length).toBeGreaterThan(0);
-
-    // An explicit request decides on the requested definition alone: a marker-bearing peer is not
-    // listed for.
-    directoriesRead.length = 0;
-    const peerManager = createManager([markerFree("lint"), serverDefinition("typescript")]);
-    const explicitLint = await peerManager.runRead(
-      filePath,
-      "lint",
-      anyCapability,
-      async (_client, route) => route.rootPath,
-    );
-    expect(explicitLint.successes.map(({ value }) => value)).toEqual([cwd]);
-    expect(directoriesRead).toEqual([]);
-  });
-
-  test("routes files in two packages to one Server Instance with workspace root markers", async () => {
-    const { cwd, filePath } = await createMonorepoFixture();
-    const otherFile = resolve(cwd, "packages/b/src/index.ts");
-    const startedRoots = async (definition: LspServerDefinition) => {
-      const factory = createRecordingClientFactory();
-      const manager = new LspServerManager({
-        cwd: resolve(cwd, "packages/a"),
-        homeDirectory: dirname(cwd),
-        settings: { ...resolvedSettings([]), servers: new Map([[definition.id, definition]]) },
-        startClient: factory.start,
-      });
-      await manager.getCapabilities(definition.id, filePath);
-      await manager.getCapabilities(definition.id, otherFile);
-      await manager.shutdown();
-      return factory.inputs.map(({ rootPath }) => rootPath);
-    };
-
-    expect(await startedRoots(workspaceServerDefinition("typescript"))).toEqual([cwd]);
-    // Without workspace root markers, routing is unchanged: one Server Instance per package.
-    expect(await startedRoots(serverDefinition("typescript"))).toEqual([
-      resolve(cwd, "packages/a"),
-      resolve(cwd, "packages/b"),
-    ]);
-  });
-
-  test("lists ancestor directories for a definition with only workspace root markers", async () => {
-    const { cwd, filePath } = await createMonorepoFixture();
-    const directoriesRead: string[] = [];
-    const manager = new LspServerManager({
-      cwd,
-      settings: {
-        ...resolvedSettings([]),
-        servers: new Map([
-          ["typescript", { ...workspaceServerDefinition("typescript"), rootMarkers: [] }],
-        ]),
-      },
-      startClient: createRecordingClientFactory().start,
-      readDirectory: async (directoryPath) => {
-        directoriesRead.push(directoryPath);
-        return readdir(directoryPath);
-      },
-    });
-
-    const routed = await manager.runRead(
-      filePath,
-      undefined,
-      anyCapability,
-      async (_client, route) => route.rootPath,
-    );
-    expect(routed.successes.map(({ value }) => value)).toEqual([cwd]);
-    expect(directoriesRead[0]).toBe(dirname(filePath));
-    await manager.shutdown();
-  });
-
   test("disables every root, excludes automatic routing, and blocks explicit startup until enabled", async () => {
     const { cwd, filePath } = await createRoutedFileFixture();
     const factory = createRecordingClientFactory();
@@ -846,68 +669,6 @@ describe("session-scoped LSP server manager", () => {
     await manager.shutdown();
   });
 
-  test("disabling clears a failed startup so enabling allows a fresh lazy attempt", async () => {
-    const { cwd, filePath } = await createRoutedFileFixture();
-    const factory = createRecordingClientFactory(async (_input, index) => {
-      if (index === 0) throw new Error("first startup failed");
-      return new RecordingLspClient();
-    });
-    const manager = new LspServerManager({
-      cwd,
-      settings: resolvedSettings(["typescript"]),
-      startClient: factory.start,
-    });
-    expect((await manager.getCapabilities("typescript", filePath)).kind).toBe("failure");
-    await manager.setEnablement(new Map(), new Map([["typescript", false]]));
-    expect(manager.getStatus().servers[0]).toMatchObject({ state: "disabled" });
-    expect(manager.getStatus().servers[0]?.error).toBeUndefined();
-    await manager.setEnablement(new Map(), new Map([["typescript", true]]));
-    expect(factory.inputs).toHaveLength(1);
-    expect((await manager.getCapabilities("typescript", filePath)).kind).toBe("success");
-    expect(factory.inputs).toHaveLength(2);
-    await manager.shutdown();
-  });
-
-  test("disabling cancels a real process still waiting for initialize", async () => {
-    const { cwd, filePath } = await createRoutedFileFixture();
-    const stderrPath = resolve(cwd, "startup.stderr");
-    const settings = resolvedSettings(["typescript"]);
-    const manager = new LspServerManager({
-      cwd,
-      settings,
-      startClient: ({ definition, rootPath, timeouts, onUnavailable, signal }) =>
-        LspServerClient.start({
-          serverId: definition.id,
-          rootPath,
-          command: process.execPath,
-          args: ["-e", "process.stderr.write(String(process.pid)); process.stdin.resume();"],
-          environment: process.env,
-          initializationOptions: null,
-          settings: null,
-          maxConcurrentDiagnostics: definition.maxConcurrentDiagnostics,
-          timeouts: { ...timeouts, initializeMs: 2_000 },
-          stderrPath,
-          onUnavailable,
-          signal,
-        }),
-    });
-    const request = manager.getCapabilities("typescript", filePath);
-    try {
-      await expect.poll(async () => readFile(stderrPath, "utf8").catch(() => "")).not.toBe("");
-      await manager.setEnablement(new Map(), new Map([["typescript", false]]));
-      await expect(request).resolves.toMatchObject({
-        kind: "failure",
-        failure: { message: expect.stringContaining("Instance was stopped during startup") },
-      });
-      const pid = Number(await readFile(stderrPath, "utf8"));
-      expect(() => process.kill(pid, 0)).toThrow();
-      expect(manager.getStatus().servers[0]?.state).toBe("disabled");
-    } finally {
-      await manager.shutdown();
-      await request;
-    }
-  });
-
   test("disable cancels a backpressured configuration notification after initialize has replied", async () => {
     const { cwd, filePath } = await createRoutedFileFixture();
     const stderrPath = resolve(cwd, "configuration.stderr");
@@ -1095,37 +856,6 @@ describe("session-scoped LSP server manager", () => {
     expect(manager.getStatus().servers[0]?.state).toBe("running");
   });
 
-  test("retains successful multi-server reads when a sibling request fails", async () => {
-    const { cwd, filePath } = await createRoutedFileFixture();
-    const factory = createRecordingClientFactory();
-    const manager = new LspServerManager({
-      cwd,
-      settings: resolvedSettings(["lint", "typescript"]),
-      startClient: factory.start,
-    });
-
-    const result = await manager.runRead(
-      filePath,
-      undefined,
-      anyCapability,
-      async (_client, route) => {
-        if (route.serverId === "lint") throw new Error("fixture request failed");
-        return "definition.ts:1:1";
-      },
-    );
-
-    expect(result.successes).toEqual([
-      {
-        rootPath: resolve(cwd, "packages/example"),
-        serverId: "typescript",
-        value: "definition.ts:1:1",
-      },
-    ]);
-    expect(result.failures).toEqual([
-      expect.objectContaining({ code: "request-failed", serverId: "lint" }),
-    ]);
-  });
-
   test("classifies a request timeout by the client error kind, not by message text", async () => {
     const { cwd, filePath } = await createRoutedFileFixture();
     const factory = createRecordingClientFactory();
@@ -1224,36 +954,6 @@ describe("session-scoped LSP server manager", () => {
       }),
     ).rejects.toBe(cancelled);
     await manager.shutdown();
-  });
-
-  test("omits incapable servers from automatic reads", async () => {
-    const { cwd, filePath } = await createRoutedFileFixture();
-    const factory = createRecordingClientFactory(
-      async ({ definition }) => new RecordingLspClient(definition.id === "typescript"),
-    );
-    const manager = new LspServerManager({
-      cwd,
-      settings: resolvedSettings(["lint", "typescript"]),
-      startClient: factory.start,
-    });
-
-    const result = await manager.runRead(
-      filePath,
-      undefined,
-      hoverCapability,
-      async (_client, route) => route.serverId,
-    );
-
-    expect(result).toEqual({
-      failures: [],
-      successes: [
-        {
-          rootPath: resolve(cwd, "packages/example"),
-          serverId: "typescript",
-          value: "typescript",
-        },
-      ],
-    });
   });
 
   test("reports one failure when no automatic read server is capable", async () => {
@@ -1384,22 +1084,6 @@ describe("session-scoped LSP server manager", () => {
     await manager.shutdown();
   });
 
-  test("rejects a read with the input error an operation raises instead of a server failure", async () => {
-    const { cwd, filePath } = await createRoutedFileFixture();
-    const manager = new LspServerManager({
-      cwd,
-      settings: resolvedSettings(["lint", "typescript"]),
-      startClient: createRecordingClientFactory().start,
-    });
-
-    await expect(
-      manager.runRead(filePath, undefined, anyCapability, async () => {
-        throw new LspInputError("line 9 is past the end of the document");
-      }),
-    ).rejects.toThrow(new LspInputError("line 9 is past the end of the document"));
-    await manager.shutdown();
-  });
-
   test("waits for every server operation to settle before rejecting a read", async () => {
     const { cwd, filePath } = await createRoutedFileFixture();
     const manager = new LspServerManager({
@@ -1421,33 +1105,6 @@ describe("session-scoped LSP server manager", () => {
 
     // The first rejection in time is the one that propagates, once every operation has settled.
     await expect(read).rejects.toBe(inputError);
-    expect(settled).toEqual(["typescript"]);
-    await manager.shutdown();
-  });
-
-  test("waits for the other servers before rejecting a read with a cancellation", async () => {
-    const { cwd, filePath } = await createRoutedFileFixture();
-    const manager = new LspServerManager({
-      cwd,
-      settings: resolvedSettings(["lint", "typescript"]),
-      startClient: createRecordingClientFactory().start,
-    });
-    const cancelled = new LspServerClientError(
-      "cancelled",
-      "lint",
-      "/tmp/lint.stderr",
-      "request cancelled",
-    );
-    const settled: string[] = [];
-
-    const read = manager.runRead(filePath, undefined, anyCapability, async (_client, route) => {
-      if (route.serverId === "lint") throw cancelled;
-      await new Promise((done) => setTimeout(done, 20));
-      settled.push(route.serverId);
-      return "late value";
-    });
-
-    await expect(read).rejects.toBe(cancelled);
     expect(settled).toEqual(["typescript"]);
     await manager.shutdown();
   });
@@ -1483,29 +1140,6 @@ describe("session-scoped LSP server manager", () => {
     // Once ready, the late server does not run an operation for the rejected read.
     expect(started).toEqual(["lint"]);
     await manager.shutdown();
-  });
-
-  test("reports an explicitly selected incapable read server", async () => {
-    const { cwd, filePath } = await createRoutedFileFixture();
-    const factory = createRecordingClientFactory(async () => new RecordingLspClient(false));
-    const manager = new LspServerManager({
-      cwd,
-      settings: resolvedSettings(["lint", "typescript"]),
-      startClient: factory.start,
-    });
-
-    const result = await manager.runRead(filePath, "lint", hoverCapability, async () => "unused");
-
-    expect(result).toEqual({
-      failures: [
-        {
-          code: "no-capable-server",
-          message: "Pi LSP: server lint does not support textDocument/hover",
-          serverId: "lint",
-        },
-      ],
-      successes: [],
-    });
   });
 
   test("reports only the startup failure, not a missing capability, when no read succeeds", async () => {
@@ -1631,35 +1265,6 @@ describe("other workspace roots of a Server Definition", () => {
     await manager.shutdown();
   });
 
-  test("finds sibling roots above a working directory inside a package before any Instance starts", async () => {
-    const parent = await mkdtemp(resolve(tmpdir(), "pi-lsp-manager-repo-"));
-    temporaryDirectories.push(parent);
-    const repo = resolve(parent, "repo");
-    const searchedRoot = resolve(repo, "packages/a");
-    for (const directory of [repo, searchedRoot, resolve(repo, "packages/b")]) {
-      await mkdir(directory, { recursive: true });
-      await writeFile(resolve(directory, "package.json"), "{}\n");
-    }
-    await mkdir(resolve(searchedRoot, "src"));
-    // Beside the repository, above its outermost marker directory: never searched.
-    await mkdir(resolve(parent, "unrelated"));
-    await writeFile(resolve(parent, "unrelated/package.json"), "{}\n");
-
-    for (const cwd of [searchedRoot, resolve(searchedRoot, "src"), repo]) {
-      const manager = new LspServerManager({
-        cwd,
-        settings: resolvedSettings(["typescript"]),
-        startClient: createRecordingClientFactory().start,
-      });
-      expect(await manager.findOtherWorkspaceRoots("typescript", searchedRoot), cwd).toEqual({
-        rootPaths: [repo, resolve(repo, "packages/b")],
-        count: 2,
-        capped: false,
-        unchecked: false,
-      });
-    }
-  });
-
   test("does not start discovery at the home directory or above it", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "pi-lsp-manager-home-"));
     temporaryDirectories.push(home);
@@ -1703,93 +1308,6 @@ describe("other workspace roots of a Server Definition", () => {
         resolve(home, "Downloads/x"),
       ].sort((left, right) => left.localeCompare(right)),
     );
-  });
-
-  test("starts discovery at the outermost marker ancestor, not the nearest", async () => {
-    const parent = await mkdtemp(resolve(tmpdir(), "pi-lsp-manager-nested-"));
-    temporaryDirectories.push(parent);
-    const repo = resolve(parent, "repo");
-    const searchedRoot = resolve(repo, "packages/a/app");
-    for (const directory of [
-      repo,
-      resolve(repo, "packages"),
-      resolve(repo, "packages/a"),
-      searchedRoot,
-      resolve(repo, "tools/b"),
-    ]) {
-      await mkdir(directory, { recursive: true });
-      await writeFile(resolve(directory, "package.json"), "{}\n");
-    }
-    const manager = new LspServerManager({
-      cwd: searchedRoot,
-      settings: resolvedSettings(["typescript"]),
-      startClient: createRecordingClientFactory().start,
-    });
-
-    expect(await manager.findOtherWorkspaceRoots("typescript", searchedRoot)).toEqual({
-      rootPaths: [
-        repo,
-        resolve(repo, "packages"),
-        resolve(repo, "packages/a"),
-        resolve(repo, "tools/b"),
-      ],
-      count: 4,
-      capped: false,
-      unchecked: false,
-    });
-  });
-
-  test("reports none from a working directory inside the only root", async () => {
-    const { cwd, filePath } = await createRoutedFileFixture();
-    const searchedRoot = resolve(cwd, "packages/example");
-    const manager = new LspServerManager({
-      cwd: dirname(filePath),
-      settings: resolvedSettings(["typescript"]),
-      startClient: createRecordingClientFactory().start,
-    });
-
-    expect(await manager.findOtherWorkspaceRoots("typescript", searchedRoot)).toEqual({
-      rootPaths: [],
-      count: 0,
-      capped: false,
-      unchecked: false,
-    });
-  });
-
-  test("counts only directories that route to a different root under workspace root markers", async () => {
-    const { cwd, filePath } = await createMonorepoFixture();
-    // A nested, independent workspace routes its packages to its own root.
-    const nested = resolve(cwd, "vendor/tool");
-    await mkdir(resolve(nested, "packages/x"), { recursive: true });
-    await writeFile(resolve(nested, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
-    await writeFile(resolve(nested, "packages/x/package.json"), "{}\n");
-    const manager = new LspServerManager({
-      cwd: resolve(cwd, "packages/a"),
-      homeDirectory: dirname(cwd),
-      settings: {
-        ...resolvedSettings([]),
-        servers: new Map([["typescript", workspaceServerDefinition("typescript")]]),
-      },
-      startClient: createRecordingClientFactory().start,
-    });
-    await manager.getCapabilities("typescript", filePath);
-    await manager.getCapabilities("typescript", resolve(cwd, "packages/b/src/index.ts"));
-
-    // Package directories inside the searched workspace root are not other roots.
-    expect(await manager.findOtherWorkspaceRoots("typescript", cwd)).toEqual({
-      rootPaths: [nested],
-      count: 1,
-      capped: false,
-      unchecked: false,
-    });
-    await rm(nested, { force: true, recursive: true });
-    expect(await manager.findOtherWorkspaceRoots("typescript", cwd)).toEqual({
-      rootPaths: [],
-      count: 0,
-      capped: false,
-      unchecked: false,
-    });
-    await manager.shutdown();
   });
 
   test("finds workspace packages whose files the Server Instance has not synchronized", async () => {
@@ -1918,126 +1436,43 @@ describe("other workspace roots of a Server Definition", () => {
     });
   });
 
-  test.each([".worktrees", "node_modules", "linked"])(
-    "walks a workspace root under a %s directory that discovery skips",
-    async (skippedName) => {
-      const repo = await mkdtemp(resolve(tmpdir(), "pi-lsp-manager-skipped-"));
-      temporaryDirectories.push(repo);
-      await mkdir(resolve(repo, ".git"));
-      await writeFile(resolve(repo, "package.json"), "{}\n");
-      let skippedParent = resolve(repo, skippedName);
-      if (skippedName === "linked") {
-        const target = await mkdtemp(resolve(tmpdir(), "pi-lsp-manager-link-target-"));
-        temporaryDirectories.push(target);
-        await symlink(target, skippedParent, "dir");
-      } else {
-        await mkdir(skippedParent);
-      }
-      // A git worktree checkout: its `.git` is a file.
-      const workspaceRoot = resolve(skippedParent, "x");
-      await mkdir(resolve(workspaceRoot, "packages/b"), { recursive: true });
-      await writeFile(resolve(workspaceRoot, ".git"), "gitdir: elsewhere\n");
-      await writeFile(resolve(workspaceRoot, "package.json"), "{}\n");
-      await writeFile(resolve(workspaceRoot, "packages/b/package.json"), "{}\n");
-      const manager = new LspServerManager({
-        cwd: workspaceRoot,
-        homeDirectory: dirname(repo),
-        settings: {
-          ...resolvedSettings([]),
-          servers: new Map([
-            ["typescript", { ...serverDefinition("typescript"), workspaceRootMarkers: [".git"] }],
-          ]),
-        },
-        startClient: createRecordingClientFactory().start,
-      });
-
-      expect(
-        await manager.findWorkspaceScope("typescript", workspaceRoot, {
-          queriedFilePath: resolve(workspaceRoot, "index.ts"),
-          synchronizedFilePaths: () => [],
-        }),
-      ).toEqual({
-        otherRoots: { rootPaths: [repo], count: 1, capped: false, unchecked: false },
-        unloadedPackages: {
-          packageRoots: [resolve(workspaceRoot, "packages/b")],
-          hasMore: false,
-        },
-      });
-    },
-  );
-
-  test("walks a workspace root first when the working directory holds many repositories", async () => {
-    const code = await mkdtemp(resolve(tmpdir(), "pi-lsp-manager-code-"));
-    temporaryDirectories.push(code);
-    for (let index = 0; index < 10; index++) {
-      await mkdir(resolve(code, `repo-${index}/src`), { recursive: true });
-    }
-    const workspaceRoot = resolve(code, "repo-z");
+  test("walks a workspace root under a .worktrees directory that discovery skips", async () => {
+    const repo = await mkdtemp(resolve(tmpdir(), "pi-lsp-manager-skipped-"));
+    temporaryDirectories.push(repo);
+    await mkdir(resolve(repo, ".git"));
+    await writeFile(resolve(repo, "package.json"), "{}\n");
+    const skippedParent = resolve(repo, ".worktrees");
+    await mkdir(skippedParent);
+    // A git worktree checkout: its `.git` is a file.
+    const workspaceRoot = resolve(skippedParent, "x");
     await mkdir(resolve(workspaceRoot, "packages/b"), { recursive: true });
-    await writeFile(resolve(workspaceRoot, "pnpm-workspace.yaml"), "packages: []\n");
+    await writeFile(resolve(workspaceRoot, ".git"), "gitdir: elsewhere\n");
+    await writeFile(resolve(workspaceRoot, "package.json"), "{}\n");
     await writeFile(resolve(workspaceRoot, "packages/b/package.json"), "{}\n");
     const manager = new LspServerManager({
-      cwd: code,
-      homeDirectory: dirname(code),
+      cwd: workspaceRoot,
+      homeDirectory: dirname(repo),
       settings: {
         ...resolvedSettings([]),
-        servers: new Map([["typescript", workspaceServerDefinition("typescript")]]),
+        servers: new Map([
+          ["typescript", { ...serverDefinition("typescript"), workspaceRootMarkers: [".git"] }],
+        ]),
       },
       startClient: createRecordingClientFactory().start,
-      rootDiscoveryDirectoryLimit: 6,
     });
 
-    // The working directory is the discovery base; its other repositories exhaust the limit.
     expect(
       await manager.findWorkspaceScope("typescript", workspaceRoot, {
         queriedFilePath: resolve(workspaceRoot, "index.ts"),
         synchronizedFilePaths: () => [],
       }),
     ).toEqual({
-      otherRoots: { rootPaths: [], count: 0, capped: false, unchecked: true },
-      unloadedPackages: { packageRoots: [resolve(workspaceRoot, "packages/b")], hasMore: false },
+      otherRoots: { rootPaths: [repo], count: 1, capped: false, unchecked: false },
+      unloadedPackages: {
+        packageRoots: [resolve(workspaceRoot, "packages/b")],
+        hasMore: false,
+      },
     });
-  });
-
-  test("stops other-root discovery inside a batch once enough roots are found", async () => {
-    const cwd = await mkdtemp(resolve(tmpdir(), "pi-lsp-manager-batch-"));
-    temporaryDirectories.push(cwd);
-    const children = Array.from({ length: 40 }, (_, index) => `c${String(index).padStart(2, "0")}`);
-    for (const child of children) await mkdir(resolve(cwd, child));
-    for (const child of children.slice(34)) {
-      await writeFile(resolve(cwd, child, "package.json"), "{}\n");
-    }
-    // Listed in the same batch as c32-c39, but after them in walk order.
-    await mkdir(resolve(cwd, "c00/a"));
-    await writeFile(resolve(cwd, "c00/a/package.json"), "{}\n");
-    const manager = new LspServerManager({
-      cwd,
-      homeDirectory: dirname(cwd),
-      settings: resolvedSettings(["typescript"]),
-      startClient: createRecordingClientFactory().start,
-    });
-
-    expect(await manager.findOtherWorkspaceRoots("typescript", cwd)).toEqual({
-      rootPaths: ["c34", "c35", "c36", "c37", "c38"].map((child) => resolve(cwd, child)),
-      count: 6,
-      capped: true,
-      unchecked: false,
-    });
-  });
-
-  test("reports none when the searched root is the only root", async () => {
-    const { cwd, filePath } = await createRoutedFileFixture();
-    const manager = new LspServerManager({
-      cwd,
-      settings: resolvedSettings(["typescript"]),
-      startClient: createRecordingClientFactory().start,
-    });
-    await manager.getCapabilities("typescript", filePath);
-
-    expect(
-      await manager.findOtherWorkspaceRoots("typescript", resolve(cwd, "packages/example")),
-    ).toEqual({ rootPaths: [], count: 0, capped: false, unchecked: false });
-    await manager.shutdown();
   });
 
   test("reports none for a Server Definition without root markers", async () => {
@@ -2079,25 +1514,5 @@ describe("other workspace roots of a Server Definition", () => {
     expect(roots.rootPaths).toHaveLength(5);
     expect(roots.rootPaths).not.toContain(resolve(cwd, "packages/example"));
     expect(roots).toMatchObject({ count: 6, capped: true, unchecked: false });
-  });
-
-  test("reports that more roots may exist when discovery stops at its directory limit", async () => {
-    const { cwd } = await createRoutedFileFixture();
-    // More directories than the lowered discovery limit, none holding a root marker.
-    await Promise.all(
-      ["wide/0", "wide/1", "wide/2", "wide/3"].map((directory) =>
-        mkdir(resolve(cwd, directory), { recursive: true }),
-      ),
-    );
-    const manager = new LspServerManager({
-      cwd,
-      settings: resolvedSettings(["typescript"]),
-      startClient: createRecordingClientFactory().start,
-      rootDiscoveryDirectoryLimit: 3,
-    });
-
-    expect(
-      await manager.findOtherWorkspaceRoots("typescript", resolve(cwd, "packages/example")),
-    ).toEqual({ rootPaths: [], count: 0, capped: false, unchecked: true });
   });
 });

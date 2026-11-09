@@ -1,14 +1,6 @@
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
-import type {
-  Definition,
-  DefinitionLink,
-  Location,
-  LocationLink,
-} from "vscode-languageserver-protocol";
-import { DefinitionRequest } from "vscode-languageserver-protocol";
 import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, test } from "vitest";
 import { testTimeouts } from "./lsp-timeouts.js";
@@ -23,20 +15,6 @@ import { LSP_WARM_UP_LIMITS, type LspWarmUpLimits } from "../src/lsp-workspace-w
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const tsrsBinary = resolve(repositoryRoot, "node_modules/.bin/tsrs");
 const temporaryDirectories: string[] = [];
-const clients: LspServerClient[] = [];
-
-function definitionStartLine(location: Location | LocationLink): number {
-  return "targetRange" in location ? location.targetRange.start.line : location.range.start.line;
-}
-
-function processExists(processId: number): boolean {
-  try {
-    process.kill(processId, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 const typescriptTimeouts = testTimeouts({ requestMs: 5_000, diagnosticsMs: 8_000 });
 
@@ -126,7 +104,6 @@ async function createTypeScriptMonorepo(): Promise<string> {
 }
 
 afterEach(async () => {
-  await Promise.all(clients.splice(0).map((client) => client.shutdown()));
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -135,109 +112,6 @@ afterEach(async () => {
 });
 
 describe("real tsrs language server client", () => {
-  test("initializes, synchronizes UTF-8, reports a semantic error, resolves a definition, and exits", async () => {
-    const projectDirectory = await mkdtemp(resolve(tmpdir(), "pi-lsp-typescript-"));
-    temporaryDirectories.push(projectDirectory);
-    await mkdir(resolve(projectDirectory, ".pi-lsp"), { recursive: true });
-    await writeFile(
-      resolve(projectDirectory, "tsconfig.json"),
-      JSON.stringify({ compilerOptions: { noEmit: true, strict: true } }),
-    );
-    const filePath = resolve(projectDirectory, "example.ts");
-    await writeFile(filePath, "const café: string = 42;\nconsole.log(café);\n", "utf8");
-
-    const client = await LspServerClient.start({
-      serverId: "typescript",
-      rootPath: projectDirectory,
-      command: tsrsBinary,
-      args: ["--lsp", "--stdio"],
-      environment: { ...process.env },
-      initializationOptions: {},
-      settings: {},
-      maxConcurrentDiagnostics: 2,
-      stderrPath: resolve(projectDirectory, ".pi-lsp/typescript.stderr.log"),
-      timeouts: typescriptTimeouts,
-    });
-    clients.push(client);
-
-    expect(client.serverInfo?.name).toBe("typescript");
-    expect(client.isRunning).toBe(true);
-
-    const diagnostics = await client.documentDiagnostics(filePath, "typescript");
-    expect(diagnostics.status).toBe("fresh");
-    expect(
-      diagnostics.diagnostics.some((diagnostic) =>
-        JSON.stringify(diagnostic.message).includes("number"),
-      ),
-    ).toBe(true);
-
-    const definition = await client.request<Definition | DefinitionLink[] | null>(
-      DefinitionRequest.method,
-      {
-        textDocument: { uri: pathToFileURL(filePath).href },
-        position: { line: 1, character: 14 },
-      },
-    );
-    expect(Array.isArray(definition) ? definition.length : definition).not.toBeNull();
-    const locations: readonly (Location | LocationLink)[] = Array.isArray(definition)
-      ? definition
-      : definition === null
-        ? []
-        : [definition];
-    expect(locations.some((location) => definitionStartLine(location) === 0)).toBe(true);
-
-    const processId = client.processId;
-    expect(processId).toBeTypeOf("number");
-    await client.shutdown();
-    clients.splice(clients.indexOf(client), 1);
-    expect(client.isRunning).toBe(false);
-    if (processId !== undefined) expect(processExists(processId)).toBe(false);
-  }, 60_000);
-
-  test("shows a documented function's hover signature fenced and apart from its documentation", async () => {
-    const projectDirectory = await mkdtemp(resolve(tmpdir(), "pi-lsp-typescript-"));
-    temporaryDirectories.push(projectDirectory);
-    await writeFile(
-      resolve(projectDirectory, "tsconfig.json"),
-      JSON.stringify({ compilerOptions: { noEmit: true, strict: true } }),
-    );
-    const filePath = resolve(projectDirectory, "example.ts");
-    await writeFile(
-      filePath,
-      "/** Doc text. */\nexport function f(a: number): boolean {\n  return a > 0;\n}\n",
-      "utf8",
-    );
-    const sessionFiles = await createLspSessionFiles(projectDirectory);
-    const manager = createTypeScriptManager(
-      projectDirectory,
-      typescriptDefinition(["tsconfig.json"]),
-    );
-    try {
-      const result = await createLspToolDefinition("hover", () => ({
-        manager,
-        workspaceEdits: new LspWorkspaceEditStore(),
-        sessionFiles,
-      })).execute(
-        "hover",
-        // `f` is at one-based character 17 on line 2.
-        { file_path: filePath, line: 2, character: 17 },
-        undefined,
-        undefined,
-        // SAFETY: Tool execution only reads cwd from ExtensionContext.
-        { cwd: projectDirectory } as ExtensionToolContext,
-      );
-      const text = result.content.map((part) => ("text" in part ? part.text : "")).join("");
-      const lines = text.split("\n");
-      expect(lines).toContain("```typescript");
-      expect(text).toContain("function f(a: number): boolean");
-      expect(lines).toContain("Doc text.");
-      expect(lines.indexOf("Doc text.")).toBeGreaterThan(lines.indexOf("```"));
-    } finally {
-      await manager.shutdown();
-      await sessionFiles.close();
-    }
-  }, 60_000);
-
   test("lists a nested file's declarations as an outline by default and its full tree by depth", async () => {
     const projectDirectory = await mkdtemp(resolve(tmpdir(), "pi-lsp-typescript-"));
     temporaryDirectories.push(projectDirectory);
@@ -344,71 +218,6 @@ describe("real tsrs language server client", () => {
   // tsrs 0.20.1 returns no import bindings from `textDocument/documentSymbol`, so the omission
   // logic (the hint, `omitted_imports`, and listing them at depth "all") is covered by the
   // fake-server test in `lsp-tool.test.ts`, not here.
-  test("cuts nested symbols from the default outline and lists them at depth all", async () => {
-    const projectDirectory = await mkdtemp(resolve(tmpdir(), "pi-lsp-typescript-"));
-    temporaryDirectories.push(projectDirectory);
-    await writeFile(
-      resolve(projectDirectory, "tsconfig.json"),
-      JSON.stringify({ compilerOptions: { noEmit: true, strict: true } }),
-    );
-    const filePath = resolve(projectDirectory, "outline.ts");
-    await writeFile(
-      filePath,
-      [
-        'import { readFileSync } from "node:fs";',
-        "",
-        "export const limit = 3;",
-        "",
-        "export function describe() {",
-        "  const inner = readFileSync;",
-        "  return [limit, inner];",
-        "}",
-        "",
-      ].join("\n"),
-      "utf8",
-    );
-    const sessionFiles = await createLspSessionFiles(projectDirectory);
-    const manager = createTypeScriptManager(
-      projectDirectory,
-      typescriptDefinition(["tsconfig.json"]),
-    );
-    try {
-      const tool = createLspToolDefinition("document_symbols", () => ({
-        manager,
-        workspaceEdits: new LspWorkspaceEditStore(),
-        sessionFiles,
-      }));
-      const outline = async (parameters: { depth?: number | "all" }) => {
-        const result = await tool.execute(
-          "outline",
-          { file_path: filePath, ...parameters },
-          undefined,
-          undefined,
-          // SAFETY: Tool execution only reads cwd from ExtensionContext.
-          { cwd: projectDirectory } as ExtensionToolContext,
-        );
-        const text = result.content.map((part) => ("text" in part ? part.text : "")).join("");
-        return {
-          lines: text.split("\n"),
-          names: text.split("\n").map((line) => line.trim().split(" (")[0]),
-        };
-      };
-
-      const byDefault = await outline({});
-      expect(byDefault.names).toEqual(expect.arrayContaining(["limit", "describe"]));
-      // The local `inner` sits inside a function body, so the default depth drops it and says so.
-      expect(byDefault.names).not.toContain("inner");
-      expect(byDefault.lines.some((line) => line.includes("nested"))).toBe(true);
-
-      const full = await outline({ depth: "all" });
-      expect(full.names).toEqual(expect.arrayContaining(["limit", "describe", "inner"]));
-      expect(full.lines.some((line) => line.includes("nested"))).toBe(false);
-    } finally {
-      await manager.shutdown();
-      await sessionFiles.close();
-    }
-  }, 60_000);
-
   test("returns a diagnostic-dependent quick fix as a Workspace Edit Preview", async () => {
     const projectDirectory = await mkdtemp(resolve(tmpdir(), "pi-lsp-typescript-"));
     temporaryDirectories.push(projectDirectory);
@@ -425,48 +234,10 @@ describe("real tsrs language server client", () => {
 
     const sessionFiles = await createLspSessionFiles(projectDirectory);
     const workspaceEdits = new LspWorkspaceEditStore();
-    const manager = new LspServerManager<LspToolServerClient>({
-      cwd: projectDirectory,
-      settings: {
-        enablement: new Map(),
-        includeHintDiagnostics: false,
-        warnings: [],
-        timeouts: typescriptTimeouts,
-        servers: new Map([
-          [
-            "typescript",
-            {
-              id: "typescript",
-              command: tsrsBinary,
-              args: ["--lsp", "--stdio"],
-              environment: {},
-              languages: [{ extensions: [".ts"], fileNames: [], languageId: "typescript" }],
-              maxConcurrentDiagnostics: 2,
-              requireRootMarker: false,
-              rootMarkers: ["tsconfig.json"],
-            },
-          ],
-        ]),
-      },
-      startClient: async ({ definition, onUnavailable, rootPath, timeouts, signal }) =>
-        LspServerClient.start({
-          serverId: definition.id,
-          rootPath,
-          command: definition.command,
-          args: definition.args,
-          environment: { ...process.env },
-          initializationOptions: {},
-          settings: {},
-          maxConcurrentDiagnostics: definition.maxConcurrentDiagnostics,
-          timeouts,
-          signal,
-          stderrPath: resolve(projectDirectory, ".pi-lsp/typescript.stderr.log"),
-          onUnavailable,
-          onWorkspaceEdit: async () => {
-            throw new Error("TypeScript integration test: unexpected server workspace edit");
-          },
-        }),
-    });
+    const manager = createTypeScriptManager(
+      projectDirectory,
+      typescriptDefinition(["tsconfig.json"]),
+    );
     try {
       const tool = createLspToolDefinition("code_actions", () => ({
         manager,

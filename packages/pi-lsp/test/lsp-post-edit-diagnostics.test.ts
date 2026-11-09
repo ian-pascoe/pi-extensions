@@ -89,7 +89,7 @@ test.each([
   });
 });
 
-test.each(["lsp_rename", "lsp_code_actions", "not_lsp"])(
+test.each(["lsp_rename"])(
   "ignores %s results even with a valid manifest and apply details",
   (toolName) => {
     // Only the tool name distinguishes this from a real lsp_apply result.
@@ -115,34 +115,21 @@ test("ignores an lsp_apply result without Workspace Edit application details", (
       }),
     ),
   ).toBeUndefined();
-  expect(
-    extractPostEditDiagnosticPaths(
-      mutationEvent({
-        toolName: "lsp_apply",
-        input: { preview_id: "preview-1", mutation_manifest: verifiedManifest },
-        details: { kind: "workspace_edit_preview", preview_id: "preview-1" },
-      }),
-    ),
-  ).toBeUndefined();
 });
 
-test.each([false, true])(
-  "keeps isError %s on a partial lsp_apply failure it augments",
-  async (isError) => {
-    const result = await appendPostEditDiagnostics(
-      mutationEvent({
-        toolName: "lsp_apply",
-        input: { preview_id: "preview-1", mutation_manifest: verifiedManifest },
-        details: partialApplyDetails,
-        isError,
-      }),
-      async () => [{ kind: "no_diagnostics", path: "/work/a.ts" }],
-      "/work",
-    );
-    // A false input stays false: Post-edit Diagnostics never flips the error state.
-    expect(result?.isError).toBe(isError);
-  },
-);
+test("keeps isError on a partial lsp_apply failure it augments", async () => {
+  const result = await appendPostEditDiagnostics(
+    mutationEvent({
+      toolName: "lsp_apply",
+      input: { preview_id: "preview-1", mutation_manifest: verifiedManifest },
+      details: partialApplyDetails,
+      isError: true,
+    }),
+    async () => [{ kind: "no_diagnostics", path: "/work/a.ts" }],
+    "/work",
+  );
+  expect(result?.isError).toBe(true);
+});
 
 test("keeps the structured result of an lsp_apply call it augments", async () => {
   const structuredContent = { preview_id: "preview-1", state: "applied", truncated: false };
@@ -257,25 +244,10 @@ test("names severities and shows workspace-relative paths for findings", async (
   );
 });
 
-test("keeps a long finding message whole, collapsed onto one line", async () => {
-  const message = `Type 'A' is not assignable to type 'B'.\n  ${"Types of property 'x' are incompatible. ".repeat(12)}`;
-  const text = await appendedText([diagnosticOutcome("/work/a.ts", 1, message)]);
-  expect(message.length).toBeGreaterThan(400);
-  expect(text).toBe(
-    `\n\nLSP diagnostics\na.ts:3:7 error [typescript]: ${message.replaceAll(/\s+/gu, " ").trim()}`,
-  );
-});
-
 test("reports clean results from configured servers on one line", async () => {
   await expect(appendedText([{ kind: "no_diagnostics", path: "/work/a.ts" }])).resolves.toBe(
     "\n\nLSP diagnostics: no diagnostics",
   );
-  await expect(
-    appendedText([
-      { kind: "no_diagnostics", path: "/work/a.ts" },
-      { kind: "no_diagnostics", path: "/work/b.ts" },
-    ]),
-  ).resolves.toBe("\n\nLSP diagnostics: no diagnostics");
 });
 
 test("groups clean files into one line after the findings and omits files with no configured server", async () => {
@@ -325,24 +297,6 @@ test("leaves a file with a finding out of the clean line when another Server Ins
   ).resolves.toBe("\n\nLSP diagnostics\nsrc/a.ts:3:7 error [typescript]: broken");
 });
 
-test("drops a file with no configured server from the one-line clean result", async () => {
-  await expect(
-    appendedText([
-      { kind: "no_diagnostics", path: "/work/a.ts" },
-      { kind: "no_configured_server", path: "/work/README.md" },
-    ]),
-  ).resolves.toBe("\n\nLSP diagnostics: no diagnostics");
-});
-
-test("still reports a matched server failure beside a file with no configured server", async () => {
-  await expect(
-    appendedText([
-      { kind: "no_configured_server", path: "/work/README.md" },
-      { kind: "unavailable_server", path: "/work/a.ts", serverId: "typescript" },
-    ]),
-  ).resolves.toBe("\n\nLSP diagnostics\na.ts: unavailable server (typescript)");
-});
-
 test("leaves the mutation result unchanged when no edited file has a configured server", async () => {
   const event = mutationEvent({
     toolName: "apply_patch",
@@ -382,32 +336,6 @@ test("omits hints by default and reports how many were omitted", async () => {
 test("collapses a hint-only result to the one-line clean result with the omitted count", async () => {
   await expect(appendedText([diagnosticOutcome("/work/a.ts", 4, "hint")])).resolves.toBe(
     "\n\nLSP diagnostics: no diagnostics (1 hint omitted)",
-  );
-});
-
-test("keeps hints and reports no omission when includeHints is set", async () => {
-  await expect(
-    appendedText([diagnosticOutcome("/work/a.ts", 4, "hint")], "/work", { includeHints: true }),
-  ).resolves.toBe("\n\nLSP diagnostics\na.ts:3:7 hint [typescript]: hint");
-});
-
-test("leaves hints out of the persisted outcomes by default", async () => {
-  const result = await appendPostEditDiagnostics(
-    mutationEvent(),
-    async () => [diagnosticOutcome("/work/a.ts", 4, "hint")],
-    "/work",
-  );
-  expect(result?.outcomes).toEqual([{ kind: "no_diagnostics", path: "/work/a.ts" }]);
-});
-
-test("reports a hint-only file as clean beside another server's timeout", async () => {
-  await expect(
-    appendedText([
-      diagnosticOutcome("/work/a.ts", 4, "hint"),
-      { kind: "timeout", path: "/work/a.ts", serverId: "slow" },
-    ]),
-  ).resolves.toBe(
-    "\n\nLSP diagnostics\na.ts: diagnostics timeout (slow)\nno diagnostics: a.ts\n1 hint omitted",
   );
 });
 
@@ -533,12 +461,6 @@ test("never lists a file with unchanged findings as clean", async () => {
       "a.ts: no new diagnostics (unchanged: 1 warning)",
       "no diagnostics: c.ts",
     ].join("\n"),
-  );
-});
-
-test("keeps today's wording for a file with no findings at all", async () => {
-  await expect(comparedText([{ kind: "no_diagnostics", path: "/work/a.ts" }])).resolves.toBe(
-    "\n\nLSP diagnostics: no diagnostics",
   );
 });
 

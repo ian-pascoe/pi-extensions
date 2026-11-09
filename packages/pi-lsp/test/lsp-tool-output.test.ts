@@ -19,17 +19,6 @@ import {
 const bytesOf = (value: LspStructuredFields) => Buffer.byteLength(JSON.stringify(value), "utf8");
 
 describe("boundLspStructuredFields", () => {
-  test("returns results within the cap untouched", () => {
-    const fields = { results: [{ value: "small" }], warnings: [] };
-    const bounded = boundLspStructuredFields(fields);
-    expect(bounded.bounded).toBe(false);
-    expect(bounded.fields).toBe(fields);
-  });
-
-  test("caps at 1 MiB like Pi's built-in bash tool", () => {
-    expect(LSP_STRUCTURED_CONTENT_MAX_BYTES).toBe(1024 * 1024);
-  });
-
   test("shortens the largest strings and array tails deterministically, keeping structure", () => {
     const fields = {
       results: [

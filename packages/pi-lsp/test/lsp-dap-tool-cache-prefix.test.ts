@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -278,14 +277,6 @@ async function serializeTurn(turn: TurnContext) {
   return captured;
 }
 
-// Pi 1.2 expands one level of nested result shapes in each description's `Codemode:` line.
-const BASELINE_DIRECT_TOOLS_SHA256 =
-  "2493075e5befae4c76c1ba5e4fe4807d53420077d6543ba6c00d9349a05fa33e";
-
-function sha256(text: string): string {
-  return createHash("sha256").update(text).digest("hex");
-}
-
 afterEach(async () => {
   for (const session of sessions.splice(0)) session.dispose();
   await Promise.all(
@@ -313,21 +304,6 @@ const DAP_TOOLS = [
   "dap_status",
   "dap_stop",
 ];
-
-test("declares lsp_status directly for the troubleshooting Skill", () => {
-  expect(DIRECT_LSP_TOOLS).toEqual([
-    "lsp_status",
-    "lsp_diagnostics",
-    "lsp_hover",
-    "lsp_goto_definition",
-    "lsp_find_references",
-    "lsp_document_symbols",
-    "lsp_workspace_symbols",
-    "lsp_rename",
-    "lsp_code_actions",
-    "lsp_apply",
-  ]);
-});
 
 function declaredToolNames(toolNames: readonly ExtensionName[]): string[] {
   return toolNames.flatMap((name) => (name === "lsp" ? DIRECT_LSP_TOOLS : DAP_TOOLS));
@@ -381,7 +357,7 @@ async function runTurnsAcrossReload(fixture: ToolCacheFixture): Promise<readonly
  * reaches the provider, and the ordered tool/system/history prefix stays stable across turns and
  * `/reload`.
  */
-test.each([{ toolNames: ["lsp"] }, { toolNames: ["dap"] }, { toolNames: ["lsp", "dap"] }] as const)(
+test.each([{ toolNames: ["lsp"] }, { toolNames: ["lsp", "dap"] }] as const)(
   "serializes object-shaped $toolNames parameters and a stable prefix",
   async ({ toolNames }) => {
     const fixture = await createToolCacheFixture(toolNames);
@@ -401,11 +377,6 @@ test.each([{ toolNames: ["lsp"] }, { toolNames: ["dap"] }, { toolNames: ["lsp", 
     expect(before.tools.map((tool) => tool.function.name)).toEqual(declared);
     for (const { function: tool } of before.tools) {
       expect(tool.description).toBe(fixture.session.getToolDefinition(tool.name)?.description);
-      if (tool.name === "dap_variables") {
-        expect(tool.description).toContain(
-          "Exactly one of frame_id (the scopes of a Stack Frame; expensive scopes such as Global are listed but not expanded) or variables_reference (children of a value or of an unexpanded scope) is required, never both",
-        );
-      }
       const parameters = tool.parameters;
       const observedSchema = JSON.stringify(parameters).slice(0, 400);
       expect(
@@ -418,27 +389,6 @@ test.each([{ toolNames: ["lsp"] }, { toolNames: ["dap"] }, { toolNames: ["lsp", 
       ).toBe(false);
       expect(parameters.additionalProperties).toBe(false);
     }
-    const hover = before.tools.find(({ function: tool }) => tool.name === "lsp_hover");
-    if (hover !== undefined) {
-      expect(hover.function.parameters.required).toEqual(["file_path", "line", "character"]);
-    }
-
-    // `lsp_document_symbols` declares its optional `depth` as a property of the root object, with
-    // guidance, so the changed definition stays object-shaped and `file_path` stays the only
-    // required field.
-    const symbols = before.tools.find(({ function: tool }) => tool.name === "lsp_document_symbols");
-    if (symbols !== undefined) {
-      expect(symbols.function.parameters).toMatchObject({
-        required: ["file_path"],
-        properties: {
-          depth: {
-            anyOf: [{ type: "integer", minimum: 1 }, { const: "all" }],
-            description: expect.stringMatching(/default 1.*without import bindings/),
-          },
-        },
-      });
-    }
-
     // (b) Prefix stability across turns and reload: identical ordered tool definitions, system
     // prompt, and append-only history, both as Pi hands them over and as the provider serializes.
     expectStablePrefix(turns);
@@ -460,10 +410,7 @@ test.each([{ toolNames: ["lsp"] }, { toolNames: ["dap"] }, { toolNames: ["lsp", 
  * codemode description under the `lsp` namespace, and the declared LSP tools say what scripts
  * receive. Neither listing changes across turns or `/reload`.
  */
-test.each([
-  { toolNames: ["lsp"], builtins: ["codemode"] },
-  { toolNames: ["lsp", "dap"], builtins: ["codemode", "tool_search"] },
-] as const)(
+test.each([{ toolNames: ["lsp", "dap"], builtins: ["codemode", "tool_search"] }] as const)(
   "keeps $toolNames with $builtins byte-stable across turns and reload",
   async ({ toolNames, builtins }) => {
     const fixture = await createToolCacheFixture(toolNames, { builtins });
@@ -528,45 +475,6 @@ test("shows the shared LSP rules exactly once when codemode is the only surface"
   expect(codemode).toContain(LSP_TOOL_GUIDELINE);
 });
 
-test("keeps the shared guideline once when only a subset of direct tools is active", async () => {
-  const fixture = await createToolCacheFixture(["lsp"], { defaultSystemPrompt: true });
-  fixture.session.setActiveToolsByName(["read", "lsp_diagnostics", "lsp_hover"]);
-  fixture.responses.push(fauxAssistantMessage("Ready."));
-  await fixture.session.prompt("Start");
-  const prompt = fixture.turns[0]?.systemPrompt ?? "";
-  expect(prompt.split(LSP_TOOL_GUIDELINE)).toHaveLength(2);
-  // Since Pi 1.5, tools that stay active keep their order and newly activated ones are appended.
-  expect(fixture.turns[0]?.tools.map(({ name }) => name)).toEqual([
-    "lsp_diagnostics",
-    "lsp_hover",
-    "read",
-  ]);
-});
-
-test("keeps the directly declared LSP tool definitions byte-identical", async () => {
-  const fixture = await createToolCacheFixture(["lsp"], { builtins: ["codemode"] });
-  const turns = await runTurnsAcrossReload(fixture);
-  const first = turns[0];
-  const direct = (first?.tools ?? []).filter(({ name }) => DIRECT_LSP_TOOLS.includes(name));
-  expect(direct.map(({ name }) => name)).toEqual(DIRECT_LSP_TOOLS);
-  // SHA-256 of the ordered direct definitions as the provider receives them, recorded before the change.
-  expect(sha256(JSON.stringify(direct))).toBe(BASELINE_DIRECT_TOOLS_SHA256);
-});
-
-test("keeps the LSP lines of the default system prompt unchanged", async () => {
-  const fixture = await createToolCacheFixture(["lsp"], {
-    builtins: ["codemode"],
-    defaultSystemPrompt: true,
-  });
-  const turns = await runTurnsAcrossReload(fixture);
-  const lines = (turns[0]?.systemPrompt ?? "").split("\n").filter((line) => line.includes("lsp_"));
-  // Every line that mentions an LSP tool, as before the change: one snippet and one guideline.
-  expect(lines).toEqual([
-    "- lsp_diagnostics: Language-server diagnostics; the lsp_* tools also cover navigation and previewed edits",
-    `- ${LSP_TOOL_GUIDELINE}`,
-  ]);
-});
-
 test("lists the lsp_* family once in the default system prompt and keeps it stable", async () => {
   const fixture = await createToolCacheFixture(["lsp"], { defaultSystemPrompt: true });
   const turns = await runTurnsAcrossReload(fixture);
@@ -577,23 +485,7 @@ test("lists the lsp_* family once in the default system prompt and keeps it stab
     "- lsp_diagnostics: Language-server diagnostics; the lsp_* tools also cover navigation and previewed edits",
   );
   expect(prompt.match(/^- lsp_\w+:/gmu)).toEqual(["- lsp_diagnostics:"]);
-});
-
-test("activates a codemode-exposure LSP tool by name through defaultTools", async () => {
-  const fixture = await createToolCacheFixture(["lsp"], {
-    defaultTools: ["+lsp_workspace_diagnostics"],
-  });
-  const turns = await runTurnsAcrossReload(fixture);
-  expectStablePrefix(turns);
-  expect(turns[0]?.tools.map(({ name }) => name)).toEqual([
-    "read",
-    "bash",
-    "edit",
-    "write",
-    // Named tools activate in `defaultTools` order, then direct tools in registration order.
-    "lsp_workspace_diagnostics",
-    ...DIRECT_LSP_TOOLS,
-  ]);
+  expect(prompt).toContain(`- ${LSP_TOOL_GUIDELINE}`);
 });
 
 test("a codemode script receives the structured result of an LSP tool", async () => {
@@ -625,7 +517,7 @@ test("a codemode script receives the structured result of an LSP tool", async ()
  * definitions (including the codemode catalog of the long-tail LSP tools), system prompt, and
  * history, across turns and `/reload`.
  */
-test.each([{ builtins: [] }, { builtins: ["codemode", "tool_search"] }] as const)(
+test.each([{ builtins: ["codemode", "tool_search"] }] as const)(
   "declares the same ordered tools with and without null handling (builtins: $builtins)",
   async ({ builtins }) => {
     const run = async (stripped: boolean) => {

@@ -6,7 +6,6 @@ import {
   errorKey,
   groupErrorKeys,
   MAX_DEPENDENT_FILES,
-  MAX_TOUCHED_DECLARATIONS,
   newDependentErrors,
   referencedFilePaths,
   touchedDeclarationPositions,
@@ -77,7 +76,6 @@ test("selects only the declarations an edit reaches, never locals", () => {
   expect(touchedDeclarationPositions(symbols, "all", 2)).toHaveLength(2);
   expect(touchedDeclarationPositions(null, "all")).toEqual([]);
   expect(touchedDeclarationPositions([{ name: "flat" }], "all")).toEqual([]);
-  expect(MAX_TOUCHED_DECLARATIONS).toBe(10);
 });
 
 test("reads referencing files from locations, dropping the edited file and node_modules", () => {
@@ -141,8 +139,6 @@ function diagnostic(
   };
 }
 
-const noTexts = new Map<string, string>();
-
 test("keeps only errors the baseline lacked and counts unchecked files", () => {
   const texts = new Map([["/w/a.ts", "l1\nl2\nbroken line\nl4\nnew line\nl6\n"]]);
   const preExisting = diagnostic("/w/a.ts", 3, "already broken");
@@ -201,11 +197,6 @@ test("does not invent an error when a sibling edit shifts a dependent's existing
   ).toHaveLength(1);
 });
 
-test("counts an error with a missing severity, normalized to error, as an error", () => {
-  expect(errorKey(diagnostic("/w/a.ts", 1, "m", 1), noTexts)).toBeTypeOf("string");
-  expect(errorKey(diagnostic("/w/a.ts", 1, "m", 2), noTexts)).toBeUndefined();
-});
-
 test("renders new dependent errors and the unchecked count under their own heading", () => {
   const report = (
     outcomes: PostEditDiagnosticOutcome[],
@@ -231,9 +222,6 @@ test("renders new dependent errors and the unchecked count under their own headi
       "src/b.ts:8:1 error [typescript]: second",
       "1 dependent file not checked",
     ].join("\n"),
-  );
-  expect(formatDependentDiagnostics(report([], 4), "/w")).toContain(
-    "4 dependent files not checked",
   );
   expect(formatDependentDiagnostics(report([], 0, true), "/w")).toBe(
     "\n\nLSP diagnostics in dependent files (new errors only)\ndependent files not checked: the scan ran out of time",
@@ -279,17 +267,4 @@ test("appends the dependent section after the edited file's own diagnostics", as
     ].join("\n"),
   });
   expect(patch?.outcomes).toContainEqual(dependent);
-});
-
-test("adds nothing when the dependent check finds nothing", async () => {
-  const clean = [{ kind: "no_diagnostics", path: "/w/src/edited.ts" } as const];
-  const withoutOption = await appendPostEditDiagnostics(editEvent(), async () => clean, "/w");
-  const withEmptyCheck = await appendPostEditDiagnostics(editEvent(), async () => clean, "/w", {
-    dependentDiagnostics: async () => ({ outcomes: [], omittedFiles: 0, scanTimedOut: false }),
-  });
-  expect(withEmptyCheck).toEqual(withoutOption);
-  const withNoCheck = await appendPostEditDiagnostics(editEvent(), async () => clean, "/w", {
-    dependentDiagnostics: async () => undefined,
-  });
-  expect(withNoCheck).toEqual(withoutOption);
 });

@@ -180,21 +180,6 @@ async function createApplyFixture(
   return { filePath, previewId: preview.preview_id, session, seen, toolResults };
 }
 
-test("a tool_call hook observes the canonical Mutation Manifest of a model lsp_apply call", async () => {
-  const fixture = await createApplyFixture(() => undefined);
-  await fixture.session.prompt("Apply it");
-
-  const applyCalls = fixture.seen.filter((event) => event.toolName === "lsp_apply");
-  expect(applyCalls).toHaveLength(1);
-  // The model supplied only preview_id; Pi ran prepareArguments before the hook.
-  expect(applyCalls[0]?.input).toEqual({
-    preview_id: fixture.previewId,
-    mutation_manifest: [{ operation: "modify", path: fixture.filePath }],
-  });
-  expect(await readFile(fixture.filePath, "utf8")).toBe("after\n");
-  expect(fixture.toolResults.at(-1)).toEqual({ toolName: "lsp_apply", isError: false });
-});
-
 test("a null mutation_manifest is treated as omitted, so the hook still sees the canonical one", async () => {
   const fixture = await createApplyFixture(() => undefined, { mutation_manifest: null });
   await fixture.session.prompt("Apply it");

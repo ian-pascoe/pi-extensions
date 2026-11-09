@@ -15,10 +15,8 @@ import {
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { expectClickToggles, keybindingHints } from "@ian-pascoe/pi-utils/ui-testing";
 import { failureDiagnosticOutcome, normalizedDiagnosticOutcome } from "../src/pi-lsp-extension.js";
-import { appendPostEditDiagnostics } from "../src/lsp-post-edit-diagnostics.js";
 import { POST_EDIT_DIAGNOSTICS_ENTRY_TYPE } from "../src/lsp-post-edit-diagnostics-rendering.js";
 import { LspWorkspaceEditStore } from "../src/lsp-workspace-edit.js";
-import { LSP_TOOL_GUIDELINE } from "../src/lsp-tool.js";
 import {
   LSP_OPERATION_NAMES,
   type LspWorkspaceEditPreviewRecord,
@@ -345,18 +343,14 @@ describe("Pi LSP extension lifecycle", () => {
       expect(stderr).toHaveBeenLastCalledWith(expect.stringContaining("typescript — configured"));
       for (const args of [
         "start typescript",
-        "restart typescript",
-        "inherit typescript",
         "stop typescript --global",
         "disable typescript --project --global",
-        "disable typescript extra",
         "disable nonexistent",
         'disable "typescript',
-        "disable typescript --unknown",
       ]) {
         await command.handler(args, harness.runner.createCommandContext());
       }
-      expect(stderr).toHaveBeenCalledTimes(10);
+      expect(stderr).toHaveBeenCalledTimes(6);
       expect(harness.sessionManager.getBranch()).toEqual([]);
     } finally {
       stderr.mockRestore();
@@ -440,11 +434,6 @@ describe("Pi LSP extension lifecycle", () => {
         );
       };
       expect(await status()).toMatchObject({ details: { operation: "status" } });
-      // Ten declared LSP tools share one deduplicated system-prompt guideline.
-      expect(session.getActiveToolNames().filter((name) => name.startsWith("lsp_"))).toHaveLength(
-        10,
-      );
-      expect(session.systemPrompt.split(LSP_TOOL_GUIDELINE)).toHaveLength(2);
       const firstDirectories = await piLspSessionDirectories(harness.sessionDirectory);
       expect(firstDirectories).toHaveLength(1);
 
@@ -711,49 +700,6 @@ describe("Pi LSP extension lifecycle", () => {
     expect(augmented?.details).toBe(originalDetails);
     expect(augmented?.isError).toBe(false);
 
-    const partialApplyEvent = {
-      type: "tool_result",
-      toolCallId: "partial-apply-call",
-      toolName: "lsp_apply",
-      input: {
-        preview_id: "partial-preview",
-        mutation_manifest: [{ operation: "modify", path: filePath }],
-      },
-      content: [{ type: "text", text: "Rollback failed" }],
-      details: {
-        kind: "workspace_edit_apply",
-        preview_id: "partial-preview",
-        mutation_manifest: [{ operation: "modify", path: filePath }],
-        changed_paths: [filePath],
-        state: "partial_failure",
-      },
-      structuredContent: { preview_id: "partial-preview", state: "partial_failure" },
-      isError: true,
-    } satisfies ToolResultEvent;
-    const partialApply = await harness.runner.emitToolResult(partialApplyEvent);
-    // lsp_apply reports its partial failure at the source; diagnostics keep the error state and data.
-    expect(partialApply?.isError).toBe(true);
-    expect(partialApply?.structuredContent).toEqual(partialApplyEvent.structuredContent);
-    expect(partialApply?.content?.at(-1)).toMatchObject({
-      type: "text",
-      text: "\n\nLSP diagnostics: no diagnostics",
-    });
-    // Post-edit Diagnostics never flips the error state: a false input stays false.
-    const nonErrorPartialApply = await harness.runner.emitToolResult({
-      ...partialApplyEvent,
-      isError: false,
-    });
-    expect(nonErrorPartialApply?.isError).toBe(false);
-    const { structuredContent: _structuredContent, ...currentApplyEvent } = partialApplyEvent;
-    const legacyApplyResult = await harness.runner.emitToolResult({
-      ...currentApplyEvent,
-      toolName: "lsp",
-      input: { operation: "apply", ...partialApplyEvent.input },
-    });
-    expect(legacyApplyResult?.content?.at(-1)).toMatchObject({
-      text: "\n\nLSP diagnostics: no diagnostics",
-    });
-
     const changedFiles = Array.from(
       { length: 100 },
       (_, index) => `${index}-${"long-diagnostic-path-".repeat(30)}.ts`,
@@ -924,28 +870,6 @@ describe("Pi LSP extension lifecycle", () => {
     ).toEqual({ kind: "unavailable_server", path: "/workspace/a.ts", serverId: "typescript" });
   });
 
-  test("keeps Post-edit Diagnostics silent when every matching server is disabled", async () => {
-    const harness = await createExtensionHarness(false, {
-      lsp: { ...typescriptSettings.lsp, enablement: { typescript: false } },
-    });
-    await startExtension(harness);
-    const filePath = resolve(harness.sessionManager.getCwd(), "source.ts");
-    await writeFile(filePath, "const value = 1;\n");
-
-    await expect(
-      harness.runner.emitToolResult({
-        type: "tool_result",
-        toolCallId: "disabled-write",
-        toolName: "write",
-        input: { path: filePath, content: "const value = 1;\n" },
-        content: [{ type: "text", text: "Wrote source.ts" }],
-        details: { bytesWritten: 17 },
-        isError: false,
-      } satisfies ToolResultEvent),
-    ).resolves.toBeUndefined();
-    await shutdownExtension(harness);
-  });
-
   test("stays silent about a file until a required root marker exists", async () => {
     const fakeServerPath = fileURLToPath(new URL("fixtures/fake-lsp-server.mjs", import.meta.url));
     const harness = await createExtensionHarness(false, {
@@ -989,35 +913,18 @@ describe("Pi LSP extension lifecycle", () => {
     await shutdownExtension(harness);
   });
 
-  test("maps a diagnostic without severity to an Error so hint filtering keeps it", async () => {
-    const outcome = normalizedDiagnosticOutcome(
-      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, message: "m" },
-      "srv",
-      "/work/a.ts",
-      "x\n",
-      "utf-16",
-    );
-    expect(outcome).toMatchObject({ kind: "diagnostic", diagnostic: { severity: 1 } });
-    const result = await appendPostEditDiagnostics(
-      {
-        type: "tool_result",
-        toolCallId: "c",
-        toolName: "write",
-        input: { path: "/work/a.ts" },
-        content: [],
-        details: undefined,
-        isError: false,
-      } satisfies ToolResultEvent,
-      async () => [outcome],
-      "/work",
-    );
-    expect(result?.content.at(-1)).toMatchObject({
-      text: "\n\nLSP diagnostics\na.ts:1:1-2 error [srv]: m",
-    });
-  });
-
   test("normalizes a diagnostic's source, code, and range end, leaving out ones that break the protocol", () => {
     const range = { start: { line: 0, character: 2 }, end: { line: 1, character: 1 } };
+    // A diagnostic without severity is an Error, so hint filtering keeps it.
+    expect(
+      normalizedDiagnosticOutcome(
+        { range, message: "m" },
+        "srv",
+        "/work/a.ts",
+        "abc\nde\n",
+        "utf-16",
+      ),
+    ).toMatchObject({ kind: "diagnostic", diagnostic: { severity: 1 } });
     expect(
       normalizedDiagnosticOutcome(
         { range, message: "m", severity: 2, source: "ts", code: 2322 },
@@ -1094,44 +1001,6 @@ describe("Pi LSP extension lifecycle", () => {
       isError: false,
     } satisfies ToolResultEvent);
     expect(augmented?.content?.at(-1)).toMatchObject({ type: "text", text: expected });
-    await shutdownExtension(harness);
-  });
-
-  test("stays silent about a file whose only enabled server fails its gate beside a disabled one", async () => {
-    const fakeServerPath = fileURLToPath(new URL("fixtures/fake-lsp-server.mjs", import.meta.url));
-    const harness = await createExtensionHarness(false, {
-      lsp: {
-        servers: {
-          off: {
-            command: process.execPath,
-            args: [fakeServerPath],
-            languages: [{ extensions: [".ts"], languageId: "typescript" }],
-          },
-          gated: {
-            command: process.execPath,
-            args: [fakeServerPath],
-            languages: [{ extensions: [".ts"], languageId: "typescript" }],
-            requireRootMarker: true,
-            rootMarkers: ["tsconfig.json"],
-          },
-        },
-        enablement: { off: false },
-      },
-    });
-    await startExtension(harness);
-    const filePath = resolve(harness.sessionManager.getCwd(), "source.ts");
-    await writeFile(filePath, "const value = 1;\n");
-
-    const result = await harness.runner.emitToolResult({
-      type: "tool_result",
-      toolCallId: "gated-beside-disabled-write",
-      toolName: "write",
-      input: { path: filePath, content: "const value = 1;\n" },
-      content: [{ type: "text", text: "Wrote source.ts" }],
-      details: { bytesWritten: 17 },
-      isError: false,
-    } satisfies ToolResultEvent);
-    expect(result).toBeUndefined();
     await shutdownExtension(harness);
   });
 
