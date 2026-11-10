@@ -107,7 +107,7 @@
   },
   "advisor": {
     "enabled": false,
-    "model": "anthropic/claude-fable-5-1",
+    "model": "anthropic/claude-fable-5-2",
     "thinkingLevel": "high",
     "allowedTools": [
       "codemode",
@@ -185,7 +185,7 @@
         "hint": "Use for planning and design, independent correctness or spec review, and diagnosing failures. Use high thinking for plan and review; set xhigh thinking for debugging, regressions, and security audits."
       },
       "xlarge": {
-        "model": "anthropic/claude-fable-5-1",
+        "model": "anthropic/claude-fable-5-2",
         "hint": "Most capable and most expensive. Use only when large has failed or the problem is unusually hard."
       }
     }
