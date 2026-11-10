@@ -215,7 +215,7 @@ export interface PiAgentSessionFactoryOptions {
   maxSubagentDepth?: number;
   sessionFileTrash?: SessionFileTrashCapability;
   getCoordinatorTools: (callerId: string) => ToolDefinition[];
-  /** The root's native provider by ID, so children can share providers Pi ships no file for. */
+  /** The Root Agent's native provider by ID, so children can share providers Pi ships no file for. */
   getRootNativeProvider?: RootNativeProviderLookup;
   onChildSessionActivity?: () => void;
   observeSession?: (

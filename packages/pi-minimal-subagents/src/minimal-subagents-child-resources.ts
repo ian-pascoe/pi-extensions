@@ -27,11 +27,11 @@ export interface ChildResourceLoaderOptions {
   settingsManager?: SettingsManager;
   /** The Launch Contract's ordinary tools, which decide the MCP servers the child connects. */
   grantedTools: readonly string[];
-  /** The root's native provider by ID, for built-ins whose file Pi's standalone binary lacks. */
+  /** The Root Agent's native provider by ID, for built-ins Pi's standalone binary has no file for. */
   getRootNativeProvider?: RootNativeProviderLookup | undefined;
 }
 
-/** Looks up a native provider the root registered, such as Pi's built-in llama.cpp provider. */
+/** Looks up a native provider the Root Agent registered, such as Pi's built-in llama.cpp one. */
 export type RootNativeProviderLookup = (providerId: string) => Provider | undefined;
 
 type InlineExtension = NonNullable<
@@ -51,30 +51,18 @@ function piLlamaExtensionPath(): string | undefined {
   return existsSync(path) ? path : undefined;
 }
 
-/**
- * The root's llama.cpp provider without `refreshModels`, so a child shares the root's catalog
- * but never overwrites it. Looked up on each load so it follows a root reload.
- */
-function rootLlamaProviderView(getRootNativeProvider?: RootNativeProviderLookup) {
-  const provider = getRootNativeProvider?.(LLAMA);
-  if (!provider) return undefined;
-  const view = { ...provider };
-  delete view.refreshModels;
-  return view;
-}
-
 function llamaExtension(getRootNativeProvider?: RootNativeProviderLookup): InlineExtension[] {
   const path = piLlamaExtensionPath();
   if (!path) {
-    // Pi's standalone binary bundles llama.cpp without the file; a child, never running
-    // `/llama`, needs only the root's provider.
-    if (!rootLlamaProviderView(getRootNativeProvider)) return [];
-    const factory: ExtensionFactory = (pi) => {
-      const view = rootLlamaProviderView(getRootNativeProvider);
-      if (!view) throw new Error("The root's llama.cpp provider is no longer registered");
-      pi.registerProvider(view);
-    };
-    return [{ name: LLAMA, factory, builtin: true }];
+    // Pi's standalone binary bundles llama.cpp without the file. A child never runs `/llama`, so
+    // it needs only the Root Agent's provider, minus `refreshModels`: it shares the Root Agent's
+    // catalog but never overwrites it. A Root Agent reload shuts children down, so their loaders
+    // never outlive this provider.
+    const provider = getRootNativeProvider?.(LLAMA);
+    if (!provider) return [];
+    const view = { ...provider };
+    delete view.refreshModels;
+    return [{ name: LLAMA, factory: (pi) => pi.registerProvider(view), builtin: true }];
   }
   const factory: ExtensionFactory = async (pi) => {
     const module: unknown = await import(pathToFileURL(path).href);
@@ -86,8 +74,8 @@ function llamaExtension(getRootNativeProvider?: RootNativeProviderLookup): Inlin
 }
 
 /**
- * Whether a child can register a provider the root has; llama.cpp needs Pi's unexported factory
- * file or, without it, the root's own provider.
+ * Whether a child can register a provider the Root Agent has; llama.cpp needs Pi's unexported
+ * factory file or, without it, the Root Agent's own provider.
  */
 export function childProviderAvailable(
   provider: string,
@@ -96,7 +84,7 @@ export function childProviderAvailable(
   return (
     provider !== LLAMA ||
     piLlamaExtensionPath() !== undefined ||
-    rootLlamaProviderView(getRootNativeProvider) !== undefined
+    getRootNativeProvider?.(LLAMA) !== undefined
   );
 }
 
