@@ -33,7 +33,7 @@
     },
     "packages/pi-advisor": {
       "name": "@ian-pascoe/pi-advisor",
-      "version": "0.8.8",
+      "version": "0.8.9",
       "dependencies": {
         "@ian-pascoe/pi-utils": "^0.13.0",
       },
@@ -170,7 +170,7 @@
     },
     "packages/pi-minimal-subagents": {
       "name": "@ian-pascoe/pi-minimal-subagents",
-      "version": "0.22.0",
+      "version": "0.22.1",
       "dependencies": {
         "@ian-pascoe/pi-utils": "^0.13.0",
         "minimatch": "^11.0.4",
