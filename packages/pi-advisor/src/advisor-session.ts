@@ -260,15 +260,28 @@ async function buildAdvisorSession(
       });
       return extension.path;
     }
-    // Pi ships a fresh file-backed llama.cpp factory but does not export it.
+    // Pi's npm package ships a fresh file-backed llama.cpp factory but does not export it.
     if (builtin && name === "llama.cpp") {
       const path = join(piSdk.getPackageDir(), "dist", "extensions", "llama", "index.js");
-      if (!existsSync(path))
-        throw new Error(
-          `Unsupported Advisor resources: Pi's built-in llama.cpp file is unavailable (${path})`,
-        );
       recreated.add(index);
-      return path;
+      if (existsSync(path)) return path;
+      // Pi's standalone binary bundles it instead, so register a read-only view of the observed
+      // provider: the Advisor reads the observed catalog but never refreshes it, and as a headless
+      // session it needs no `/llama` command.
+      const observedProvider = observed.modelRuntime.getRegisteredNativeProvider(name);
+      if (!observedProvider)
+        throw new Error(
+          `Unsupported Advisor resources: Pi's built-in llama.cpp file and provider are unavailable (${path})`,
+        );
+      const view = { ...observedProvider };
+      delete view.refreshModels;
+      builtins.push({
+        name,
+        factory: (pi) => pi.registerProvider(view),
+        builtin: true,
+        replaceable: extension.replaceable === true,
+      });
+      return extension.path;
     }
     throw new Error(
       `Unsupported Advisor resources: inline factories require fresh owner-supplied recreation inputs (${extension.path})`,
