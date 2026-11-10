@@ -2082,6 +2082,7 @@ export default function projectAdapter(pi) {
         .extensions.find(({ path }) => path === "builtin:llama.cpp");
       expect(llama?.commands.has("llama")).toBe(false);
     } finally {
+      subscriptions.mockRestore();
       await runtime.dispose();
     }
   });
