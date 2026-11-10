@@ -5,6 +5,7 @@ import type {
   AssistantMessage,
   Message,
   Model,
+  Provider,
   ToolResultMessage,
   Usage,
   UserMessage,
@@ -1995,7 +1996,7 @@ export default function projectAdapter(pi) {
     ]);
   });
 
-  it("reports llama.cpp launch models as missing when Pi's llama.cpp factory is absent", async () => {
+  it("serves llama.cpp launch models from the root's provider, or reports them missing, when Pi's llama.cpp file is absent", async () => {
     const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-no-llama-"));
     temporaryDirectories.push(directory);
     vi.stubEnv("PI_PACKAGE_DIR", directory);
@@ -2020,6 +2021,59 @@ export default function projectAdapter(pi) {
       "llama.cpp/qwen",
     ]);
     await expect(factory.resolveLaunchMissingDependencies(persistedAgent())).resolves.toEqual([]);
+
+    // Pi's standalone binary ships no llama.cpp file, but the root still has its provider.
+    const rootProvider = (catalog: Model<"openai-completions">[]): Provider => ({
+      id: "llama.cpp",
+      name: "llama.cpp",
+      auth: { apiKey: { name: "llama.cpp server", resolve: async () => undefined } },
+      getModels: () => catalog,
+      refreshModels: async () => {},
+      stream: () => createAssistantMessageEventStream(),
+      streamSimple: () => createAssistantMessageEventStream(),
+    });
+    let root = rootProvider([llamaModel]);
+    const getRootNativeProvider = (id: string) => (id === "llama.cpp" ? root : undefined);
+    const withRoot = new PiAgentSessionFactory({
+      cwd: directory,
+      agentDir: directory,
+      sessionDir: directory,
+      rootSessionId: "root",
+      extensionEntrypoint: join(directory, "index.ts"),
+      models: [TEST_MODEL, llamaModel],
+      eligibleModelIds: ["provider/model", "llama.cpp/qwen"],
+      modelScopeRestricted: false,
+      availableToolNames: ["read"],
+      projectTrusted: true,
+      getCoordinatorTools: () => [],
+      getRootNativeProvider,
+    });
+    await expect(withRoot.resolveLaunchMissingDependencies(llamaAgent)).resolves.toEqual([]);
+
+    const loader = createChildResourceLoader({
+      cwd: directory,
+      agentDir: directory,
+      projectContext: "inherit",
+      extensionEntrypoint: join(directory, "index.ts"),
+      systemPromptBlock: "child prompt",
+      grantedTools: [],
+      settingsManager: SettingsManager.create(directory, directory, { projectTrusted: true }),
+      getRootNativeProvider,
+    });
+    const childView = async () => {
+      await loader.reload();
+      const { extensions, runtime } = loader.getExtensions();
+      // A child never runs `/llama`, and its view never refreshes the root's catalog.
+      expect(extensions.find(({ path }) => path === "builtin:llama.cpp")?.commands.size).toBe(0);
+      const registered = runtime.pendingNativeProviderRegistrations.map(({ provider }) => provider);
+      expect(registered.map(({ id }) => id)).toEqual(["llama.cpp"]);
+      expect(Object.keys(registered[0] ?? {})).not.toContain("refreshModels");
+      return registered[0]?.getModels();
+    };
+    await expect(childView()).resolves.toBe(root.getModels());
+    // A root reload replaces its provider; the child's next load follows it.
+    root = rootProvider([]);
+    await expect(childView()).resolves.toBe(root.getModels());
   });
 
   it("accepts MCP tools only while the built-in MCP extension is enabled", async () => {
