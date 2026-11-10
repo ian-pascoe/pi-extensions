@@ -189,12 +189,18 @@ describe("private Advisor native sessions", () => {
       expect(provider?.getModels()).toBe(
         observed.modelRuntime.getRegisteredNativeProvider("llama.cpp")?.getModels(),
       );
+      // An observed reload replaces its provider; the Advisor's next load follows it.
+      await observed.reload();
+      const replaced = observed.modelRuntime.getRegisteredNativeProvider("llama.cpp");
+      expect(replaced?.getModels()).not.toBe(provider?.getModels());
       await bundled.session.reload();
       expect(bundled.session.resourceLoader.getExtensions().extensions.at(-1)).toMatchObject({
         path: original?.path,
         resolvedPath: original?.resolvedPath,
       });
-      expect(bundled.session.modelRuntime.getRegisteredProviderIds()).toContain("llama.cpp");
+      expect(
+        bundled.session.modelRuntime.getRegisteredNativeProvider("llama.cpp")?.getModels(),
+      ).toBe(replaced?.getModels());
     } finally {
       vi.unstubAllEnvs();
     }
