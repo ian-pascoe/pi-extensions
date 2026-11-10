@@ -265,19 +265,24 @@ async function buildAdvisorSession(
       const path = join(piSdk.getPackageDir(), "dist", "extensions", "llama", "index.js");
       recreated.add(index);
       if (existsSync(path)) return path;
-      // Pi's standalone binary bundles it instead, so register a read-only view of the observed
-      // provider: the Advisor reads the observed catalog but never refreshes it, and as a headless
-      // session it needs no `/llama` command.
-      const observedProvider = observed.modelRuntime.getRegisteredNativeProvider(name);
-      if (!observedProvider)
-        throw new Error(
-          `Unsupported Advisor resources: Pi's built-in llama.cpp file and provider are unavailable (${path})`,
-        );
-      const view = { ...observedProvider };
-      delete view.refreshModels;
+      // Pi's standalone binary bundles it instead, so register a non-refreshing view of the
+      // observed provider, looked up on each load so it follows an observed reload: the Advisor
+      // shares the observed catalog but never refreshes it, and as a headless session it needs no
+      // `/llama` command.
+      const observedView = () => {
+        const observedProvider = observed.modelRuntime.getRegisteredNativeProvider(name);
+        if (!observedProvider)
+          throw new Error(
+            `Unsupported Advisor resources: Pi's built-in llama.cpp file and provider are unavailable (${path})`,
+          );
+        const view = { ...observedProvider };
+        delete view.refreshModels;
+        return view;
+      };
+      observedView();
       builtins.push({
         name,
-        factory: (pi) => pi.registerProvider(view),
+        factory: (pi) => pi.registerProvider(observedView()),
         builtin: true,
         replaceable: extension.replaceable === true,
       });

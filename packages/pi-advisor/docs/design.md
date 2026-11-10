@@ -214,6 +214,8 @@ Pi's built-in `codemode` does not deactivate granted tools: `codemode.mode: "onl
 
 Recreate file-backed extension resources with their original ordering and provenance, including resolved CLI resources. Loaded metadata alone cannot recreate arbitrary inline factories or opaque custom loaders. If fresh instances cannot be reconstructed from available owner-supplied resources, report an unsupported-resource error and pause rather than omit extensions, reuse bound handlers, or guess at closed-over state.
 
+One recorded exception covers Pi's built-in `llama.cpp` extension under Pi's standalone binary. Pi exports no factory for it, and the binary bundles it without the `dist/extensions/llama/index.js` file that npm installs recreate it from. Pausing there would disable the Advisor for every standalone-binary user, so the Advisor instead registers a non-refreshing view of the observed agent's `llama.cpp` provider, looked up each time the Advisor's resources load, and omits `/llama`, which a headless session never runs. The view shares the observed provider's live model catalog and auth closures but never calls `refreshModels`, so the Advisor cannot overwrite the observed catalog; with no observed provider registered, the Advisor pauses as before.
+
 Before release, offline SDK checks must establish:
 
 - Scoped configuration, trust, branch replay, resume/fork behavior, and live root-to-child propagation.

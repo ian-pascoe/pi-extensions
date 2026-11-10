@@ -159,7 +159,7 @@ describe("private Advisor native sessions", () => {
     expect(prompts[2]).toBe(prompts[0]);
   });
 
-  it("recreates the native built-in llama extension with fresh handlers through private reload", async () => {
+  it("recreates the native built-in llama extension, or a non-refreshing provider view without its file, through private reload", async () => {
     const { default: factory } = await import(
       pathToFileURL(join(getPackageDir(), "dist", "extensions", "llama", "index.js")).href
     );
@@ -189,6 +189,12 @@ describe("private Advisor native sessions", () => {
       expect(provider?.getModels()).toBe(
         observed.modelRuntime.getRegisteredNativeProvider("llama.cpp")?.getModels(),
       );
+      await bundled.session.reload();
+      expect(bundled.session.resourceLoader.getExtensions().extensions.at(-1)).toMatchObject({
+        path: original?.path,
+        resolvedPath: original?.resolvedPath,
+      });
+      expect(bundled.session.modelRuntime.getRegisteredProviderIds()).toContain("llama.cpp");
     } finally {
       vi.unstubAllEnvs();
     }
