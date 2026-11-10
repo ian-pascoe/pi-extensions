@@ -159,25 +159,51 @@ describe("private Advisor native sessions", () => {
     expect(prompts[2]).toBe(prompts[0]);
   });
 
-  it("recreates the native built-in llama extension with fresh handlers through private reload", async () => {
+  it("recreates the native built-in llama extension, or a non-refreshing provider view without its file, through private reload", async () => {
     const { default: factory } = await import(
       pathToFileURL(join(getPackageDir(), "dist", "extensions", "llama", "index.js")).href
     );
     const { observed, dir } = await observedFixture([fixture], undefined, false, undefined, [
       { name: "llama.cpp", factory, builtin: true },
     ]);
+    const original = observed.resourceLoader.getExtensions().extensions.at(-1);
+    // Pi's standalone binary bundles the llama.cpp extension and ships no file for it.
     vi.stubEnv("PI_PACKAGE_DIR", dir);
     try {
-      await expect(
-        createAdvisorSession(observed, {
-          config: readAdvisorSettings(observed).settings,
-          adviceTool,
-        }),
-      ).rejects.toThrow("Pi's built-in llama.cpp file is unavailable");
+      const bundled = await createAdvisorSession(observed, {
+        config: readAdvisorSettings(observed).settings,
+        adviceTool,
+      });
+      onTestFinished(() => disposeAdvisorSession(bundled));
+      const view = bundled.session.resourceLoader.getExtensions().extensions.at(-1);
+      expect(view).toMatchObject({
+        path: original?.path,
+        resolvedPath: original?.resolvedPath,
+        sourceInfo: original?.sourceInfo,
+        hidden: true,
+      });
+      // The headless Advisor drops `/llama` and never refreshes the observed provider's catalog.
+      expect(view?.commands.has("llama")).toBe(false);
+      const provider = bundled.session.modelRuntime.getRegisteredNativeProvider("llama.cpp");
+      expect(Object.keys(provider ?? {})).not.toContain("refreshModels");
+      expect(provider?.getModels()).toBe(
+        observed.modelRuntime.getRegisteredNativeProvider("llama.cpp")?.getModels(),
+      );
+      // An observed reload replaces its provider; the Advisor's next load follows it.
+      await observed.reload();
+      const replaced = observed.modelRuntime.getRegisteredNativeProvider("llama.cpp");
+      expect(replaced?.getModels()).not.toBe(provider?.getModels());
+      await bundled.session.reload();
+      expect(bundled.session.resourceLoader.getExtensions().extensions.at(-1)).toMatchObject({
+        path: original?.path,
+        resolvedPath: original?.resolvedPath,
+      });
+      expect(
+        bundled.session.modelRuntime.getRegisteredNativeProvider("llama.cpp")?.getModels(),
+      ).toBe(replaced?.getModels());
     } finally {
       vi.unstubAllEnvs();
     }
-    const original = observed.resourceLoader.getExtensions().extensions.at(-1);
     const runtime = await createAdvisorSession(observed, {
       config: readAdvisorSettings(observed).settings,
       adviceTool,
@@ -207,6 +233,18 @@ describe("private Advisor native sessions", () => {
     );
     runtime.session.modelRuntime.unregisterProvider("llama.cpp");
     expect(observed.modelRuntime.getRegisteredProviderIds()).toContain("llama.cpp");
+    observed.modelRuntime.unregisterProvider("llama.cpp");
+    vi.stubEnv("PI_PACKAGE_DIR", dir);
+    try {
+      await expect(
+        createAdvisorSession(observed, {
+          config: readAdvisorSettings(observed).settings,
+          adviceTool,
+        }),
+      ).rejects.toThrow("Pi's built-in llama.cpp file and provider are unavailable");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("rejects opaque inline resources without replaying them", async () => {
