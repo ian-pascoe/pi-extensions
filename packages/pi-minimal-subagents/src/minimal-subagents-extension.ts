@@ -680,6 +680,8 @@ export class MinimalSubagentsLifecycleController {
         });
         return observer;
       },
+      getRootNativeProvider: (providerId) =>
+        context.modelRegistry.getRegisteredNativeProvider(providerId),
       getCoordinatorTools: (callerId) => {
         const coordinator = requireActiveCoordinator();
         return createCoordinatorToolDefinitions({

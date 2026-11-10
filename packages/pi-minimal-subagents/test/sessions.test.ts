@@ -5,6 +5,7 @@ import type {
   AssistantMessage,
   Message,
   Model,
+  Provider,
   ToolResultMessage,
   Usage,
   UserMessage,
@@ -2020,6 +2021,70 @@ export default function projectAdapter(pi) {
       "llama.cpp/qwen",
     ]);
     await expect(factory.resolveLaunchMissingDependencies(persistedAgent())).resolves.toEqual([]);
+  });
+
+  it("lets a Child Agent use the Root Agent's llama.cpp provider when Pi's llama.cpp file is absent", async () => {
+    // Pi's standalone binary bundles its llama.cpp extension and ships no file for it.
+    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-root-llama-"));
+    temporaryDirectories.push(directory);
+    vi.stubEnv("PI_PACKAGE_DIR", directory);
+    const llamaModel = { ...TEST_MODEL, provider: "llama.cpp", id: "qwen" };
+    let refreshes = 0;
+    const rootProvider: Provider = {
+      id: "llama.cpp",
+      name: "llama.cpp",
+      auth: { apiKey: { name: "llama.cpp server", resolve: async () => undefined } },
+      getModels: () => [llamaModel],
+      refreshModels: async () => {
+        refreshes++;
+      },
+      stream: () => createAssistantMessageEventStream(),
+      streamSimple: () => createAssistantMessageEventStream(),
+    };
+    const factory = new PiAgentSessionFactory({
+      cwd: directory,
+      agentDir: directory,
+      sessionDir: directory,
+      rootSessionId: "root",
+      extensionEntrypoint: join(directory, "index.ts"),
+      models: [TEST_MODEL, llamaModel],
+      eligibleModelIds: ["provider/model", "llama.cpp/qwen"],
+      modelScopeRestricted: false,
+      availableToolNames: ["read"],
+      projectTrusted: true,
+      getCoordinatorTools: () => [],
+      getRootNativeProvider: (id) => (id === "llama.cpp" ? rootProvider : undefined),
+    });
+    const agent = persistedAgent();
+    agent.launch_contract.model = "llama.cpp/qwen";
+    await expect(factory.resolveLaunchMissingDependencies(agent)).resolves.toEqual([]);
+    const identity = createPersistentChildIdentity({
+      agent,
+      importedMessages: [],
+      cwd: directory,
+      sessionDir: directory,
+      rootSessionId: "root",
+    });
+    agent.session_file = identity.sessionFile;
+    agent.session_id = identity.sessionId;
+    const subscriptions = vi.spyOn(AgentSession.prototype, "subscribe");
+    const runtime = await factory.openRuntime(agent);
+    const session = subscriptions.mock.contexts.find(
+      (context): context is AgentSession => context instanceof AgentSession,
+    )!;
+    try {
+      expect(session.modelRuntime.getModel("llama.cpp", "qwen")).toMatchObject({ id: "qwen" });
+      // The child never refreshes the Root Agent's catalog, and never runs `/llama`.
+      await session.modelRuntime.refresh({ allowNetwork: true });
+      expect(refreshes).toBe(0);
+      const llama = session.resourceLoader
+        .getExtensions()
+        .extensions.find(({ path }) => path === "builtin:llama.cpp");
+      expect(llama?.commands.has("llama")).toBe(false);
+    } finally {
+      subscriptions.mockRestore();
+      await runtime.dispose();
+    }
   });
 
   it("accepts MCP tools only while the built-in MCP extension is enabled", async () => {

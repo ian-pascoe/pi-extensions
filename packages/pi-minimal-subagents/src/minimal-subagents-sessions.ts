@@ -46,6 +46,7 @@ import {
   childProviderAvailable,
   createChildResourceLoader,
   isMcpToolName,
+  type RootNativeProviderLookup,
 } from "./minimal-subagents-child-resources.js";
 import {
   CHILD_IDENTITY_ENTRY_TYPE,
@@ -214,6 +215,8 @@ export interface PiAgentSessionFactoryOptions {
   maxSubagentDepth?: number;
   sessionFileTrash?: SessionFileTrashCapability;
   getCoordinatorTools: (callerId: string) => ToolDefinition[];
+  /** The Root Agent's native provider by ID, so children can share providers Pi ships no file for. */
+  getRootNativeProvider?: RootNativeProviderLookup;
   onChildSessionActivity?: () => void;
   observeSession?: (
     session: AgentSession,
@@ -1186,7 +1189,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
     if (!model) missing.push(agent.launch_contract.model);
     else if (requireEligibleModel && !this.eligibleModelIds.has(agent.launch_contract.model)) {
       missing.push(agent.launch_contract.model);
-    } else if (!childProviderAvailable(model.provider)) {
+    } else if (!childProviderAvailable(model.provider, this.options.getRootNativeProvider)) {
       missing.push(agent.launch_contract.model);
     }
     const discoveredTools = await this.discoverChildToolNames(agent);
@@ -1217,6 +1220,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
         systemPromptBlock: this.buildChildSystemPrompt(agent),
         settingsManager,
         grantedTools: agent.launch_contract.ordinary_tools,
+        getRootNativeProvider: this.options.getRootNativeProvider,
       });
       await resourceLoader.reload();
       for (const extension of resourceLoader.getExtensions().extensions) {
@@ -1256,6 +1260,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       systemPromptBlock: this.buildChildSystemPrompt(agent),
       settingsManager,
       grantedTools: agent.launch_contract.ordinary_tools,
+      getRootNativeProvider: this.options.getRootNativeProvider,
     });
     await resourceLoader.reload();
     const modelRuntime = await ModelRuntime.create({

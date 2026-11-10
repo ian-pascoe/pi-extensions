@@ -391,8 +391,11 @@ extensions register with `pi.registerMcpServer()` still all connect. Pi does not
 export its `mcp.json` loader, so children load it from Pi's installed
 `dist/extensions/mcp/config.js`; when that file is absent, a child with an MCP
 grant connects every server. Pi does not export the llama.cpp factory, so children load it
-from Pi's installed `dist/extensions/llama/index.js`; when that file is absent, a
-llama.cpp launch model is reported as a missing dependency. Child `codemode`
+from Pi's installed `dist/extensions/llama/index.js`. Pi's standalone binary ships no
+such file, so there a child registers a non-refreshing view of the Root Agent's
+`llama.cpp` provider instead: it shares the Root Agent's model catalog live, never
+refreshes it, and has no `/llama`. Only when neither the file nor the Root Agent's
+provider exists is a llama.cpp launch model reported as a missing dependency. Child `codemode`
 scripts get no `models` API, so they cannot call models outside the Launch
 Contract. A tool's exposure still decides whether it is declared or reachable only
 through `codemode` or `tool_search`. Granted `codemode`- or `deferred`-exposed

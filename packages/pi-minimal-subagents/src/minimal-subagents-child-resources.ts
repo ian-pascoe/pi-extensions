@@ -12,6 +12,7 @@ import {
   type LoadedMcpConfig,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import type { Provider } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { canonicalPath } from "./minimal-subagents-paths.js";
@@ -26,7 +27,12 @@ export interface ChildResourceLoaderOptions {
   settingsManager?: SettingsManager;
   /** The Launch Contract's ordinary tools, which decide the MCP servers the child connects. */
   grantedTools: readonly string[];
+  /** The Root Agent's native provider by ID, for built-ins Pi's standalone binary has no file for. */
+  getRootNativeProvider?: RootNativeProviderLookup | undefined;
 }
+
+/** Looks up a native provider the Root Agent registered, such as Pi's built-in llama.cpp one. */
+export type RootNativeProviderLookup = (providerId: string) => Provider | undefined;
 
 type InlineExtension = NonNullable<
   ConstructorParameters<typeof DefaultResourceLoader>[0]["extensionFactories"]
@@ -45,9 +51,19 @@ function piLlamaExtensionPath(): string | undefined {
   return existsSync(path) ? path : undefined;
 }
 
-function llamaExtension(): InlineExtension[] {
+function llamaExtension(getRootNativeProvider?: RootNativeProviderLookup): InlineExtension[] {
   const path = piLlamaExtensionPath();
-  if (!path) return [];
+  if (!path) {
+    // Pi's standalone binary bundles llama.cpp without the file. A child never runs `/llama`, so
+    // it needs only the Root Agent's provider, minus `refreshModels`: it shares the Root Agent's
+    // catalog but never overwrites it. A Root Agent reload shuts children down, so their loaders
+    // never outlive this provider.
+    const provider = getRootNativeProvider?.(LLAMA);
+    if (!provider) return [];
+    const view = { ...provider };
+    delete view.refreshModels;
+    return [{ name: LLAMA, factory: (pi) => pi.registerProvider(view), builtin: true }];
+  }
   const factory: ExtensionFactory = async (pi) => {
     const module: unknown = await import(pathToFileURL(path).href);
     if (!Value.Check(ExtensionModuleSchema, module))
@@ -57,9 +73,19 @@ function llamaExtension(): InlineExtension[] {
   return [{ name: LLAMA, factory, builtin: true }];
 }
 
-/** Whether a child can register a provider the root has; llama.cpp needs Pi's unexported factory. */
-export function childProviderAvailable(provider: string): boolean {
-  return provider !== LLAMA || piLlamaExtensionPath() !== undefined;
+/**
+ * Whether a child can register a provider the Root Agent has; llama.cpp needs Pi's unexported
+ * factory file or, without it, the Root Agent's own provider.
+ */
+export function childProviderAvailable(
+  provider: string,
+  getRootNativeProvider?: RootNativeProviderLookup,
+): boolean {
+  return (
+    provider !== LLAMA ||
+    piLlamaExtensionPath() !== undefined ||
+    getRootNativeProvider?.(LLAMA) !== undefined
+  );
 }
 
 /** Child scripts must not call models outside their Launch Contract. */
@@ -142,9 +168,10 @@ function mcpExtension(scope: McpServerScope, agentDir: string): InlineExtension[
 export function childBuiltinExtensions(
   grantedTools: readonly string[],
   agentDir: string,
+  getRootNativeProvider?: RootNativeProviderLookup,
 ): InlineExtension[] {
   return [
-    ...llamaExtension(),
+    ...llamaExtension(getRootNativeProvider),
     {
       name: "codemode",
       factory: createCodemodeExtension({ models: CHILD_CODEMODE_MODELS }),
@@ -168,7 +195,11 @@ function createDefaultChildResourceLoaderOptions(
     noContextFiles: false,
     noSkills: false,
     noPromptTemplates: false,
-    extensionFactories: childBuiltinExtensions(input.grantedTools, input.agentDir),
+    extensionFactories: childBuiltinExtensions(
+      input.grantedTools,
+      input.agentDir,
+      input.getRootNativeProvider,
+    ),
     extensionsOverride: (base) => ({
       ...base,
       extensions: base.extensions.filter(
