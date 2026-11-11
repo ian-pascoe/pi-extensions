@@ -1,0 +1,45 @@
+# Puts each new GitHub issue's Linear copy into the Linear project Pi Extensions (scripts/linear-project.sh). Linear's
+# GitHub Issues sync copies the issue into the team SPI but into no project, and agents read issues by project
+# (docs/agents/issue-tracker.md). A dispatch takes an issue number, to retry one whose run failed. An issue opened
+# before the sync existed has no copy to move. Needs the repository secret LINEAR_API_KEY: a Linear API key that may
+# edit SPI's issues.
+name: linear project
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: GitHub issue number
+        required: true
+        type: number
+
+permissions: {}
+
+concurrency:
+  group: linear-project-${{ github.event.issue.number || inputs.issue }}
+
+jobs:
+  project:
+    name: project
+    # Forks have neither the secret nor the Linear project.
+    if: github.repository == 'ian-pascoe/pi-extensions'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read # sparse checkout of the script
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/linear-project.sh
+          sparse-checkout-cone-mode: false
+      - name: Add to the project
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          # The Linear project Pi Extensions (team SPI).
+          LINEAR_PROJECT: 3595e88d-3e8b-4919-9260-f6c9c44bd989
+          ISSUE_URL: ${{ github.event.issue.html_url || format('{0}/{1}/issues/{2}', github.server_url, github.repository, inputs.issue) }}
+        run: scripts/linear-project.sh

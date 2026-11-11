@@ -16,7 +16,7 @@
 
 - **Tests** — Before writing, changing, or reviewing tests, read [docs/agents/testing.md](docs/agents/testing.md) for what earns a test and how to shape it.
 - **Domain docs** — Before exploring, designing, or changing package code, read [docs/agents/domain.md](docs/agents/domain.md) for relevant contexts, vocabulary, and ADRs.
-- **Issue tracker** — Before issue or PR tracker operations, read [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md) for GitHub conventions and ticket dependencies.
+- **Issue tracker** — Before issue or PR tracker operations, read [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md) for Linear conventions and ticket dependencies.
 - **Triage** — When triaging issues or applying triage roles, read [docs/agents/triage-labels.md](docs/agents/triage-labels.md) for label mappings.
 
 ## Reference repositories
