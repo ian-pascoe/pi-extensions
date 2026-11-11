@@ -30,7 +30,8 @@ jobs:
     permissions:
       contents: read # sparse checkout of the script
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out repository
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
           sparse-checkout: scripts/linear-project.sh

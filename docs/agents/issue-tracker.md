@@ -2,7 +2,7 @@
 
 Issues and specs for this repo live in **Linear**: workspace `spiritledsoftware`, team **SPI** (Spirit-Led Software), project **Pi Extensions**. The team also holds other repos' projects (Commissary, cloudpid, lspctl, Neopane, …), so create every issue for this repo in project `Pi Extensions`, and scope every read to it.
 
-**GitHub Issues are the public intake.** Outside users open issues on GitHub. A one-way sync (GitHub → Linear) copies each new one into team SPI, carrying its GitHub URL as an attachment. Comments in its synced thread sync both ways (**Comment on an issue**), and closing it in Linear closes it on GitHub. The sync puts the copy in no project; the workflow `linear project` (`.github/workflows/linear-project.yml`, `scripts/linear-project.sh`) moves it into Pi Extensions once it appears. It reads the repository secret `LINEAR_API_KEY`, a Linear API key that may edit SPI's issues (1Password: `op://Agents/Linear GitHub/credential`). Dispatch that workflow with an issue number to retry one whose run failed (an issue opened before the sync existed has no copy to move). Work every issue in Linear and refer to it by its Linear identifier (`SPI-123`). Never create issues with `gh issue create`. A GitHub number (`#519`) resolves to the Linear issue that carries its URL (**Read an issue** below).
+**GitHub Issues are the public intake.** Outside users open issues on GitHub. A one-way sync (GitHub → Linear) copies each new one into team SPI, carrying its GitHub URL as an attachment. Comments in its synced thread sync both ways (**Comment on an issue**), and closing it in Linear closes it on GitHub. The sync puts the copy in no project; the workflow `linear project` (`.github/workflows/linear-project.yml`, `scripts/linear-project.sh`) moves it into Pi Extensions once it appears. It reads the repository secret `LINEAR_API_KEY`, a Linear API key that may edit SPI's issues. Dispatch that workflow with an issue number to retry one whose run failed (an issue opened before the sync existed has no copy to move). Work every issue in Linear and refer to it by its Linear identifier (`SPI-123`). Never create issues with `gh issue create`. A GitHub number (`#519`) resolves to the Linear issue that carries its URL (**Read an issue** below).
 
 ## How to reach Linear
 
@@ -55,7 +55,7 @@ Label ids are in `docs/agents/triage-labels.md`. For any other label: `tools.lin
   - CLI: `linear issue update SPI-123 --add-label <name>` / `--remove-label <name>`.
 - **Close**:
   - Comment first, then set the state to Done, or Canceled for won't-do: Executor `tools.linear.mutation_issueUpdate`, `arguments: { id, input: { stateId } }`; CLI `linear issue update SPI-123 --state Done`.
-  - A duplicate is a relation: `mutation_issueRelationCreate` with `type: "duplicate"`, or `linear issue relation add SPI-2 duplicate SPI-1`.
+  - A duplicate is a relation: `mutation_issueRelationCreate` with `type: "duplicate"`, or `linear issue relation add SPI-2 duplicate SPI-1`; then set the duplicate's state to Duplicate.
   - Closing a synced issue closes its GitHub copy.
 
 ## Pull requests
