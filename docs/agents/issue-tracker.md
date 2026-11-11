@@ -55,12 +55,11 @@ Label ids are in `docs/agents/triage-labels.md`. For any other label: `tools.lin
   - CLI: `linear issue update SPI-123 --add-label <name>` / `--remove-label <name>`.
 - **Close**:
   - Comment first, then set the state to Done, or Canceled for won't-do: Executor `tools.linear.mutation_issueUpdate`, `arguments: { id, input: { stateId } }`; CLI `linear issue update SPI-123 --state Done`.
-  - A duplicate is a relation: `mutation_issueRelationCreate` with `type: "duplicate"`, or `linear issue relation add SPI-2 duplicate SPI-1`; then set the duplicate's state to Duplicate.
-  - Closing a synced issue closes its GitHub copy.
+  - A duplicate is a relation: `mutation_issueRelationCreate` with `type: "duplicate"`, or `linear issue relation add SPI-2 duplicate SPI-1`; then set SPI-2's state to Duplicate.
 
 ## Pull requests
 
-Code and PRs stay on GitHub (`gh`, the `code-host` skill). To close an issue from a PR, put `Fixes SPI-123` in the PR body (Linear's magic words). Linear's GitHub integration links the PR and moves the issue to Done when it merges. Use the Linear identifier for synced GitHub issues too: closing in Linear closes the GitHub copy.
+Code and PRs stay on GitHub (`gh`, the `code-host` skill). To close an issue from a PR, put `Fixes SPI-123` in the PR body (Linear's magic words). Linear's GitHub integration links the PR and moves the issue to Done when it merges. Use the Linear identifier for synced GitHub issues too.
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_ When `yes`, read and act on external PRs with `gh` (`gh pr view <n> --comments`, `gh pr diff <n>`, `gh pr comment`, `gh pr edit --add-label`, `gh pr close`), and list them with `gh api --paginate 'repos/{owner}/{repo}/pulls?state=open' --jq '.[] | select(.author_association | IN("OWNER","MEMBER","COLLABORATOR") | not) | {number, title, author: .user.login, labels: [.labels[].name]}'`.
 
