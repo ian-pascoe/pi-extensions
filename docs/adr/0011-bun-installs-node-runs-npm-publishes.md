@@ -1,6 +1,6 @@
 # Bun installs and runs the repository; Node runs its tools; npm publishes
 
-> **Superseded in part by [ADR 0012](0012-vite-plus-runs-the-toolchain-pnpm-installs.md).** pnpm installs again and Vite+ runs tests, formatting, linting, hooks, and tasks; Changesets publishes with `pnpm publish`. The Typechecker section, the tsrslint backend, the publish manifest, and the vscode-js-debug fixture still hold as amended there.
+> **Superseded in part by [ADR 0012](0012-vite-plus-runs-the-toolchain-pnpm-installs.md).** pnpm installs again and Vite+ runs tests, formatting, linting, hooks, and tasks; Changesets publishes with `pnpm publish`. The Typechecker section, the publish manifest, and the vscode-js-debug fixture still hold as amended there; ADR 0012 also moves the type-aware rules from tsrslint to tsrs's own `tsrs-lint`.
 
 The repository moved from pnpm to Bun for installing dependencies and running package scripts. This ADR defines the two terms the rest of the repository uses for the split, and the decisions that follow from it. The evidence, including what was run and what was only read in documentation, is in [the Bun and tsrs research](../research/bun-and-tsrs.md).
 
@@ -45,6 +45,8 @@ Pi DAP's Supported Adapter test runs against the vscode-js-debug release tarball
 ## Typechecker
 
 > **Amended** to record the typechecker (tsrs), and again to move the type-aware lint rules to `@maschwenk/tsrslint` ([#499](https://github.com/ian-pascoe/pi-extensions/issues/499)).
+>
+> **Superseded in part by [ADR 0012](0012-vite-plus-runs-the-toolchain-pnpm-installs.md)'s Type-aware lint backend.** The rules now run on tsrs's own `tsrs-lint`, and `tsrs` is pinned at `0.24.0-ts7.1.0-beta`. The tsrslint paragraph and its Parity, Speed and memory, Platforms, and Version drift bullets below are history. The Selection bullet still holds with `node_modules/.bin/tsrs-lint` as the path, and the Known gap still holds on 0.24.0.
 
 `tsrs` replaces the `typescript` package as the only source of TypeScript diagnostics, for the `typecheck` and `typecheck:root` tasks and for the language server in `.pi/settings.json` (`bunx --no-install tsrs --lsp --stdio`). It is a Rust port of TypeScript 7 whose `tsrs` binary takes the same `-p` and `--noEmit` flags; the scripts use no other flags, and in particular not `--fast`, which its help text says "may differ from pinned TypeScript behavior". The `pi-utils` `build` script is `tsrs -p tsconfig.build.json`. The evidence is below. The speed and memory figures and the first parity check come from [the research](../research/bun-and-tsrs.md); the swap re-checked parity and the `dist` output and timed the typecheck tasks.
 
