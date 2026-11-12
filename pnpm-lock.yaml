@@ -19,8 +19,8 @@ importers:
         specifier: ^1.5.0
         version: 1.5.0(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)
       '@earendil-works/pi-ai':
-        specifier: ^1.5.0
-        version: 1.5.0(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)
+        specifier: ^1.5.2
+        version: 1.5.2(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)
       '@earendil-works/pi-coding-agent':
         specifier: 1.5.0
         version: 1.5.0(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(ws@8.22.2)
@@ -50,7 +50,7 @@ importers:
         version: 1.5.0(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)
       '@earendil-works/pi-ai':
         specifier: '>=1.1.0'
-        version: 1.5.0(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)
+        version: 1.5.2(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)
       '@earendil-works/pi-coding-agent':
         specifier: '>=1.1.0'
         version: 1.5.0(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(ws@8.22.2)
@@ -89,7 +89,7 @@ importers:
         version: 1.5.0(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)
       '@earendil-works/pi-ai':
         specifier: '>=1.1.0'
-        version: 1.5.0(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)
+        version: 1.5.2(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)
       '@earendil-works/pi-coding-agent':
         specifier: '>=1.1.0'
         version: 1.5.0(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(ws@8.22.2)
@@ -153,7 +153,7 @@ importers:
     dependencies:
       '@earendil-works/pi-ai':
         specifier: '>=1.1.0'
-        version: 1.5.0(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)
+        version: 1.5.2(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)
       '@earendil-works/pi-coding-agent':
         specifier: '>=1.1.0'
         version: 1.5.0(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(ws@8.22.2)
@@ -229,7 +229,7 @@ importers:
         version: 1.5.0(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)
       '@earendil-works/pi-ai':
         specifier: '>=1.1.0'
-        version: 1.5.0(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)
+        version: 1.5.2(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)
       '@earendil-works/pi-coding-agent':
         specifier: '>=1.1.0'
         version: 1.5.0(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(ws@8.22.2)
@@ -250,7 +250,7 @@ importers:
     dependencies:
       '@earendil-works/pi-ai':
         specifier: '>=1.1.0'
-        version: 1.5.0(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)
+        version: 1.5.2(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)
       '@earendil-works/pi-coding-agent':
         specifier: '>=1.1.0'
         version: 1.5.0(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(ws@8.22.2)
@@ -298,7 +298,7 @@ importers:
     dependencies:
       '@earendil-works/pi-ai':
         specifier: '>=1.1.0'
-        version: 1.5.0(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)
+        version: 1.5.2(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)
       '@earendil-works/pi-coding-agent':
         specifier: '>=1.1.0'
         version: 1.5.0(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(ws@8.22.2)
@@ -329,7 +329,7 @@ importers:
     dependencies:
       '@earendil-works/pi-ai':
         specifier: '>=1.1.0'
-        version: 1.5.0(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)
+        version: 1.5.2(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)
       '@earendil-works/pi-coding-agent':
         specifier: '>=1.1.0'
         version: 1.5.0(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(ws@8.22.2)
@@ -351,7 +351,7 @@ importers:
     dependencies:
       '@earendil-works/pi-ai':
         specifier: '>=1.1.0'
-        version: 1.5.0(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)
+        version: 1.5.2(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)
       '@earendil-works/pi-coding-agent':
         specifier: '>=1.1.0'
         version: 1.5.0(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(ws@8.22.2)
@@ -559,6 +559,11 @@ packages:
     engines: {node: '>=22.19.0'}
     hasBin: true
 
+  '@earendil-works/pi-ai@1.5.2':
+    resolution: {integrity: sha512-2tWPSnV3qzfiDIY3aWluBag3vC++Vs+VsXt/UquSU5onPMohPih72FUhIhaqmDdMYubOgB3Byl9uF4Vk40JLvQ==}
+    engines: {node: '>=22.19.0'}
+    hasBin: true
+
   '@earendil-works/pi-codemode@1.5.0':
     resolution: {integrity: sha512-PLBJZ17AEWGzOlAAcFuOkw3PxkOti0JlFuZQyeF2GRTqbpuYo4k9t8YqUV2uOQVzrUnKdxahwaFUqc1eNS1WAg==}
     engines: {node: '>=22.19.0'}
@@ -576,8 +581,16 @@ packages:
     resolution: {integrity: sha512-RW0MbT2tR65OY6xMsgB/yVBb7m/RTNwA+9hurSN1vVXfHZRVmVnXbruBPrx/PzbrQnW5yLVlMRWxErGDQtF1Hg==}
     engines: {node: '>=22.19.0'}
 
+  '@earendil-works/pi-schema@1.5.2':
+    resolution: {integrity: sha512-hJoyCXWUhsSrXY5wJo2Q4kHXUsR51pNhkJHAMkWRwVMLDRtMDPkKNaa+JlVRVqTw1hjdSxcVVaFLSDbKlaTXEQ==}
+    engines: {node: '>=22.19.0'}
+
   '@earendil-works/pi-telemetry@1.5.0':
     resolution: {integrity: sha512-VW3tcVdnNfl/Vk8wHPTzZdKkxcsCOM12ppiO4DXnd9wMxUCmOfLt/wvUnWeKWbTVlVSRg0uqKtnnhE2UCsG2Bw==}
+    engines: {node: '>=22.19.0'}
+
+  '@earendil-works/pi-telemetry@1.5.2':
+    resolution: {integrity: sha512-m+cumjIqNh1aMISi/9ttcG3ZOwIdriPbz/eMyWmRMJCGa/WcgY1RX4lrb7HvsHhSfI/JUeBESA4nOCr8C3y5ow==}
     engines: {node: '>=22.19.0'}
 
   '@earendil-works/pi-tui@1.5.0':
@@ -2423,6 +2436,31 @@ snapshots:
       - ws
       - zod
 
+  '@earendil-works/pi-ai@1.5.2(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)':
+    dependencies:
+      '@anthropic-ai/sdk': 0.129.0
+      '@aws-sdk/client-bedrock-runtime': 3.1127.0
+      '@earendil-works/pi-schema': 1.5.2
+      '@earendil-works/pi-telemetry': 1.5.2
+      '@google/genai': 2.21.0
+      '@smithy/node-http-handler': 4.12.1
+      http-proxy-agent: 9.1.0
+      https-proxy-agent: 9.1.0
+      openai: 7.19.0(@aws-sdk/credential-provider-node@3.972.96)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.22.2)
+      partial-json: 0.1.7
+    transitivePeerDependencies:
+      - '@aws-sdk/credential-provider-node'
+      - '@modelcontextprotocol/sdk'
+      - '@smithy/hash-node'
+      - '@smithy/signature-v4'
+      - bufferutil
+      - kerberos
+      - supports-color
+      - undici
+      - utf-8-validate
+      - ws
+      - zod
+
   '@earendil-works/pi-codemode@1.5.0':
     dependencies:
       quickjs-wasi: 3.6.2
@@ -2469,7 +2507,11 @@ snapshots:
 
   '@earendil-works/pi-schema@1.5.0': {}
 
+  '@earendil-works/pi-schema@1.5.2': {}
+
   '@earendil-works/pi-telemetry@1.5.0': {}
+
+  '@earendil-works/pi-telemetry@1.5.2': {}
 
   '@earendil-works/pi-tui@1.5.0':
     dependencies:
