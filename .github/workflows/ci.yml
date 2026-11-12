@@ -58,7 +58,7 @@ jobs:
       - name: Install Node.js, pnpm, and Vite+
         uses: jdx/mise-action@v5
       - name: Install npm with trusted publishing support
-        run: npm install --global npm@">=11.5.1"
+        run: npm install --global npm@"^11.5.1"
       - name: Locate pnpm store
         id: pnpm-store
         run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
