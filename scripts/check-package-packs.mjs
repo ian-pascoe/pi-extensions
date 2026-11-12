@@ -10,7 +10,6 @@ import {
   loadSkills,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { assertNodeRuntime } from "./assert-node-runtime.mjs";
 import {
   getNodeProcessErrorStderr,
   hasNodeProcessErrorCode,
@@ -20,8 +19,6 @@ import { applyPublishManifest, restorePublishManifest } from "./publish-manifest
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { readJsonDocument, workspacePackageManifestSchema } from "./root-project-contract.mjs";
-
-assertNodeRuntime();
 
 const execFile = promisify(execFileCallback);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");

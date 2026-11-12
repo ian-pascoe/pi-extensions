@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { paintHighlights, paintRow } from "../src/vim/row-paint.js";
 import { VimHarness, vim } from "./vim-harness.js";
 

@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { parseEnv } from "node:util";
 import type { JsonValue } from "@earendil-works/pi-ai";
 import { recordToolRegistrations } from "@ian-pascoe/pi-utils/tool-testing";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it, onTestFinished } from "vite-plus/test";
 import {
   createPiSecretExtension,
   defaultSecretProviders,

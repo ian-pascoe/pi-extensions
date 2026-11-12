@@ -193,10 +193,9 @@
   "formatter": {
     "formatters": {
       "oxfmt": {
-        "command": "bunx",
+        "command": "vp",
         "args": [
-          "--no-install",
-          "oxfmt",
+          "fmt",
           "--no-error-on-unmatched-pattern",
           "$FILE"
         ],
@@ -219,7 +218,7 @@
           ]
         },
         "rootMarkers": [
-          ".oxfmtrc.json"
+          "vite.config.ts"
         ],
         "requireRootMarker": true
       }
@@ -258,9 +257,9 @@
     },
     "servers": {
       "typescript": {
-        "command": "bunx",
+        "command": "vp",
         "args": [
-          "--no-install",
+          "exec",
           "tsrs",
           "--lsp",
           "--stdio"
@@ -285,15 +284,14 @@
           "tsconfig.json"
         ],
         "workspaceRootMarkers": [
-          "bun.lock"
+          "pnpm-workspace.yaml"
         ],
         "requireRootMarker": true
       },
       "oxlint": {
-        "command": "bunx",
+        "command": "vp",
         "args": [
-          "--no-install",
-          "oxlint",
+          "lint",
           "--lsp"
         ],
         "languages": [
@@ -327,7 +325,7 @@
           }
         ],
         "rootMarkers": [
-          ".oxlintrc.json"
+          "vite.config.ts"
         ],
         "requireRootMarker": true
       }

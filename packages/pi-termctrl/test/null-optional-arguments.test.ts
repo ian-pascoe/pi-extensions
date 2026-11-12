@@ -3,7 +3,7 @@ import {
   expectNullOptionalArgumentsOmitted,
   withoutPreparedArguments,
 } from "@ian-pascoe/pi-utils/tool-testing";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test } from "vite-plus/test";
 import { TermctrlRegistry } from "../src/termctrl-registry.js";
 import { FakeDriverFactory } from "./fake-driver.js";
 import { createSdkFixture, disposeSdkFixtures, settle } from "./sdk-fixture.js";

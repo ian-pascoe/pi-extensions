@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   addMinimalSubagentsUsage,
   MINIMAL_SUBAGENTS_COST_DECIMALS,

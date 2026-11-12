@@ -25,7 +25,7 @@ import {
   type Model,
 } from "@earendil-works/pi-ai";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import { afterEach, beforeAll, expect, test } from "vitest";
+import { afterEach, beforeAll, expect, test } from "vite-plus/test";
 import { EXIT_NOTIFICATION_TYPE } from "../src/exit-notification.js";
 import { TermctrlRegistry } from "../src/termctrl-registry.js";
 import { FakeDriverFactory } from "./fake-driver.js";
@@ -124,7 +124,7 @@ let PiAgentSessionFactory: new (options: ChildSessionFactoryOptions) => ChildSes
 
 /**
  * Importing the sibling package's session module transforms its whole source tree: about a second
- * on an idle machine and several under a cold `bun run verify`. Loading it once here keeps that
+ * on an idle machine and several under a cold `vp run verify`. Loading it once here keeps that
  * one-time cost out of the test's timeout. The hook timeout only guards against a hang.
  */
 beforeAll(async () => {

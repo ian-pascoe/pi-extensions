@@ -1,6 +1,6 @@
 import type { JsonObject, JsonValue } from "@earendil-works/pi-ai";
 import { SessionManager, type ContextEvent } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { CHECKPOINT_INSTRUCTION, projectTodoContext } from "../src/todo-context.js";
 
 type Message = ContextEvent["messages"][number];

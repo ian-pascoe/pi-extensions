@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { chmodSync } from "node:fs";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";

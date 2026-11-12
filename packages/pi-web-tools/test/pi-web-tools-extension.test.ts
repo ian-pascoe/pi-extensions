@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vite-plus/test";
 import { createPiWebToolsExtension } from "../src/index.js";
 import { toToolContext } from "./tool-context.js";
 import { createWebToolsTestRunner } from "./web-tools-test-harness.js";

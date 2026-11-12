@@ -22,7 +22,7 @@ import {
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vite-plus/test";
 import {
   expectToolOutputMatches,
   recordToolOutputs,

@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it } from "vite-plus/test";
 import type { AgentSession, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import contextManagement from "../src/context-management-extension.js";
 import { createSdkHarness, overflow, reply, toolCall } from "./sdk-harness.js";

@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vite-plus/test";
 import { updateFileLocked } from "../src/locked-file-update.js";
 
 const temporaryDirectories: string[] = [];

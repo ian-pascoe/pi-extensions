@@ -1,6 +1,6 @@
 import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import { Editor } from "@earendil-works/pi-tui";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { EditorAdapter } from "../src/editor-adapter.js";
 import { VimEditor } from "../src/vim-editor.js";
 import { createKeybindings, createTui, editorTheme } from "./vim-pi-fixture.js";

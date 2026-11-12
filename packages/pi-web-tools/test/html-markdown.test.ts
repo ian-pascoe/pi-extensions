@@ -1,5 +1,5 @@
 import TurndownService from "turndown";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 import { convertHtmlInChunks, type HtmlChunkLimits } from "../src/html-markdown.js";
 
 function turndown(html: string): string {

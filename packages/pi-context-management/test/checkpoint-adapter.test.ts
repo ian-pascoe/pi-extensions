@@ -1,7 +1,7 @@
 import { chmodSync } from "node:fs";
 import { AgentSession, SessionManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test } from "vite-plus/test";
 import {
   captureCheckpointAdapter,
   type CheckpointAdapter,

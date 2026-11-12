@@ -16,7 +16,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { Value } from "typebox/value";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vite-plus/test";
 import {
   GIT_CHECKPOINT_MODEL_STEP_END_ENTRY_TYPE,
   GIT_CHECKPOINT_UNDO_ENTRY_TYPE,

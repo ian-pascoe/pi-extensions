@@ -2,7 +2,7 @@ import {
   expectNullOptionalArgumentsOmitted,
   recordToolRegistrations,
 } from "@ian-pascoe/pi-utils/tool-testing";
-import { expect, test } from "vitest";
+import { expect, test } from "vite-plus/test";
 import { createPiDapExtension } from "../src/pi-dap-extension.js";
 
 test("every dap_* tool treats null for an optional parameter like omitting it", async () => {

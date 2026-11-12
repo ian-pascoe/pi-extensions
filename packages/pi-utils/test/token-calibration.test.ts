@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { calibratedFactor, fallbackTokenFactor, tokenFactor } from "../src/token-calibration.js";
 
 describe("token estimate calibration", () => {

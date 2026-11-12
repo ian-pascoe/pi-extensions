@@ -1,7 +1,7 @@
 import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { sensitivePathReason, type SensitivePathContext } from "../src/sensitive-paths.js";
 import { onlyReads, resolveToolPolicy, type ToolPolicyInput } from "../src/tool-policy.js";
 import { useCleanShellEnvironment } from "./fixtures/shell-environment.js";

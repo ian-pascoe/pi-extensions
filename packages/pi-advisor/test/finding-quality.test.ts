@@ -1,4 +1,4 @@
-import { onTestFinished, expect, it, vi } from "vitest";
+import { onTestFinished, expect, it, vi } from "vite-plus/test";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import {
   activeFixture,

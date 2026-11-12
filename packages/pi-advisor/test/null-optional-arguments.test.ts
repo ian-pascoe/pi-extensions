@@ -1,5 +1,5 @@
 import { expectNullOptionalArgumentsOmitted } from "@ian-pascoe/pi-utils/tool-testing";
-import { expect, it } from "vitest";
+import { expect, it } from "vite-plus/test";
 import { fixture } from "./fixtures/advisor-runtime.js";
 
 it("advisor_ask treats null for an optional parameter like omitting it", async () => {

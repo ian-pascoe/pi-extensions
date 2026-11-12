@@ -5,7 +5,7 @@ import {
   expectLinesFitWidth,
   readableTags,
 } from "@ian-pascoe/pi-utils/ui-testing";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vite-plus/test";
 import {
   DapObserverUiController,
   renderDapObserverWidgetLines,

@@ -8,7 +8,7 @@ import {
   readableTags,
   type LineFitOptions,
 } from "@ian-pascoe/pi-utils/ui-testing";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import {
   type MinimalSubagentsRenderTheme,
   renderCoordinatorToolCall,

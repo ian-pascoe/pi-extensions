@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 import { configuredFor } from "./configured-hosts.js";
 import { GITHUB } from "../src/github-host.js";
 import { GITLAB } from "../src/gitlab-host.js";

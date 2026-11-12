@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vite-plus/test";
 import { testTimeouts } from "./lsp-timeouts.js";
 import { LspServerClient } from "../src/lsp-server-client.js";
 import { LspServerManager } from "../src/lsp-server-manager.js";

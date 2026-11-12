@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { expectLinesFitWidth } from "@ian-pascoe/pi-utils/ui-testing";
 import {

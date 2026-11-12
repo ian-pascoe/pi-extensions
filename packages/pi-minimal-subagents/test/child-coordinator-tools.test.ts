@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test } from "vite-plus/test";
 import { DEFAULT_MAX_SUBAGENT_DEPTH } from "../src/minimal-subagents-capabilities.js";
 import { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
 import { PiAgentSessionFactory } from "../src/minimal-subagents-sessions.js";

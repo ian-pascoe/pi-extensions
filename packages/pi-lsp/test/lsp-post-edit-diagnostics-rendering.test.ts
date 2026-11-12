@@ -4,7 +4,7 @@ import {
   expectLinesFitWidth,
   readableTags,
 } from "@ian-pascoe/pi-utils/ui-testing";
-import { beforeAll, describe, expect, test } from "vitest";
+import { beforeAll, describe, expect, test } from "vite-plus/test";
 import { Value } from "typebox/value";
 import {
   createPostEditDiagnosticsEntryData,

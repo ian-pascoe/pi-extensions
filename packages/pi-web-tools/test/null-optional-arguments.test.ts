@@ -2,7 +2,7 @@ import {
   expectNullOptionalArgumentsOmitted,
   recordToolRegistrations,
 } from "@ian-pascoe/pi-utils/tool-testing";
-import { expect, test } from "vitest";
+import { expect, test } from "vite-plus/test";
 import { createPiWebToolsExtension } from "../src/index.js";
 
 test("web_search and web_fetch treat null for an optional parameter like omitting it", async () => {

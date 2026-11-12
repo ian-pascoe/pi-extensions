@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";

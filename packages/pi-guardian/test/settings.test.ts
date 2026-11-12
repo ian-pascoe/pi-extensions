@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { completeGuardianCommandArguments, parseGuardianCommand } from "../src/guardian-command.js";
 import { parseGuardianMenuValue } from "../src/guardian-menu.js";

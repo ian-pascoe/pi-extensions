@@ -7,7 +7,7 @@ import {
   keybindingHints,
   readableTags,
 } from "@ian-pascoe/pi-utils/ui-testing";
-import { afterEach, beforeAll, describe, expect, test } from "vitest";
+import { afterEach, beforeAll, describe, expect, test } from "vite-plus/test";
 import { FakeDriverFactory } from "./fake-driver.js";
 import { createSdkFixture, disposeSdkFixtures } from "./sdk-fixture.js";
 import {

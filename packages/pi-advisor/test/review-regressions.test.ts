@@ -1,4 +1,4 @@
-import { onTestFinished, expect, it } from "vitest";
+import { onTestFinished, expect, it } from "vite-plus/test";
 import type { Context } from "@earendil-works/pi-ai";
 import { reply, toolCall } from "../../pi-context-management/test/sdk-harness.js";
 import { AdvisorObserver } from "../src/advisor-observer.js";

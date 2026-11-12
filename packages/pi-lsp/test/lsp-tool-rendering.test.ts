@@ -4,7 +4,7 @@ import {
   expectLinesFitWidth,
   readableTags,
 } from "@ian-pascoe/pi-utils/ui-testing";
-import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, test, vi } from "vite-plus/test";
 import {
   renderLspToolCall,
   renderLspToolResult,

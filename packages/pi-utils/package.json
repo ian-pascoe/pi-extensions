@@ -124,8 +124,8 @@
   },
   "scripts": {
     "build": "tsrs -p tsconfig.build.json",
-    "prepack": "bun run build && node ../../scripts/publish-manifest.mjs check .",
-    "test": "vitest run",
+    "prepack": "pnpm run build && node ../../scripts/publish-manifest.mjs check .",
+    "test": "vp test run",
     "typecheck": "tsrs --noEmit -p tsconfig.json"
   },
   "dependencies": {

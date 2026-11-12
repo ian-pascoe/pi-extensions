@@ -32,7 +32,7 @@
     "provenance": true
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "vp test run",
     "typecheck": "tsrs --noEmit -p tsconfig.json"
   },
   "dependencies": {

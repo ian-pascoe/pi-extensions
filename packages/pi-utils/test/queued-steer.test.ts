@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { expect, test, vi } from "vitest";
+import { expect, test, vi } from "vite-plus/test";
 import {
   hasQueuedSteer,
   onQueuedSteer,

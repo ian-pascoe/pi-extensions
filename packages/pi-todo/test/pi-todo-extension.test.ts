@@ -13,7 +13,7 @@ import type { AutocompleteItem, Component, TUI } from "@earendil-works/pi-tui";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { expectToolOutputMatches } from "@ian-pascoe/pi-utils/tool-testing";
 import type { TSchema } from "typebox";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 import todoExtension from "../src/index.js";
 import type { TodoActionInput, TodoTaskChange, TodoToolDetails } from "../src/todo-list.js";
 import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";

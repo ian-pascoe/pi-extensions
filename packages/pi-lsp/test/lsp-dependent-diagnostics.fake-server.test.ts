@@ -2,7 +2,7 @@ import { readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vite-plus/test";
 import { closeExtensionSessions, startExtensionSession } from "./extension-session.js";
 import { MAX_TOUCHED_DECLARATIONS } from "../src/lsp-dependent-diagnostics.js";
 

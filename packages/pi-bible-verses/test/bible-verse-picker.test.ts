@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 import { createBibleVersePicker, RECENT_BIBLE_VERSE_LIMIT } from "../src/bible-verse-picker.js";
 import type { BibleVerseMessage } from "../src/bible-verses.js";
 

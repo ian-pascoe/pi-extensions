@@ -33,13 +33,12 @@ This is the release procedure. Migration implementation publishes nothing.
   bootstrap publish needs no Changeset, but the implementation PR still adds a
   `minor` Changeset for the new package; its version PR releases `0.1.0`
   through the trusted-publishing workflow.
-- Use `bun run changeset` for releasable changes and inspect them with
-  `bun run changeset:status`. The workflow creates version PRs with
-  `bun run version-packages`.
-- Bun installs and runs scripts, but releases publish with npm: Changesets calls
-  `npm publish` with provenance, and `bun publish` is never used. npm and Bun ignore
-  `publishConfig` field overrides, so `@ian-pascoe/pi-utils` (whose workspace manifest
-  points `exports` at `src`) publishes only through `bun run publish-packages`, which
+- Use `pnpm run changeset` for releasable changes and inspect them with
+  `pnpm run changeset:status`. The workflow creates version PRs with
+  `pnpm run version-packages`.
+- Changesets publishes with `pnpm publish` and provenance. `@ian-pascoe/pi-utils`
+  (whose workspace manifest points `exports` at `src`) publishes only through
+  `pnpm run publish-packages`, because npm ignores `publishConfig` field overrides; it
   first runs `node scripts/publish-manifest.mjs apply` to lift its `dist` entrypoints to
   the top level. Its `prepack` runs `check` and fails an unapplied manifest, so a bare
   `npm publish` cannot ship a package whose `exports` point at `src`. After a release,
@@ -49,14 +48,14 @@ This is the release procedure. Migration implementation publishes nothing.
 ## Pre-publish checks
 
 ```bash
-bun install --frozen-lockfile
-bun run verify
-bun run pack:check
-bun run git-install:check
-bun run changeset:status
+pnpm install --frozen-lockfile
+vp run verify
+pnpm run pack:check
+pnpm run git-install:check
+pnpm run changeset:status
 ```
 
-The release workflow runs `bun run verify`, the package-tarball check, and the
+The release workflow runs `vp run verify`, the package-tarball check, and the
 Git-install check in parallel. All three must pass before a version PR or
 publish.
 

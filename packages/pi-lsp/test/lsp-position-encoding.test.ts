@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test } from "vite-plus/test";
 import { LspInputError } from "../src/lsp-input-error.js";
 import {
   convertLspCodePointPosition,

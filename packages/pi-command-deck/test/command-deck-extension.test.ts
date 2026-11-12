@@ -14,7 +14,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, type EditorComponent } from "@earendil-works/pi-tui";
 import { footerStatus } from "@ian-pascoe/pi-utils/ui";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { createKeybindings, createTui, editorTheme } from "./vim-pi-fixture.js";
 
 const COMMAND_DECK = fileURLToPath(new URL("../src/index.ts", import.meta.url));

@@ -20,28 +20,29 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
-      - name: Install Node.js and Bun
+      - name: Install Node.js, pnpm, and Vite+
         uses: jdx/mise-action@v5
-      - name: Restore Bun package cache
+      - name: Locate pnpm store
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+      - name: Restore pnpm store
         uses: actions/cache@v6
         with:
-          path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: |
-            bun-${{ runner.os }}-
+            pnpm-${{ runner.os }}-
       - name: Install dependencies
-        run: bun install --frozen-lockfile
-      - name: Restore Turbo cache
+        run: pnpm install --frozen-lockfile
+      - name: Restore Vite Task cache
         uses: actions/cache@v6
         with:
-          path: .turbo/cache
-          key: turbo-${{ runner.os }}-${{ github.sha }}
+          path: node_modules/.vite/task-cache
+          key: vp-task-${{ runner.os }}-${{ github.sha }}
           restore-keys: |
-            turbo-${{ runner.os }}-
+            vp-task-${{ runner.os }}-
       - name: Run fast verification
-        env:
-          TURBO_CACHE_MAX_AGE: 7d
-        run: bun run verify
+        run: vp run verify
 
   artifact-checks:
     runs-on: ubuntu-latest
@@ -49,23 +50,26 @@ jobs:
       fail-fast: false
       matrix:
         command:
-          - bun run pack:check
-          - bun run git-install:check
+          - pnpm run pack:check
+          - pnpm run git-install:check
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
-      - name: Install Node.js and Bun
+      - name: Install Node.js, pnpm, and Vite+
         uses: jdx/mise-action@v5
       - name: Install npm with trusted publishing support
         run: npm install --global npm@">=11.5.1"
-      - name: Restore Bun package cache
+      - name: Locate pnpm store
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+      - name: Restore pnpm store
         uses: actions/cache@v6
         with:
-          path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: |
-            bun-${{ runner.os }}-
+            pnpm-${{ runner.os }}-
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
       - name: Run artifact check
         run: ${{ matrix.command }}

@@ -1,5 +1,5 @@
 import type { InputEvent } from "@earendil-works/pi-coding-agent";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 import { McpSelectorHarness, mcpTool } from "./mcp-selector-harness.js";
 
 const GITHUB = '[&github](mcp://github "MCP server mcp__github")';

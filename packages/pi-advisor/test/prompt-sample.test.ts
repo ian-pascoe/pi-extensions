@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it } from "vite-plus/test";
 import type { AssistantMessage, Message, Usage } from "@earendil-works/pi-ai";
 import { promptSample } from "../src/advisor-calibration.js";
 

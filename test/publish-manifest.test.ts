@@ -1,6 +1,6 @@
 /**
  * `scripts/publish-manifest.mjs` lifts a package's `publishConfig` field overrides to the top level
- * for release, because npm and Bun honour only registry options there. These tests drive its
+ * for release, because npm honours only registry options there. These tests drive its
  * `apply`, `check`, and `restore` modes against temporary package directories, once through the
  * exported functions and once through the command line the release scripts use.
  */
@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import {
   applyPublishManifest,
   checkPublishManifest,

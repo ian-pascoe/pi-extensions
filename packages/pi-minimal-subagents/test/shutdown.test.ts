@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { shutdownMinimalSubagentsSession } from "../src/minimal-subagents-shutdown.js";
 
 describe("minimal subagents shutdown", () => {

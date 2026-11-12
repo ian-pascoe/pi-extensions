@@ -3,7 +3,7 @@ import { LspServerClient, LspServerClientError } from "../src/lsp-server-client.
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vite-plus/test";
 import { LspInputError } from "../src/lsp-input-error.js";
 import {
   routeLspServersForFile,

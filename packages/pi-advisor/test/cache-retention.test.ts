@@ -1,4 +1,4 @@
-import { onTestFinished, expect, it } from "vitest";
+import { onTestFinished, expect, it } from "vite-plus/test";
 import { fileURLToPath } from "node:url";
 import type { Api, Model, SimpleStreamOptions, TranscriptContext } from "@earendil-works/pi-ai";
 import { getCurrentTools } from "@earendil-works/pi-ai";

@@ -17,6 +17,6 @@
     "moduleDetection": "force",
     "skipLibCheck": true
   },
-  "include": ["scripts/**/*.mjs", "test/**/*.ts", "vitest.config.ts"],
+  "include": ["scripts/**/*.mjs", "test/**/*.ts", "vite.config.ts", "vitest.config.ts"],
   "exclude": ["node_modules", "packages"]
 }

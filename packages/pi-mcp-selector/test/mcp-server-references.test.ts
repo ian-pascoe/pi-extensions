@@ -1,5 +1,5 @@
 import type { ToolInfo } from "@earendil-works/pi-coding-agent";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 import {
   getMcpServerCatalogue,
   matchMcpServers,

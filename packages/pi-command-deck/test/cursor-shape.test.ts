@@ -1,5 +1,5 @@
 import { CURSOR_MARKER } from "@earendil-works/pi-tui";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { stripSoftwareCursor } from "../src/cursor-shape.js";
 
 describe("stripSoftwareCursor", () => {

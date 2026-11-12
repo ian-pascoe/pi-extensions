@@ -1,5 +1,5 @@
 import { CURSOR_MARKER } from "@earendil-works/pi-tui";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { CTRL_R, ENTER, ESC, createVimEditor } from "./vim-pi-fixture.js";
 
 const SHIFT_TAB = "\x1b[Z";

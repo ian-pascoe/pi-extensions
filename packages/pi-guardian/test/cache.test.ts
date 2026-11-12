@@ -1,4 +1,4 @@
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 import { textTokens } from "../src/guardian-evidence.js";
 import {
   assessment,

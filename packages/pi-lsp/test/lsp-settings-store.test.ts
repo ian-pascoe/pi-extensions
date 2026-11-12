@@ -15,7 +15,7 @@ import { setImmediate as nextTurn } from "node:timers/promises";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test } from "vite-plus/test";
 import { writeLspEnablement } from "../src/lsp-settings-store.js";
 
 const directories: string[] = [];

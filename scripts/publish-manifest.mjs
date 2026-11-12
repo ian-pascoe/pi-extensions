@@ -2,10 +2,11 @@
  * Publish-manifest rewrite for workspace packages whose `publishConfig` overrides package fields.
  *
  * The workspace manifest of `@ian-pascoe/pi-utils` points `main`, `types`, and `exports` at `src`,
- * and its `publishConfig` names the `dist` entrypoints for the release. pnpm applied those
- * overrides when it packed. npm and Bun honour only registry options (`access`, `provenance`, ...)
- * from `publishConfig`, and npm reads the manifest again after packing, so a prepack/postpack
- * rewrite that restores the file would publish registry metadata that points at `src`.
+ * and its `publishConfig` names the `dist` entrypoints for the release. pnpm applies those
+ * overrides when it packs, but npm honours only registry options (`access`, `provenance`, ...) from
+ * `publishConfig`, and npm reads the manifest again after packing, so a prepack/postpack rewrite
+ * that restores the file would publish registry metadata that points at `src`. Applying the
+ * overrides before `changeset publish` makes the manifest right whichever tool packs it.
  *
  * Usage: `node scripts/publish-manifest.mjs <apply|check|restore> [package directory...]`. Without
  * directories, every `packages/*` workspace is processed.

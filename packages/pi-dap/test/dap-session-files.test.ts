@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { expect, test } from "vitest";
+import { expect, test } from "vite-plus/test";
 import {
   createDapSessionFiles,
   MAX_DAP_RETAINED_BYTES,

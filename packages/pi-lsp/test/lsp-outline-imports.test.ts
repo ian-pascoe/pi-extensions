@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 import { dropImportSymbols, importFoldingRanges } from "../src/lsp-outline-imports.js";
 
 const VARIABLE = 13;

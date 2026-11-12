@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vite-plus/test";
 import { closeExtensionSessions, startExtensionSession } from "./extension-session.js";
 
 const fakeServerPath = fileURLToPath(new URL("fixtures/fake-lsp-server.mjs", import.meta.url));

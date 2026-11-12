@@ -1,5 +1,5 @@
 import { delimiter, isAbsolute } from "node:path";
-import { afterEach, beforeEach } from "vitest";
+import { afterEach, beforeEach } from "vite-plus/test";
 
 /** Variables that keep `cd`, `git`, or every program from being a Safe Command. */
 function affectsSafeCommands(name: string): boolean {

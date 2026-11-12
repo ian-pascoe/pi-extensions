@@ -1,5 +1,7 @@
 # Bun installs and runs the repository; Node runs its tools; npm publishes
 
+> **Superseded in part by [ADR 0012](0012-vite-plus-runs-the-toolchain-pnpm-installs.md).** pnpm installs again and Vite+ runs tests, formatting, linting, hooks, and tasks; Changesets publishes with `pnpm publish`. The Typechecker section, the tsrslint backend, the publish manifest, and the vscode-js-debug fixture still hold as amended there.
+
 The repository moved from pnpm to Bun for installing dependencies and running package scripts. This ADR defines the two terms the rest of the repository uses for the split, and the decisions that follow from it. The evidence, including what was run and what was only read in documentation, is in [the Bun and tsrs research](../research/bun-and-tsrs.md).
 
 - **Tool runtime** is Node. It runs Vitest, the repository scripts under `scripts/`, Changesets, and Pi. Bun installs dependencies and starts `bun run <script>`; it does not run the tools.

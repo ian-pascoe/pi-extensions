@@ -9,7 +9,7 @@ import {
   SessionManager,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
-import { afterEach, expect } from "vitest";
+import { afterEach, expect } from "vite-plus/test";
 
 const temporaryDirectories: string[] = [];
 

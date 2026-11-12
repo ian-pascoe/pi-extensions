@@ -1,5 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { expectClickToggles, keybindingHints } from "@ian-pascoe/pi-utils/ui-testing";

@@ -1,5 +1,5 @@
 import { chmodSync } from "node:fs";
-import { expect, test } from "vitest";
+import { expect, test } from "vite-plus/test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import contextManagement from "../src/context-management-extension.js";
 import { createSdkHarness, overflow, reply, toolCall } from "./sdk-harness.js";

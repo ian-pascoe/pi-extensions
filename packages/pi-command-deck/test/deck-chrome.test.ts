@@ -1,6 +1,6 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   formatCacheHit,
   formatContextUsage,

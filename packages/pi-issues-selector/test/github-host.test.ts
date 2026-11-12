@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 import { GITHUB } from "../src/github-host.js";
 import type { HostEnvironment, ReadText } from "../src/issue-host.js";
 import type { RunCommand } from "../src/issue-repository.js";

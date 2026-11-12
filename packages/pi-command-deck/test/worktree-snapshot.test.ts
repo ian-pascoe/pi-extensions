@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { formatWorktreeSnapshot, parseWorktreeSnapshot } from "../src/worktree-snapshot.js";
 
 const theme = { fg: (color: string, text: string) => `<${color}>${text}` };

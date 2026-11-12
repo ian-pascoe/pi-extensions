@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { BUILTIN_COMMAND_NAMES, isPiCommand } from "../src/pi-commands.js";
 
 interface BuiltinSlashCommandModule {

@@ -13,7 +13,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
 import { Value } from "typebox/value";
-import { afterEach, describe, expect, test, vi, type MockInstance } from "vitest";
+import { afterEach, describe, expect, test, vi, type MockInstance } from "vite-plus/test";
 import {
   type Diagnostic,
   PositionEncodingKind,

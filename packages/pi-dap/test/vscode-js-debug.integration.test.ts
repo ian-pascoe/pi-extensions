@@ -1,10 +1,10 @@
-import { mkdtemp, readFile, readdir, readlink, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test } from "vite-plus/test";
 import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { createDapToolDefinitions } from "../src/dap-tool.js";
 import { DapSession, type DapSessionSnapshot } from "../src/dap-session.js";
@@ -17,50 +17,38 @@ const openSessions: DapSession[] = [];
 
 const execFileText = promisify(execFile);
 
-/** Every running process's id and command line: from /proc on Linux, else from `ps` (macOS). */
-async function runningProcesses(): Promise<ReadonlyArray<{ id: number; commandLine: string }>> {
+/**
+ * Every running process's id, parent id, and command line: from /proc on Linux, else from `ps`
+ * (macOS).
+ */
+async function runningProcesses(): Promise<
+  ReadonlyArray<{ id: number; parentId: number; commandLine: string }>
+> {
   if (process.platform !== "linux") {
-    const { stdout } = await execFileText("ps", ["-A", "-ww", "-o", "pid=,command="], {
+    const { stdout } = await execFileText("ps", ["-A", "-ww", "-o", "pid=,ppid=,command="], {
       maxBuffer: 16 * 1024 * 1024,
     });
     return stdout.split("\n").flatMap((line) => {
-      const match = /^\s*(\d+)\s(.*)$/u.exec(line);
-      return match ? [{ id: Number(match[1]), commandLine: match[2] ?? "" }] : [];
+      const match = /^\s*(\d+)\s+(\d+)\s(.*)$/u.exec(line);
+      return match
+        ? [{ id: Number(match[1]), parentId: Number(match[2]), commandLine: match[3] ?? "" }]
+        : [];
     });
   }
-  const found: { id: number; commandLine: string }[] = [];
+  const found: { id: number; parentId: number; commandLine: string }[] = [];
   for (const entry of await readdir("/proc", { withFileTypes: true })) {
     if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
     try {
       const commandLine = (await readFile(`/proc/${entry.name}/cmdline`)).toString("utf8");
-      found.push({ id: Number(entry.name), commandLine });
+      // `pid (comm) state ppid ...`; comm can hold spaces and parentheses, so read past the last `)`.
+      const stat = await readFile(`/proc/${entry.name}/stat`, "utf8");
+      const parentId = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+      found.push({ id: Number(entry.name), parentId, commandLine });
     } catch {
       // Processes can exit while /proc is scanned.
     }
   }
   return found;
-}
-
-/** A process's working directory: from /proc on Linux, else from `lsof` (macOS). */
-async function workingDirectory(processId: number): Promise<string | undefined> {
-  try {
-    if (process.platform === "linux") return await readlink(`/proc/${processId}/cwd`);
-    const { stdout } = await execFileText("lsof", [
-      "-a",
-      "-p",
-      String(processId),
-      "-d",
-      "cwd",
-      "-Fn",
-    ]);
-    return stdout
-      .split("\n")
-      .find((line) => line.startsWith("n"))
-      ?.slice(1);
-  } catch {
-    // The process exited before it could be inspected.
-    return undefined;
-  }
 }
 
 async function processIdsContaining(fragment: string): Promise<ReadonlySet<number>> {
@@ -71,14 +59,31 @@ async function processIdsContaining(fragment: string): Promise<ReadonlySet<numbe
   );
 }
 
+/**
+ * The processes running `programName` that descend from one of `adapterProcesses`: the debuggees
+ * this test's adapter launched, not other tests' programs of the same name. Lineage rather than
+ * the working directory, because macOS reports another process's working directory only through
+ * `lsof`, which `vp run --cache`'s injected file-tracking library kills.
+ */
 async function debuggeeProcessIds(
-  projectDirectory: string,
+  adapterProcesses: ReadonlySet<number>,
   programName: string,
 ): Promise<ReadonlySet<number>> {
+  const processes = await runningProcesses();
+  const parents = new Map(processes.map(({ id, parentId }) => [id, parentId]));
+  const descendsFromAdapter = (processId: number): boolean => {
+    const seen = new Set<number>();
+    for (let ancestor = parents.get(processId); ancestor !== undefined && ancestor > 1;) {
+      if (adapterProcesses.has(ancestor)) return true;
+      if (seen.has(ancestor)) return false;
+      seen.add(ancestor);
+      ancestor = parents.get(ancestor);
+    }
+    return false;
+  };
   const processIds = new Set<number>();
-  for (const { id, commandLine } of await runningProcesses()) {
-    if (!commandLine.includes(programName)) continue;
-    if ((await workingDirectory(id)) === projectDirectory) processIds.add(id);
+  for (const { id, commandLine } of processes) {
+    if (commandLine.includes(programName) && descendsFromAdapter(id)) processIds.add(id);
   }
   return processIds;
 }
@@ -249,7 +254,7 @@ test("debugs TypeScript through the Supported vscode-js-debug adapter and cleans
       (processId) => !baselineAdapterProcesses.has(processId),
     ),
   );
-  const debuggeeProcesses = await debuggeeProcessIds(projectDirectory, "program.ts");
+  const debuggeeProcesses = await debuggeeProcessIds(adapterProcesses, "program.ts");
   expect(adapterProcesses.size).toBeGreaterThan(0);
   expect(debuggeeProcesses.size).toBeGreaterThan(0);
 
@@ -266,7 +271,7 @@ test("debugs TypeScript through the Supported vscode-js-debug adapter and cleans
       (processId) => !baselineAdapterProcesses.has(processId),
     ),
   );
-  const secondDebuggeeProcesses = await debuggeeProcessIds(projectDirectory, "program.ts");
+  const secondDebuggeeProcesses = await debuggeeProcessIds(secondAdapterProcesses, "program.ts");
   await session.stop();
   await waitForProcessesToExit(new Set([...secondAdapterProcesses, ...secondDebuggeeProcesses]));
 }, 30_000);

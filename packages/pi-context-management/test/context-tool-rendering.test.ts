@@ -13,7 +13,7 @@ import {
   keybindingHints,
   readableTags,
 } from "@ian-pascoe/pi-utils/ui-testing";
-import { beforeAll, expect, test } from "vitest";
+import { beforeAll, expect, test } from "vite-plus/test";
 import contextManagement from "../src/context-management-extension.js";
 import type { ContextToolDetails } from "../src/context-tool-rendering.js";
 import { createSdkHarness } from "./sdk-harness.js";

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vite-plus/test";
 import { DapSessionError, type DapSessionResult } from "../src/dap-session.js";
 import { createDapSessionFiles } from "../src/dap-session-files.js";
 import {

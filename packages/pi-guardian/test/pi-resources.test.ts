@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { loadedResourcePaths, type LoadedResources } from "../src/guardian-pi-resources.js";
 
 /** A resource loader that loaded these extension entry files and nothing else. */

@@ -1,5 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import { renderReviewEntry } from "../src/guardian-rendering.js";

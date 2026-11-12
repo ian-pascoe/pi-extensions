@@ -4,7 +4,7 @@ import type {
   AutocompleteProvider,
   AutocompleteSuggestions,
 } from "@earendil-works/pi-tui";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 import { McpSelectorHarness, mcpTool } from "./mcp-selector-harness.js";
 
 type SuggestionOptions = Parameters<AutocompleteProvider["getSuggestions"]>[3];

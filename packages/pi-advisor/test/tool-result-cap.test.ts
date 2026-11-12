@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { onTestFinished, expect, it } from "vitest";
+import { onTestFinished, expect, it } from "vite-plus/test";
 import {
   activeFixture,
   expectPrefix,

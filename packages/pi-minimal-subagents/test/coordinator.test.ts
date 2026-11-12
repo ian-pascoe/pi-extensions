@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
 import { findDeliveryEvidence } from "../src/minimal-subagents-sessions.js";
 import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";

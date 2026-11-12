@@ -33,14 +33,15 @@
     "provenance": true
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "vp test run",
     "typecheck": "tsrs --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "@ian-pascoe/pi-utils": "^0.13.0"
   },
   "devDependencies": {
-    "@vscode/debugprotocol": "^1.68.0"
+    "@vscode/debugprotocol": "^1.68.0",
+    "vitest": "5.1.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=1.1.0",

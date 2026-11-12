@@ -12,7 +12,7 @@ import {
   type ToolResultEvent,
   type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vite-plus/test";
 import { expectClickToggles, keybindingHints } from "@ian-pascoe/pi-utils/ui-testing";
 import { failureDiagnosticOutcome, normalizedDiagnosticOutcome } from "../src/pi-lsp-extension.js";
 import { POST_EDIT_DIAGNOSTICS_ENTRY_TYPE } from "../src/lsp-post-edit-diagnostics-rendering.js";

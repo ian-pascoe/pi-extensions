@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { hasLegacyContextSettings } from "../src/context-settings.js";
 
 /** Global settings from the README's `contextManagement` example, which shows every current key at its default. */

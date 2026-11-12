@@ -1,5 +1,5 @@
 import { expectNullOptionalArgumentsOmitted } from "@ian-pascoe/pi-utils/tool-testing";
-import { expect, test, vi } from "vitest";
+import { expect, test, vi } from "vite-plus/test";
 import { createCoordinatorToolSchemas } from "../src/minimal-subagents-tool-schemas.js";
 import {
   createCoordinatorToolDefinitions,

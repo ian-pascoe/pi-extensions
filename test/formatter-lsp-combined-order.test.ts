@@ -1,13 +1,12 @@
 /**
  * Combined-mode test: Pi Formatter and Pi LSP loaded together as the Git collection loads them.
  *
- * Why this lives at the repository root: a package-level test's Turborepo cache key cannot see the
- * other package's source, so a change in one package would replay a stale pass. The root
- * `//#test:root` task lists both packages (and pi-utils) as inputs. Neither package may depend on
- * the other at runtime, and a `workspace:*` devDependency would put one in the other's published
+ * Why this lives at the repository root: the test belongs to neither package. Neither package may
+ * depend on the other at runtime, and a `workspace:*` devDependency would put one in the other's published
  * manifest and the lockfile for the sake of a test. A root test needs no manifest change, loads both
  * packages the way the collection does (by the entrypoint paths in the root `package.json`
- * `pi.extensions`), and runs through `bun run verify` with the shared `vitest.config.ts`.
+ * `pi.extensions`), and runs through `vp run verify` with the shared `vitest.config.ts`. Vite Task
+ * tracks the files the run reads, so a change in either package invalidates its cached pass.
  *
  * What it pins: Pi chains `tool_result` handlers in extension load order, and the collection loads
  * pi-formatter before pi-lsp. A mutation result therefore carries, in order, the original tool
@@ -43,7 +42,7 @@ import {
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { recordToolOutputs } from "../packages/pi-utils/src/tool-testing.js";
-import { afterEach, beforeAll, describe, expect, onTestFinished, test, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, onTestFinished, test, vi } from "vite-plus/test";
 import rootManifest from "../package.json" with { type: "json" };
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -67,7 +66,7 @@ const sessions: AgentSession[] = [];
  * Pi compiles an extension's TypeScript with jiti when it loads it, and jiti caches the output on
  * disk under the OS temporary directory. A fresh CI runner starts with an empty cache, so the first
  * load of pi-formatter and pi-lsp compiles every source file of both: about 2 s on an idle machine,
- * and past the 20 s test timeout under a cold `bun run verify`. Every other step of a test, including the fake
+ * and past the 20 s test timeout under a cold `vp run verify`. Every other step of a test, including the fake
  * language server's start, takes well under a second. Loading both once here keeps that one-time
  * cost out of the first test; each test still loads them afresh, from the cache. The hook timeout
  * only guards against a hang.

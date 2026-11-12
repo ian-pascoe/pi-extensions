@@ -5,7 +5,7 @@ import type {
   Usage,
   UserMessage,
 } from "@earendil-works/pi-ai";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   assembleImportedContext,
   buildRecentAgentActivity,

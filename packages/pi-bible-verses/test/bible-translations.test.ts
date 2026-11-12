@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 import { bibleTranslationMetadata } from "../src/bible-translations.js";
 import { bibleVerseMessages } from "../src/bible-verses.js";
 

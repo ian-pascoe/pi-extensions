@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type, type TSchema } from "typebox";
 import { Value } from "typebox/value";
-import { describe, expect, onTestFinished, test } from "vitest";
+import { describe, expect, onTestFinished, test } from "vite-plus/test";
 import { AGENT_LINEAGE_ENTRY_TYPE, agentLineageRecord } from "@ian-pascoe/pi-utils/agent-lineage";
 import { expectToolOutputMatches } from "@ian-pascoe/pi-utils/tool-testing";
 import { ensureReferenceOrigin } from "../src/context-store.js";

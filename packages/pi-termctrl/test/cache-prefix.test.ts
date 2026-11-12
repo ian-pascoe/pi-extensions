@@ -9,7 +9,7 @@
 import { rm } from "node:fs/promises";
 import { fauxAssistantMessage, fauxToolCall, type Message } from "@earendil-works/pi-ai";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vite-plus/test";
 import { EXIT_NOTIFICATION_TYPE } from "../src/exit-notification.js";
 import { TermctrlRegistry } from "../src/termctrl-registry.js";
 import { FakeDriverFactory } from "./fake-driver.js";

@@ -5,7 +5,7 @@ import type {
   ExtensionFactory,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test } from "vite-plus/test";
 import { TermctrlRegistry } from "../src/termctrl-registry.js";
 import { FakeDriverFactory } from "./fake-driver.js";
 import { createSdkFixture, disposeSdkFixtures, settle } from "./sdk-fixture.js";

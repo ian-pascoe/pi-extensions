@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   completeSettingsCommandArguments,
   parseSettingsCommand,

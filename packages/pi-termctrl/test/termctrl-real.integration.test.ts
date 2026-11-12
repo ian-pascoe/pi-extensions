@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getShellConfig, type ExtensionToolContext } from "@earendil-works/pi-coding-agent";
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "vite-plus/test";
 import { DEFAULT_TERMCTRL_SETTINGS } from "../src/pi-termctrl-settings.js";
 import { resolveTermctrlBinary } from "../src/termctrl-binary.js";
 import { createTermctrlDriver } from "../src/termctrl-driver.js";

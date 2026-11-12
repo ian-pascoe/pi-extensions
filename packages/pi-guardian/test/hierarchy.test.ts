@@ -1,10 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { SessionManager, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { onTestFinished } from "vitest";
+import { onTestFinished } from "vite-plus/test";
 import {
   assessment,
   confirmedRejection,

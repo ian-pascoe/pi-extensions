@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vite-plus/test";
 import { DapSession, type DapSessionSnapshot } from "../src/dap-session.js";
 import { createDapSessionFiles, type DapSessionFiles } from "../src/dap-session-files.js";
 import type { ResolvedDapSettings } from "../src/pi-dap-settings.js";

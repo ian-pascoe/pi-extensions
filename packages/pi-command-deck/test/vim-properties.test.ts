@@ -1,5 +1,5 @@
 import fc from "fast-check";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { lastCharCol, snapCol } from "../src/vim/text.js";
 import { VimHarness, formatModel } from "./vim-harness.js";
 
