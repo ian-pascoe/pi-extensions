@@ -38,9 +38,9 @@ This is the release procedure. Migration implementation publishes nothing.
   `pnpm run version-packages`.
 - Changesets publishes with `pnpm publish` and provenance. `@ian-pascoe/pi-utils`
   (whose workspace manifest points `exports` at `src`) publishes only through
-  `pnpm run publish-packages`, because npm ignores `publishConfig` field overrides; it
-  first runs `node scripts/publish-manifest.mjs apply` to lift its `dist` entrypoints to
-  the top level. Its `prepack` runs `check` and fails an unapplied manifest, so a bare
+  `pnpm run publish-packages`. pnpm applies `publishConfig` field overrides but npm
+  ignores them, so the script first runs `node scripts/publish-manifest.mjs apply` to lift its `dist` entrypoints to
+  the top level, making the manifest right whichever tool packs it. Its `prepack` runs `check` and fails an unapplied manifest, so a bare
   `npm publish` cannot ship a package whose `exports` point at `src`. After a release,
   confirm the registry metadata with `npm view @ian-pascoe/pi-utils exports`: every
   entry must name `dist`.

@@ -11,7 +11,7 @@ allowBuilds:
   tree-sitter-bash: false
   zeromq: false
 # Vite+ provides Vite and Vitest. Concrete versions rather than a pnpm catalog: Pi installs this
-# repository from Git with npm, which rejects `catalog:` specs. Keep them at the vite-plus version.
+# repository from Git with npm, which rejects `catalog:` specs. Upgrade them together; see ADR 0012.
 overrides:
   vite@*: npm:@voidzero-dev/vite-plus-core@1.6.0
   vitest@*: 5.1.0

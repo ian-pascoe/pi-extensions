@@ -26,7 +26,17 @@ if (!productionInstall && !process.env.CI && existsSync(".git")) {
   releaseHuskyHooksPath();
   // Installs the Vite+ hook dispatcher for the hooks in .vite-hooks, unless this clone ran
   // `vp hooks disable` or VP_GIT_HOOKS=0 is set.
-  execFileSync("vp", ["config", "--no-agent", "--hooks-dir", ".vite-hooks"], { stdio: "inherit" });
+  try {
+    execFileSync("vp", ["config", "--no-agent", "--hooks-dir", ".vite-hooks"], {
+      stdio: "inherit",
+    });
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      console.warn("Vite+ is unavailable; skipping Git hook installation.");
+    } else {
+      throw error;
+    }
+  }
 }
 
 /**

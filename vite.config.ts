@@ -1,6 +1,22 @@
 // vp migrate: merged .oxlintrc.json (8c08590b256a6fb2454e3a7d777bcf30).
 import { defineConfig } from "vite-plus";
 
+// Agent and editor directories, and the vendored anti-slop plugin, are neither formatted nor linted.
+const ignorePatterns = [
+  ".agent/**",
+  ".agents/**",
+  ".claude/**",
+  ".codex/**",
+  ".continue/**",
+  ".cursor/**",
+  ".gemini/**",
+  ".opencode/**",
+  ".pi/**",
+  ".roo/**",
+  ".windsurf/**",
+  "tools/oxlint/anti-slop/**",
+];
+
 export default defineConfig({
   run: {
     tasks: {
@@ -17,36 +33,10 @@ export default defineConfig({
     "*": "vp check --no-error-on-unmatched-pattern",
   },
   fmt: {
-    ignorePatterns: [
-      ".agent/**",
-      ".agents/**",
-      ".claude/**",
-      ".codex/**",
-      ".continue/**",
-      ".cursor/**",
-      ".gemini/**",
-      ".opencode/**",
-      ".pi/**",
-      ".roo/**",
-      ".windsurf/**",
-      "tools/oxlint/anti-slop/**",
-    ],
+    ignorePatterns,
   },
   lint: {
-    ignorePatterns: [
-      ".agent/**",
-      ".agents/**",
-      ".claude/**",
-      ".codex/**",
-      ".continue/**",
-      ".cursor/**",
-      ".gemini/**",
-      ".opencode/**",
-      ".pi/**",
-      ".roo/**",
-      ".windsurf/**",
-      "tools/oxlint/anti-slop/**",
-    ],
+    ignorePatterns,
     plugins: ["typescript", "unicorn", "oxc"],
     jsPlugins: [
       {

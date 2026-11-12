@@ -17,13 +17,14 @@ const openSessions: DapSession[] = [];
 
 const execFileText = promisify(execFile);
 
-/**
- * Every running process's id, parent id, and command line: from /proc on Linux, else from `ps`
- * (macOS).
- */
-async function runningProcesses(): Promise<
-  ReadonlyArray<{ id: number; parentId: number; commandLine: string }>
-> {
+interface RunningProcess {
+  id: number;
+  parentId: number;
+  commandLine: string;
+}
+
+/** Every running process: from /proc on Linux, else from `ps` (macOS). */
+async function runningProcesses(): Promise<ReadonlyArray<RunningProcess>> {
   if (process.platform !== "linux") {
     const { stdout } = await execFileText("ps", ["-A", "-ww", "-o", "pid=,ppid=,command="], {
       maxBuffer: 16 * 1024 * 1024,
@@ -35,7 +36,7 @@ async function runningProcesses(): Promise<
         : [];
     });
   }
-  const found: { id: number; parentId: number; commandLine: string }[] = [];
+  const found: RunningProcess[] = [];
   for (const entry of await readdir("/proc", { withFileTypes: true })) {
     if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
     try {
