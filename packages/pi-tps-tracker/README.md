@@ -22,7 +22,7 @@ This is privileged extension code: review it before installing it into an agent 
 
 ## Turn off for one process
 
-Set `PI_DISABLED_EXTENSIONS` to a comma- or space-separated list that names `pi-tps-tracker` to skip loading it, for example from a launcher for a host that provides its own version:
+Set `PI_DISABLED_EXTENSIONS` to a comma- or space-separated list that names `pi-tps-tracker` to skip loading it, for example from a launcher for a host that shows extension notices and statuses as plain text, where this package's styling escapes would appear verbatim:
 
 ```bash
 PI_DISABLED_EXTENSIONS=pi-tps-tracker pi

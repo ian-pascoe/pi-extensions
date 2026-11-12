@@ -19,11 +19,12 @@ describe("PI_DISABLED_EXTENSIONS", () => {
   afterEach(() => vi.unstubAllEnvs());
 
   it.each([
-    ["unset", undefined, true],
-    ["names another package", "pi-other", true],
-    ["names this package", "pi-other, pi-tps-tracker", false],
-    ["names this scoped package", "@ian-pascoe/pi-tps-tracker", false],
-  ])("loads the extension when the variable %s", (_label, value, loads) => {
+    ["loads when the variable is unset", undefined, true],
+    ["loads when it names another package", "pi-other", true],
+    ["skips when it names this package among commas", "pi-other, pi-tps-tracker", false],
+    ["skips when it names this package among spaces", "pi-other pi-tps-tracker", false],
+    ["skips when it names this scoped package", "@ian-pascoe/pi-tps-tracker", false],
+  ])("%s", (_label, value, loads) => {
     if (value !== undefined) vi.stubEnv("PI_DISABLED_EXTENSIONS", value);
     const { pi, calls } = recordingPi();
     extension(pi);

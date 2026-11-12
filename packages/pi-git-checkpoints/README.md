@@ -69,7 +69,7 @@ A capture failure disables checkpointing for the session until `/reload` or the 
 
 ## Turn off for one process
 
-Set `PI_DISABLED_EXTENSIONS` to a comma- or space-separated list that names `pi-git-checkpoints` to skip loading it, for example from a launcher for a host that provides its own version:
+Set `PI_DISABLED_EXTENSIONS` to a comma- or space-separated list that names `pi-git-checkpoints` to skip loading it, for example from a launcher for a host that checkpoints turns itself:
 
 ```bash
 PI_DISABLED_EXTENSIONS=pi-git-checkpoints pi
