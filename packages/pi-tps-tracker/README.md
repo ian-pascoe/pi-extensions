@@ -19,3 +19,11 @@ The extension measures streamed assistant text, thinking, and tool-call deltas. 
 There are no user settings.
 
 This is privileged extension code: review it before installing it into an agent that can access local files, tools, or credentials.
+
+## Turn off for one process
+
+Set `PI_DISABLED_EXTENSIONS` to a comma- or space-separated list that names `pi-tps-tracker` to skip loading it, for example from a launcher for a host that provides its own version:
+
+```bash
+PI_DISABLED_EXTENSIONS=pi-tps-tracker pi
+```

@@ -66,3 +66,11 @@ Expired inactive stores are removed asynchronously. Cleanup failures never block
 ## Failure behavior
 
 A capture failure disables checkpointing for the session until `/reload` or the next session. Restore first records a Safety Checkpoint; if writing fails, Git Checkpoints attempts to recover every affected path and reports exact unrecovered paths. It cannot roll back changes outside the approved Navigation Transition paths.
+
+## Turn off for one process
+
+Set `PI_DISABLED_EXTENSIONS` to a comma- or space-separated list that names `pi-git-checkpoints` to skip loading it, for example from a launcher for a host that provides its own version:
+
+```bash
+PI_DISABLED_EXTENSIONS=pi-git-checkpoints pi
+```
