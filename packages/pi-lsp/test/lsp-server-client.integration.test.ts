@@ -215,7 +215,7 @@ describe("real tsrs language server client", () => {
     }
   }, 60_000);
 
-  // tsrs (still in 0.24.0) returns no import bindings from `textDocument/documentSymbol`, so the omission
+  // tsrs 0.24.0 returns no import bindings from `textDocument/documentSymbol`, so the omission
   // logic (the hint, `omitted_imports`, and listing them at depth "all") is covered by the
   // fake-server test in `lsp-tool.test.ts`, not here.
   test("returns a diagnostic-dependent quick fix as a Workspace Edit Preview", async () => {
