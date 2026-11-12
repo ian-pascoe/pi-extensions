@@ -1,5 +1,5 @@
 import { StringEnum as piAiStringEnum } from "@earendil-works/pi-ai";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { StringEnum } from "../src/string-enum.js";
 
 describe("StringEnum", () => {

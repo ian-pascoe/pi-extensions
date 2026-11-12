@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import fc from "fast-check";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vite-plus/test";
 import {
   DapProtocolClient,
   DapProtocolClientError,
@@ -16,7 +16,7 @@ const temporaryDirectories: string[] = [];
 const clients: DapProtocolClient[] = [];
 
 // Successful starts return once the adapter listens; a generous budget keeps them reliable under
-// parallel `turbo run` load. Startup-timeout tests pass their own short budgets.
+// parallel `vp run` load. Startup-timeout tests pass their own short budgets.
 async function createClient(
   overrides: Partial<DapProtocolClientOptions> = {},
 ): Promise<DapProtocolClient> {

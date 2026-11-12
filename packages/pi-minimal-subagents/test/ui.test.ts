@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   escapeTaggedTheme as taggedTheme,

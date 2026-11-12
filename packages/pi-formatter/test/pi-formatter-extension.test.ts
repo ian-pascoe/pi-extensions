@@ -17,7 +17,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vite-plus/test";
 import { createPiFormatterExtension } from "../src/pi-formatter-extension.js";
 import type { FormatterSettingsDocumentInput } from "../src/pi-formatter-settings.js";
 import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";

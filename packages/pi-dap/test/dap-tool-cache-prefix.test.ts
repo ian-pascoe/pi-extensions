@@ -33,7 +33,7 @@ import {
   type AgentSession,
   type CreateAgentSessionOptions,
 } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vite-plus/test";
 import { DAP_OPERATIONS } from "../src/dap-tool-contract.js";
 import { DESIRED_BREAKPOINT_OPERATIONS, NEVER_STATE_FAILING } from "./dap-tool-output.js";
 import { createPiDapExtension } from "../src/pi-dap-extension.js";

@@ -18,7 +18,7 @@ import {
   SettingsManager,
   type AgentSession,
 } from "@earendil-works/pi-coding-agent";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test } from "vite-plus/test";
 import { createMinimalSubagentsExtension } from "../src/minimal-subagents-extension.js";
 import { PiAgentSessionFactory } from "../src/minimal-subagents-sessions.js";
 

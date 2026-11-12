@@ -148,54 +148,53 @@ provenance.
 
 ## Contributing
 
-`mise.toml` pins the required Node and Bun versions; run `mise install` to get them. Bun installs dependencies and runs the package scripts, but Node runs the tools behind them (Vitest, the repository scripts, Changesets, and Pi), so keep Node 22.19 on `PATH`, and run scripts with `bun run <script>`, never `bun test` or `bun --bun`. Releases publish with npm, not Bun.
+`mise.toml` pins the required Node, pnpm, and Vite+ (`vp`) versions; run `mise install` to get them, and keep mise active in the shell. pnpm installs dependencies, and Vite+ runs the tests, formatting, linting, Git hooks, and tasks: run scripts with `vp run <script>`, and format and lint with `vp check` (`vp check --fix` applies fixes). tsrs is the typechecker. See [ADR 0012](docs/adr/0012-vite-plus-runs-the-toolchain-pnpm-installs.md).
 
 Published packages support Node `>=22.19.0` and Pi `>=0.99.0`, the first release with the tool exposure, output schema, and built-in extension APIs they use. The repository develops and tests against Pi `1.0.0`. Pi Command Deck reaches private editor fields and falls back to Pi's plain editor where they differ.
 
 ```bash
-bun install
-bun run verify
+pnpm install
+vp run verify
 ```
 
-`bun run verify` runs through Turborepo, which caches each check by its inputs. A rerun on unchanged files replays from `.turbo/cache`. The pre-push hook runs `bun run verify:push`, the same checks without the test suites; CI runs the full `bun run verify`.
-A package task's inputs cover only its own files and its declared workspace dependencies. When a test imports another package by relative path or reads a repository file, add that path to the task's `inputs` in `turbo.json`; otherwise a change there replays a stale pass.
+`vp run verify` caches each step by the files it reads, including other packages' sources and repository files, and a rerun on unchanged files replays from `node_modules/.vite/task-cache`. The pre-push hook runs `vp run verify:push`, the same checks without the test suites; CI runs the full `vp run verify`. The pre-commit hook runs `vp staged`, which checks the staged files' formatting and lint.
 
-Focused package checks (`bun run --filter` prints each package's full output when not on a terminal, exits non-zero when a task fails, and passes extra arguments, such as a test file name, through to the script):
+Focused package checks (`vp run --filter` exits non-zero when a task fails and passes extra arguments, such as a test file name, through to the script):
 
 ```bash
-bun run --filter @ian-pascoe/pi-minimal-subagents test
-bun run --filter @ian-pascoe/pi-bible-verses test
-bun run --filter @ian-pascoe/pi-tps-tracker test
-bun run --filter @ian-pascoe/pi-command-deck test
-bun run --filter @ian-pascoe/pi-git-checkpoints test
-bun run --filter @ian-pascoe/pi-formatter test
-bun run --filter @ian-pascoe/pi-lsp test
-bun run --filter @ian-pascoe/pi-dap test
-bun run --filter @ian-pascoe/pi-web-tools typecheck
-bun run --filter @ian-pascoe/pi-web-tools test
-bun run --filter @ian-pascoe/pi-todo typecheck
-bun run --filter @ian-pascoe/pi-todo test
-bun run --filter @ian-pascoe/pi-context-management typecheck
-bun run --filter @ian-pascoe/pi-context-management test
-bun run --filter @ian-pascoe/pi-skills-selector typecheck
-bun run --filter @ian-pascoe/pi-skills-selector test
-bun run --filter @ian-pascoe/pi-mcp-selector typecheck
-bun run --filter @ian-pascoe/pi-mcp-selector test
-bun run --filter @ian-pascoe/pi-issues-selector typecheck
-bun run --filter @ian-pascoe/pi-issues-selector test
-bun run --filter @ian-pascoe/pi-utils test
-bun run --filter @ian-pascoe/pi-advisor typecheck
-bun run --filter @ian-pascoe/pi-advisor test
-bun run --filter @ian-pascoe/pi-termctrl typecheck
-bun run --filter @ian-pascoe/pi-termctrl test
-bun run --filter @ian-pascoe/pi-secret typecheck
-bun run --filter @ian-pascoe/pi-secret test
-bun run --filter @ian-pascoe/pi-guardian typecheck
-bun run --filter @ian-pascoe/pi-guardian test
-bun run test:root
+vp run --filter @ian-pascoe/pi-minimal-subagents test
+vp run --filter @ian-pascoe/pi-bible-verses test
+vp run --filter @ian-pascoe/pi-tps-tracker test
+vp run --filter @ian-pascoe/pi-command-deck test
+vp run --filter @ian-pascoe/pi-git-checkpoints test
+vp run --filter @ian-pascoe/pi-formatter test
+vp run --filter @ian-pascoe/pi-lsp test
+vp run --filter @ian-pascoe/pi-dap test
+vp run --filter @ian-pascoe/pi-web-tools typecheck
+vp run --filter @ian-pascoe/pi-web-tools test
+vp run --filter @ian-pascoe/pi-todo typecheck
+vp run --filter @ian-pascoe/pi-todo test
+vp run --filter @ian-pascoe/pi-context-management typecheck
+vp run --filter @ian-pascoe/pi-context-management test
+vp run --filter @ian-pascoe/pi-skills-selector typecheck
+vp run --filter @ian-pascoe/pi-skills-selector test
+vp run --filter @ian-pascoe/pi-mcp-selector typecheck
+vp run --filter @ian-pascoe/pi-mcp-selector test
+vp run --filter @ian-pascoe/pi-issues-selector typecheck
+vp run --filter @ian-pascoe/pi-issues-selector test
+vp run --filter @ian-pascoe/pi-utils test
+vp run --filter @ian-pascoe/pi-advisor typecheck
+vp run --filter @ian-pascoe/pi-advisor test
+vp run --filter @ian-pascoe/pi-termctrl typecheck
+vp run --filter @ian-pascoe/pi-termctrl test
+vp run --filter @ian-pascoe/pi-secret typecheck
+vp run --filter @ian-pascoe/pi-secret test
+vp run --filter @ian-pascoe/pi-guardian typecheck
+vp run --filter @ian-pascoe/pi-guardian test
+vp run test:root
 ```
 
-`bun run test:root` runs the repository-level tests in `test/`, which exercise several packages together (for example Pi Formatter before Pi LSP, in the collection's extension order). `bun run verify` runs it.
+`vp run test:root` runs the repository-level tests in `test/`, which exercise several packages together (for example Pi Formatter before Pi LSP, in the collection's extension order). `vp run verify` runs it.
 
 Read [`GLOSSARY-MAP.md`](GLOSSARY-MAP.md), ADRs, and
 [`docs/releases.md`](docs/releases.md) before changing behavior or releasing.

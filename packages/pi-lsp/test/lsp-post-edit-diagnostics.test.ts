@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test } from "vite-plus/test";
 import type { ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import {
   appendPostEditDiagnostics,

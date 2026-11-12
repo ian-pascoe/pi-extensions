@@ -2,7 +2,7 @@ import {
   expectNullOptionalArgumentsOmitted,
   recordToolRegistrations,
 } from "@ian-pascoe/pi-utils/tool-testing";
-import { expect, test } from "vitest";
+import { expect, test } from "vite-plus/test";
 import { createPiSecretExtension } from "../src/pi-secret-extension.js";
 import { FakeProvider } from "./fixtures/fake-provider.js";
 

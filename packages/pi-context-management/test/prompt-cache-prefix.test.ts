@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { expect, it, vi } from "vitest";
+import { expect, it, vi } from "vite-plus/test";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import {

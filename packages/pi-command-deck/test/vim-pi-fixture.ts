@@ -7,7 +7,7 @@ import {
   type KeybindingsConfig,
   type Terminal,
 } from "@earendil-works/pi-tui";
-import { vi } from "vitest";
+import { vi } from "vite-plus/test";
 import { VimEditor, type VimEditorHost } from "../src/vim-editor.js";
 
 /** A terminal that records writes and never touches the process TTY. */

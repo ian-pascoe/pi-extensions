@@ -27,7 +27,7 @@ import type {
   AutocompleteProvider,
   AutocompleteSuggestions,
 } from "@earendil-works/pi-tui";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 import issuesSelector from "../packages/pi-issues-selector/src/index.js";
 import mcpSelector from "../packages/pi-mcp-selector/src/index.js";
 import {

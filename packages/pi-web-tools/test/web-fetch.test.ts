@@ -7,7 +7,7 @@ import { expectToolOutputMatches } from "@ian-pascoe/pi-utils/tool-testing";
 import { Parser } from "htmlparser2";
 import TurndownService from "turndown";
 import { Value } from "typebox/value";
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "vite-plus/test";
 import {
   createWebFetchTool,
   WEB_FETCH_MAX_RESPONSE_BYTES,

@@ -1,5 +1,5 @@
 import type { JsonValue } from "@earendil-works/pi-ai";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 import {
   resolveTermctrlSettings,
   type TermctrlSettingsDocumentInput,

@@ -7,7 +7,7 @@ import type {
   SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import { CombinedAutocompleteProvider } from "@earendil-works/pi-tui";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 import {
   buildSubagentModelCatalogue,
   registerSubagentModelReferences,

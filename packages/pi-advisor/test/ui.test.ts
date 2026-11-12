@@ -1,5 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import {
   initTheme,
   type ExtensionUIContext,

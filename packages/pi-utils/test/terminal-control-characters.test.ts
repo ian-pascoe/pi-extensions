@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test } from "vite-plus/test";
 import { stripControlCharacters } from "../src/terminal-control-characters.js";
 
 test("normalizes line breaks and removes C0/C1 controls except tabs and newlines", () => {

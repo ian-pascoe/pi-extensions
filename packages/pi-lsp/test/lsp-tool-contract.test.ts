@@ -1,6 +1,6 @@
 import { Value } from "typebox/value";
 import { LSP_OPERATION_NAMES, LspOperationParametersSchemas } from "../src/lsp-tool-contract.js";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 
 describe("Pi LSP tool contract", () => {
   test("gives every operation an object-shaped strict parameter schema", () => {

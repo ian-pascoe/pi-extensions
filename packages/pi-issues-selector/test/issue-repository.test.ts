@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vite-plus/test";
 import { configuredFor } from "./configured-hosts.js";
 import { GITHUB, parseOwnerRepo } from "../src/github-host.js";
 import { GITLAB } from "../src/gitlab-host.js";

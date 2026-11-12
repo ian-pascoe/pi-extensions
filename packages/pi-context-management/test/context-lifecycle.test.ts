@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { buildSessionContext, SessionManager } from "@earendil-works/pi-coding-agent";
 import contextManagement from "../src/context-management-extension.js";
 import { readNotes } from "../src/context-store.js";

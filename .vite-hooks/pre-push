@@ -1,2 +1,2 @@
 unset $(git rev-parse --local-env-vars)
-bun run verify:push
+vp run verify:push

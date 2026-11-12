@@ -16,7 +16,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { PositionEncodingKind, type WorkspaceEdit } from "vscode-languageserver-protocol";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vite-plus/test";
 import {
   LspWorkspaceEditError,
   LspWorkspaceEditStore,

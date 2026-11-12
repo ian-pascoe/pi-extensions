@@ -5,7 +5,16 @@ import { join } from "node:path";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { raiseQueuedSteer, settleQueuedSteers } from "@ian-pascoe/pi-utils/queued-steer";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+  vi,
+} from "vite-plus/test";
 import type { LineByteLimits } from "../src/pi-termctrl-settings.js";
 import { TermctrlRegistry } from "../src/termctrl-registry.js";
 import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";

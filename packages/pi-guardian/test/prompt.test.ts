@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { validRiskCategories } from "../src/guardian-assessment.js";
 import { guardianSystemPrompt } from "../src/guardian-prompt.js";
 

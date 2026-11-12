@@ -1,6 +1,6 @@
 /* oxlint-disable anti-slop/no-unknown-parameters -- SAFETY: Tests feed arbitrary JSON arguments to the helpers under test. */
 import { Type, type TSchema } from "typebox";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 import {
   acceptNullForOptionalArguments,
   omitNullOptionalArguments,

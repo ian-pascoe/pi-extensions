@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { expect, it } from "vitest";
+import { expect, it } from "vite-plus/test";
 
 const execute = promisify(execFile);
 const cli = fileURLToPath(

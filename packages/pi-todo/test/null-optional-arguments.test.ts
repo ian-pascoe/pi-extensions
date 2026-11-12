@@ -2,7 +2,7 @@ import {
   expectNullOptionalArgumentsOmitted,
   recordToolRegistrations,
 } from "@ian-pascoe/pi-utils/tool-testing";
-import { expect, test } from "vitest";
+import { expect, test } from "vite-plus/test";
 import piTodoExtension from "../src/pi-todo-extension.js";
 
 function registeredTodoTool() {

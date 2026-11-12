@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {

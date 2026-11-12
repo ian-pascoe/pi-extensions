@@ -1,5 +1,5 @@
 import type { JsonValue } from "@earendil-works/pi-ai";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   OnePasswordProvider,
   type OnePasswordSettings,

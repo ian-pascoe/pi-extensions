@@ -22,7 +22,7 @@ import {
   type ExtensionFactory,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test } from "vite-plus/test";
 import piWebToolsExtension from "../src/index.js";
 
 const directories: string[] = [];

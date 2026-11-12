@@ -1,7 +1,7 @@
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createHash } from "node:crypto";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 import {
   GIT_CHECKPOINT_MODEL_STEP_END_ENTRY_TYPE,
   GIT_CHECKPOINT_MODEL_STEP_START_ENTRY_TYPE,

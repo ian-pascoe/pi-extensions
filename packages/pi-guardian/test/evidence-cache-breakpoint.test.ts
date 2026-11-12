@@ -1,7 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { Type, type Static, type TSchema } from "typebox";
 import { Value } from "typebox/value";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   composePayloadHooks,
   evidenceCacheBreakpoint,

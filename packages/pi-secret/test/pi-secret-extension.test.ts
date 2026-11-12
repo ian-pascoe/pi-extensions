@@ -1,6 +1,6 @@
 import { readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { FakeProvider } from "./fixtures/fake-provider.js";
 import { createSecretHarness, keys, reply, toolCalls } from "./fixtures/secret-harness.js";
 

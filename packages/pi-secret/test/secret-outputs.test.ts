@@ -1,6 +1,6 @@
 import type { JsonValue } from "@earendil-works/pi-ai";
 import { createCodemodeExtension, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { SECRET_ENV_PREFIX } from "../src/secret-references.js";
 import { FakeProvider } from "./fixtures/fake-provider.js";
 import { createSecretHarness, keys, reply, toolCalls } from "./fixtures/secret-harness.js";

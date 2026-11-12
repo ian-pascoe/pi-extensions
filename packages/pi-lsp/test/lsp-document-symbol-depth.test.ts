@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 import { limitLspDocumentSymbolDepth } from "../src/lsp-document-symbol-depth.js";
 import type { LspDocumentSymbolDepth } from "../src/lsp-tool-contract.js";
 

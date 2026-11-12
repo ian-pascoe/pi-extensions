@@ -32,7 +32,7 @@ import {
 import { withoutPreparedArguments } from "@ian-pascoe/pi-utils/tool-testing";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test } from "vite-plus/test";
 import { createPiLspExtension } from "../src/pi-lsp-extension.js";
 import { LSP_OPERATION_NAMES } from "../src/lsp-tool-contract.js";
 import { LSP_TOOL_GUIDELINE, lspToolExposure } from "../src/lsp-tool.js";

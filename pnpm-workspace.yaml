@@ -1,0 +1,24 @@
+packages:
+  - packages/*
+# Packages depend on each other through semver ranges such as `^0.13.0`, not `workspace:`, so the
+# published manifests stay installable; link them to the workspace copies.
+linkWorkspacePackages: true
+allowBuilds:
+  "@google/genai": true
+  esbuild: true
+  protobufjs: true
+  tesseract.js: true
+  tree-sitter-bash: false
+  zeromq: false
+# Vite+ provides Vite and Vitest. Concrete versions rather than a pnpm catalog: Pi installs this
+# repository from Git with npm, which rejects `catalog:` specs. Upgrade them together; see ADR 0012.
+overrides:
+  vite@*: npm:@voidzero-dev/vite-plus-core@1.6.0
+  vitest@*: 5.1.0
+peerDependencyRules:
+  allowAny:
+    - vite
+    - vitest
+  allowedVersions:
+    vite: "*"
+    vitest: "*"

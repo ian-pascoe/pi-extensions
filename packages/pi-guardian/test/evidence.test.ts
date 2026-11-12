@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { recordedDelegations, recordedOverrides, type ReviewEntry } from "../src/guardian-audit.js";

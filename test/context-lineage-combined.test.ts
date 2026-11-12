@@ -2,10 +2,10 @@
  * Combined-mode test: Pi Context Management and Pi Minimal Subagents loaded together, as the Git
  * collection loads them, and each loaded alone.
  *
- * Why this lives at the repository root: neither package may depend on the other, so a
- * package-level test's Turborepo cache key cannot see the other package's source. The root
- * `//#test:root` task lists both packages (and pi-utils, which carries the shared Agent Lineage
- * Record) as inputs; see `formatter-lsp-combined-order.test.ts` for the same arrangement.
+ * Why this lives at the repository root: neither package may depend on the other, so the test
+ * belongs to neither. Vite Task tracks the files the root run reads, both packages and pi-utils
+ * (which carries the shared Agent Lineage Record) among them; see
+ * `formatter-lsp-combined-order.test.ts` for the same arrangement.
  *
  * What it pins: a Child Agent that Minimal Subagents spawns can list its root's Notes through
  * `context_notes` with `scope: "lineage"`, because Minimal Subagents writes the Agent Lineage Record
@@ -32,7 +32,7 @@ import {
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { recordToolOutputs } from "../packages/pi-utils/src/tool-testing.js";
-import { afterEach, beforeAll, describe, expect, onTestFinished, test, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, onTestFinished, test, vi } from "vite-plus/test";
 import rootManifest from "../package.json" with { type: "json" };
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { transformSkillReferences, type Skill } from "../src/skill-references.js";
 
 // Prose Span handling is proven in pi-utils; these cover how the Skill Catalogue feeds it.

@@ -13,7 +13,6 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { assertNodeRuntime } from "./assert-node-runtime.mjs";
 import {
   defaultExtractDirectory,
   defaultFixtureDirectory,
@@ -29,8 +28,6 @@ import {
   readJsonDocument,
   rootPiManifestSchema,
 } from "./root-project-contract.mjs";
-
-assertNodeRuntime();
 
 const execFile = promisify(execFileCallback);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");

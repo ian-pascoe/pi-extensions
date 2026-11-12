@@ -28,7 +28,7 @@ import {
   SettingsManager,
   type AgentSession,
 } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vite-plus/test";
 import piTodoExtension from "../src/index.js";
 import { TODO_PROMPT_GUIDELINE, TODO_PROMPT_SNIPPET } from "../src/pi-todo-extension.js";
 

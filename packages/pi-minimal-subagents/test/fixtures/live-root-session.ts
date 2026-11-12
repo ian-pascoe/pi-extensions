@@ -18,7 +18,7 @@ import {
   type AgentSession,
 } from "@earendil-works/pi-coding-agent";
 import { recordToolOutputs } from "@ian-pascoe/pi-utils/tool-testing";
-import { expect, onTestFinished } from "vitest";
+import { expect, onTestFinished } from "vite-plus/test";
 import { createMinimalSubagentsExtension } from "../../src/minimal-subagents-extension.js";
 import { replayRegistryEntries } from "../../src/minimal-subagents-registry.js";
 import { RecordingAgentSessionFactory } from "./recording-sessions.js";

@@ -9,7 +9,7 @@ import {
   type TerminalInputHandler,
 } from "@earendil-works/pi-coding-agent";
 import { raiseQueuedSteer, settleQueuedSteers } from "@ian-pascoe/pi-utils/queued-steer";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import { createBashReplacement, RunningBashCalls } from "../src/bash-replacement.js";
 import { TermctrlRegistry, type ExitNotice } from "../src/termctrl-registry.js";
 import { createTerminalStopTool } from "../src/terminal-tools.js";

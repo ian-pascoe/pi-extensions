@@ -1,4 +1,4 @@
-import { onTestFinished, expect, it, vi } from "vitest";
+import { onTestFinished, expect, it, vi } from "vite-plus/test";
 import { fileURLToPath } from "node:url";
 import type { Context } from "@earendil-works/pi-ai";
 import { estimateTokens } from "@earendil-works/pi-coding-agent";

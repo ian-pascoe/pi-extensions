@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseEnv } from "node:util";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   EnvFileProvider,
   type EnvFileSettings,

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 import { describeChangedLines, diffChangedLines } from "../src/changed-lines.js";
 
 describe("describeChangedLines", () => {

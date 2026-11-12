@@ -21,7 +21,7 @@ import {
   type ExtensionFactory,
   type ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test } from "vite-plus/test";
 import { createPiLspExtension } from "../src/pi-lsp-extension.js";
 import { LspWorkspaceEditStore } from "../src/lsp-workspace-edit.js";
 

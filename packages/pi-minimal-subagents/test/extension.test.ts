@@ -32,7 +32,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { hasQueuedSteer, settleQueuedSteers } from "@ian-pascoe/pi-utils/queued-steer";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { expectClickToggles, keybindingHints } from "@ian-pascoe/pi-utils/ui-testing";
 import { COORDINATOR_TOOL_NAMES } from "../src/minimal-subagents-capabilities.js";
 import {

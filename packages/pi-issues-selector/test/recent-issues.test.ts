@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 import type { IssueListing } from "../src/issue-host.js";
 import { RecentIssues } from "../src/recent-issues.js";
 

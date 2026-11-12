@@ -7,7 +7,7 @@ import {
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, expect, test, vi } from "vite-plus/test";
 import {
   asModelResponse,
   disposeLiveRootSessions,

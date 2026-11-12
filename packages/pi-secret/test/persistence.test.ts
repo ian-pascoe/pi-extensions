@@ -1,6 +1,6 @@
 import { chmod, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { createSecretHarness, keys, reply, toolCalls } from "./fixtures/secret-harness.js";
 
 type Harness = Awaited<ReturnType<typeof createSecretHarness>>;

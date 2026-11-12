@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vite-plus/test";
 import { LspPreviewLedger } from "../src/lsp-preview-ledger.js";
 import { LspWorkspaceEditStore } from "../src/lsp-workspace-edit.js";
 

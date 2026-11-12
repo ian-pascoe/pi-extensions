@@ -7,7 +7,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { taggedTheme } from "@ian-pascoe/pi-utils/ui-testing";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   createTiktokenTokenizedOutputCounterLoader,
   type TokenizedOutputCounter,

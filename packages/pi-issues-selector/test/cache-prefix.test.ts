@@ -28,7 +28,7 @@ import {
   SettingsManager,
   type AgentSession,
 } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vite-plus/test";
 import issuesSelectorExtension from "../src/index.js";
 
 interface CapturedRequest {

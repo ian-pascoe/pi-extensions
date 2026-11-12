@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { onTestFinished, describe, expect, it, vi } from "vitest";
+import { onTestFinished, describe, expect, it, vi } from "vite-plus/test";
 import { Type } from "typebox";
 import { InMemoryCredentialStore, InMemoryModelsStore, type Tool } from "@earendil-works/pi-ai";
 import {

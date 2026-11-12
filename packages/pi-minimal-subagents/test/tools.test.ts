@@ -13,7 +13,7 @@ import { KeybindingsManager, setKeybindings } from "@earendil-works/pi-tui";
 import { raiseQueuedSteer, settleQueuedSteers } from "@ian-pascoe/pi-utils/queued-steer";
 import { expectToolOutputMatches } from "@ian-pascoe/pi-utils/tool-testing";
 import { keybindingHints, taggedTheme } from "@ian-pascoe/pi-utils/ui-testing";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 import { createCoordinatorToolSchemas } from "../src/minimal-subagents-tool-schemas.js";
 import {

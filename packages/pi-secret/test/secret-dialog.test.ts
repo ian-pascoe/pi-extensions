@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { getKeybindings } from "@earendil-works/pi-tui";
 import { stripVTControlCharacters } from "node:util";
 import {

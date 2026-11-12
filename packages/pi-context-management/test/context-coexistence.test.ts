@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { expect, it } from "vitest";
+import { expect, it } from "vite-plus/test";
 import { Type } from "typebox";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {

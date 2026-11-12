@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
 import { childMcpServerScope } from "../src/minimal-subagents-child-resources.js";
 import { PiAgentSessionFactory } from "../src/minimal-subagents-sessions.js";

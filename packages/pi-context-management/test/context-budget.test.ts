@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { planCheckpoint } from "../src/context-window.js";
 import { createSdkHarness, reply, toolCall } from "./sdk-harness.js";

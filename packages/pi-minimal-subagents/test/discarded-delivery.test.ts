@@ -7,7 +7,7 @@ import {
   type AssistantMessage,
   type Message,
 } from "@earendil-works/pi-ai";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, expect, test, vi } from "vite-plus/test";
 import {
   asModelResponse,
   disposeLiveRootSessions,

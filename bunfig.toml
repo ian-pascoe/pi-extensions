@@ -1,3 +1,0 @@
-[install]
-# Seconds. pnpm 12's default was 1440 minutes (one day); keep that delay for new releases.
-minimumReleaseAge = 86400

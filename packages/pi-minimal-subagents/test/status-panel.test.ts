@@ -11,7 +11,7 @@ import {
   readableTags,
 } from "@ian-pascoe/pi-utils/ui-testing";
 import type { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import {
   MinimalSubagentsStatusPanelComponent,
   MinimalSubagentsStatusPanelController,

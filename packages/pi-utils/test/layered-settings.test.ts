@@ -1,6 +1,6 @@
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   defineLayeredSettings,
   resolveLayeredOptions,

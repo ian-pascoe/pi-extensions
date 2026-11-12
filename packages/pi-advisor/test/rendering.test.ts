@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager, setKeybindings } from "@earendil-works/pi-tui";
 import type { DurationContext } from "@ian-pascoe/pi-utils/ui";

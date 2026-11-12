@@ -1,5 +1,5 @@
 import { expectToolOutputMatches } from "@ian-pascoe/pi-utils/tool-testing";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 import {
   LspApplyOutputSchema,
   LspCodeActionsOutputSchema,

@@ -1,5 +1,5 @@
 import { CombinedAutocompleteProvider, type AutocompleteProvider } from "@earendil-works/pi-tui";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   findProseReferencePrefix,
   replaceProseReferences,

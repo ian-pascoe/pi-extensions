@@ -2,7 +2,7 @@ import { readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { mkdtemp } from "node:fs/promises";
-import { expect, test } from "vitest";
+import { expect, test } from "vite-plus/test";
 import { createLspSessionFiles } from "../src/lsp-session-files.js";
 
 test.each(["persisted", "in-memory"])(

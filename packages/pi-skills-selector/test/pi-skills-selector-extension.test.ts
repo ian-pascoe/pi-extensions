@@ -8,7 +8,7 @@ import type {
   SlashCommandInfo,
 } from "@earendil-works/pi-coding-agent";
 import { CombinedAutocompleteProvider, type AutocompleteProvider } from "@earendil-works/pi-tui";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 import skillsSelectorExtension from "../src/index.js";
 
 type Handler = (

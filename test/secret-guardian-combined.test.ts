@@ -35,7 +35,7 @@ import {
 import { getKeybindings, type Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { recordToolOutputs } from "../packages/pi-utils/src/tool-testing.js";
-import { afterEach, beforeAll, describe, expect, onTestFinished, test } from "vitest";
+import { afterEach, beforeAll, describe, expect, onTestFinished, test } from "vite-plus/test";
 import rootManifest from "../package.json" with { type: "json" };
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -65,7 +65,7 @@ const sessions: AgentSession[] = [];
 
 /**
  * Pi compiles extension TypeScript with jiti and caches it on disk; on a fresh CI runner the first
- * load of pi-secret and pi-guardian runs past the test timeout under a cold `bun run verify`. Loading
+ * load of pi-secret and pi-guardian runs past the test timeout under a cold `vp run verify`. Loading
  * both once here keeps that one-time cost out of the first test. The hook timeout only guards
  * against a hang.
  */

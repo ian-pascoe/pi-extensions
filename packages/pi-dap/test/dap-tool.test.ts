@@ -12,7 +12,7 @@ import {
   settleQueuedSteers,
 } from "@ian-pascoe/pi-utils/queued-steer";
 import { Value } from "typebox/value";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vite-plus/test";
 import type {
   DapEvaluateInput,
   DapLaunchInput,

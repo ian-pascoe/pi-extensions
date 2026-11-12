@@ -15,7 +15,7 @@ import {
   type SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import { hasQueuedSteer, settleQueuedSteers } from "@ian-pascoe/pi-utils/queued-steer";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vite-plus/test";
 import { DAP_OPERATIONS } from "../src/dap-tool-contract.js";
 import { createPiDapExtension } from "../src/pi-dap-extension.js";
 import type { DapSettingsDocumentInput } from "../src/pi-dap-settings.js";

@@ -2,7 +2,7 @@ import {
   expectNullOptionalArgumentsOmitted,
   recordToolRegistrations,
 } from "@ian-pascoe/pi-utils/tool-testing";
-import { expect, test } from "vitest";
+import { expect, test } from "vite-plus/test";
 import { LSP_OPERATION_NAMES } from "../src/lsp-tool-contract.js";
 import { createPiLspExtension } from "../src/pi-lsp-extension.js";
 

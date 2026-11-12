@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Type } from "typebox";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { useCleanShellEnvironment } from "./fixtures/shell-environment.js";
 import {
   assessment,

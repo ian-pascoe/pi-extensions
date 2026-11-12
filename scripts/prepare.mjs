@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, rmdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
 const omittedDependencyKinds = new Set(
@@ -23,15 +23,38 @@ if (!productionInstall && !process.env.CI && existsSync(".git")) {
     );
   }
 
+  releaseHuskyHooksPath();
+  // Installs the Vite+ hook dispatcher for the hooks in .vite-hooks, unless this clone ran
+  // `vp hooks disable` or VP_GIT_HOOKS=0 is set.
   try {
-    const { default: installHuskyHooks } = await import("husky");
-    const message = installHuskyHooks();
-    if (message) console.warn(message);
+    execFileSync("vp", ["config", "--no-agent", "--hooks-dir", ".vite-hooks"], {
+      stdio: "inherit",
+    });
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ERR_MODULE_NOT_FOUND") {
-      console.warn("Husky is unavailable; skipping Git hook installation.");
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      console.warn("Vite+ is unavailable; skipping Git hook installation.");
     } else {
       throw error;
     }
   }
+}
+
+/**
+ * Clones set up before Vite+ point core.hooksPath at Husky's generated `.husky/_`, and `vp config`
+ * never replaces a hooks path it did not set. Hand the clone over once.
+ */
+function releaseHuskyHooksPath() {
+  let hooksPath = "";
+  try {
+    hooksPath = execFileSync("git", ["config", "--local", "--get", "core.hooksPath"], {
+      encoding: "utf8",
+    }).trim();
+  } catch {
+    // Exit status 1: core.hooksPath is unset.
+    return;
+  }
+  if (hooksPath !== ".husky/_") return;
+  execFileSync("git", ["config", "--local", "--unset", "core.hooksPath"]);
+  rmSync(".husky/_", { recursive: true, force: true });
+  if (existsSync(".husky") && readdirSync(".husky").length === 0) rmdirSync(".husky");
 }

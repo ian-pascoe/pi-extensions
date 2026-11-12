@@ -2,7 +2,7 @@ import {
   expectNullOptionalArgumentsOmitted,
   recordToolRegistrations,
 } from "@ian-pascoe/pi-utils/tool-testing";
-import { expect, test } from "vitest";
+import { expect, test } from "vite-plus/test";
 import contextManagement from "../src/context-management-extension.js";
 
 test("each Context Management tool treats null for an optional parameter like omitting it", () => {

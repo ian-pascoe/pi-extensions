@@ -33,7 +33,7 @@ import {
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import { recordToolOutputs } from "@ian-pascoe/pi-utils/tool-testing";
-import { describe, expect, onTestFinished, test } from "vitest";
+import { describe, expect, onTestFinished, test } from "vite-plus/test";
 import piTodoExtension from "../src/index.js";
 
 const SNAPSHOT_HEADER = "Todo List state from the pi-todo extension";

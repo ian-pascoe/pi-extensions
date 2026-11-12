@@ -2,7 +2,7 @@ import { fauxAssistantMessage, fauxToolCall, type Message } from "@earendil-work
 import { stripVTControlCharacters } from "node:util";
 import { initTheme, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { afterEach, beforeAll, describe, expect, test } from "vitest";
+import { afterEach, beforeAll, describe, expect, test } from "vite-plus/test";
 import { EXIT_NOTIFICATION_TYPE } from "../src/exit-notification.js";
 import { TermctrlRegistry } from "../src/termctrl-registry.js";
 import { FakeDriverFactory } from "./fake-driver.js";

@@ -10,7 +10,7 @@ import {
   readableTags,
   taggedTheme,
 } from "@ian-pascoe/pi-utils/ui-testing";
-import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, test, vi } from "vite-plus/test";
 import { TermctrlPsController, TermctrlPsPanel } from "../src/ps-panel.js";
 import { TermctrlRegistry } from "../src/termctrl-registry.js";
 import { FakeDriverFactory } from "./fake-driver.js";

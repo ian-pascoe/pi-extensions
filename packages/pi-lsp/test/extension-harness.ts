@@ -11,7 +11,7 @@ import {
   type SessionShutdownEvent,
   type SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
-import { expect, vi } from "vitest";
+import { expect, vi } from "vite-plus/test";
 import { createPiLspExtension } from "../src/pi-lsp-extension.js";
 import type { LspSettingsDocumentInput } from "../src/pi-lsp-settings.js";
 

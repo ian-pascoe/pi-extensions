@@ -25,7 +25,7 @@ import {
 import { readAgentLineage } from "@ian-pascoe/pi-utils/agent-lineage";
 import { hasQueuedSteer, settleQueuedSteers } from "@ian-pascoe/pi-utils/queued-steer";
 import fc from "fast-check";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { createChildResourceLoader } from "../src/minimal-subagents-child-resources.js";
 import { assembleImportedContext } from "../src/minimal-subagents-context.js";
 import { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";

@@ -7,7 +7,7 @@ import { dirname, resolve } from "node:path";
 import { expectToolOutputMatches } from "@ian-pascoe/pi-utils/tool-testing";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vite-plus/test";
 import {
   createWebSearchTool,
   redactWebSearchApiKey,

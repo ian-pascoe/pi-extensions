@@ -1,5 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
-import { vi } from "vitest";
+import { vi } from "vite-plus/test";
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import {
   KeybindingsManager as TuiKeybindingsManager,

@@ -6,17 +6,17 @@
  * `git checkout -- <file>`. The hook must sync only on `1`, so routine scratch reverts stay quiet.
  *
  * The test runs real `git` commands in a temporary repository. Its `scripts/sync-reference-repos.sh`
- * is a stub that appends to a log, and the repository's `.husky/post-checkout` is copied from this
- * checkout. The copied hook runs through `sh -e`, the same way Husky's shim runs it.
+ * is a stub that appends to a log, and the repository's `.vite-hooks/post-checkout` is copied from this
+ * checkout. The copied hook runs through `sh -e`, the same way the Vite+ hook dispatcher runs it.
  */
 import { execFileSync } from "node:child_process";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
-const realHook = fileURLToPath(new URL("../.husky/post-checkout", import.meta.url));
+const realHook = fileURLToPath(new URL("../.vite-hooks/post-checkout", import.meta.url));
 const SYNC_LOG = "sync.log";
 
 function git(cwd: string, ...args: string[]): string {
@@ -50,20 +50,20 @@ describe("post-checkout hook", () => {
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "post-checkout-hook-"));
     repo = join(root, "repo");
-    await mkdir(join(repo, ".husky"), { recursive: true });
+    await mkdir(join(repo, ".vite-hooks"), { recursive: true });
     await mkdir(join(repo, "scripts"), { recursive: true });
     await mkdir(join(repo, ".git", "hooks"), { recursive: true });
 
     git(root, "init", "-q", repo);
-    await copyFile(realHook, join(repo, ".husky", "post-checkout"));
+    await copyFile(realHook, join(repo, ".vite-hooks", "post-checkout"));
     const stub = join(repo, "scripts", "sync-reference-repos.sh");
     await writeFile(stub, `#!/bin/sh\necho synced >> ${SYNC_LOG}\n`);
     await chmod(stub, 0o755);
     await writeFile(join(repo, "README.md"), "# readme\n");
 
-    // Git runs .git/hooks/post-checkout directly, so this wrapper mirrors Husky's shim.
+    // Git runs .git/hooks/post-checkout directly, so this wrapper mirrors the Vite+ dispatcher.
     const hook = join(repo, ".git", "hooks", "post-checkout");
-    await writeFile(hook, '#!/bin/sh\nsh -e .husky/post-checkout "$@"\n');
+    await writeFile(hook, '#!/bin/sh\nsh -e .vite-hooks/post-checkout "$@"\n');
     await chmod(hook, 0o755);
 
     git(repo, "add", "-A");

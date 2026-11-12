@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 import { JSON_REINDENT_MAX_BYTES, reindentJson } from "../src/json-reindent.js";
 
 describe("reindentJson", () => {

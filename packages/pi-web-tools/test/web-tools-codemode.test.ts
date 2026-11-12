@@ -24,7 +24,7 @@ import {
   type AgentSession,
 } from "@earendil-works/pi-coding-agent";
 import { recordToolOutputs } from "@ian-pascoe/pi-utils/tool-testing";
-import { afterEach, describe, expect, onTestFinished, test } from "vitest";
+import { afterEach, describe, expect, onTestFinished, test } from "vite-plus/test";
 import { createPiWebToolsExtension } from "../src/index.js";
 import { selectSearchProvider } from "../src/web-search.js";
 

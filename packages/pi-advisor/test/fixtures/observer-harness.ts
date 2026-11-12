@@ -1,4 +1,4 @@
-import { onTestFinished, expect } from "vitest";
+import { onTestFinished, expect } from "vite-plus/test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

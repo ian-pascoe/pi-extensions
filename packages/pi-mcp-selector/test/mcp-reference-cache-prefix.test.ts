@@ -32,7 +32,7 @@ import {
   type AgentSession,
   type McpTransportFactory,
 } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vite-plus/test";
 import mcpSelectorExtension from "../src/index.js";
 
 type Transport = ReturnType<McpTransportFactory>;
