@@ -6,5 +6,5 @@ pnpm = "12.18.0"
 viteplus = "1.6.0"
 
 [env]
-# oxlint's type-aware backend: tsrslint instead of oxlint-tsgolint, until oxc-project/tsrs#378. See ADRs 0011 and 0012.
-OXLINT_TSGOLINT_PATH = "{{config_root}}/node_modules/.bin/tsrslint"
+# oxlint's type-aware backend: tsrs's tsrs-lint instead of oxlint-tsgolint. See ADR 0012.
+OXLINT_TSGOLINT_PATH = "{{config_root}}/node_modules/.bin/tsrs-lint"

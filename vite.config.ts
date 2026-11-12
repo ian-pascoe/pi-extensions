@@ -22,7 +22,7 @@ export default defineConfig({
     tasks: {
       check: {
         command: "vp check",
-        // Cached tasks run in a clean environment. Pass mise's tsrslint path through, or lint
+        // Cached tasks run in a clean environment. Pass mise's tsrs-lint path through, or lint
         // falls back to the oxlint-tsgolint that vite-plus bundles. See ADR 0012.
         cache: { env: ["OXLINT_TSGOLINT_PATH"] },
       },
