@@ -1,8 +1,8 @@
 # Issue tracker: Linear
 
-Issues and specs for this repo live in **Linear**: workspace `spiritledsoftware`, team **SPI** (Spirit-Led Software), project **Pi Extensions**. The team also holds other repos' projects (Commissary, cloudpid, lspctl, Neopane, …), so create every issue for this repo in project `Pi Extensions`, and scope every read to it.
+Issues and specs for this repo live in **Linear**: workspace `spiritledsoftware`, team **SPI** (Spirit-Led Software), project **Pi Extensions** (id `3595e88d-3e8b-4919-9260-f6c9c44bd989`). The team also holds other repos' projects (Commissary, cloudpid, lspctl, Neopane, …), so create every issue for this repo in that project, and scope every read to it. Always pass the project id, never its name, so a rename breaks nothing.
 
-**GitHub Issues are the public intake.** Outside users open issues on GitHub. A one-way sync (GitHub → Linear) copies each new one into team SPI, carrying its GitHub URL as an attachment. Comments in its synced thread sync both ways (**Comment on an issue**), and closing it in Linear closes it on GitHub. The sync puts the copy in no project; the workflow `linear project` (`.github/workflows/linear-project.yml`, `scripts/linear-project.sh`) moves it into Pi Extensions once it appears. It reads the repository secret `LINEAR_API_KEY`, a Linear API key that may edit SPI's issues. Dispatch that workflow with an issue number to retry one whose run failed (an issue opened before the sync existed has no copy to move). Work every issue in Linear and refer to it by its Linear identifier (`SPI-123`). Never create issues with `gh issue create`. A GitHub number (`#519`) resolves to the Linear issue that carries its URL (**Read an issue** below).
+**GitHub Issues are the public intake.** Outside users open issues on GitHub. A one-way sync (GitHub → Linear) copies each new one into team SPI, carrying its GitHub URL as an attachment. Comments in its synced thread sync both ways (**Comment on an issue**), and closing it in Linear closes it on GitHub. The sync puts the copy in no project; the workflow `linear project` (`.github/workflows/linear-project.yml`, `scripts/linear-project.sh`) moves it into the project (by id) once it appears. It reads the repository secret `LINEAR_API_KEY`, a Linear API key that may edit SPI's issues. Dispatch that workflow with an issue number to retry one whose run failed (an issue opened before the sync existed has no copy to move). Work every issue in Linear and refer to it by its Linear identifier (`SPI-123`). Never create issues with `gh issue create`. A GitHub number (`#519`) resolves to the Linear issue that carries its URL (**Read an issue** below).
 
 ## How to reach Linear
 
@@ -35,14 +35,14 @@ Label ids are in `docs/agents/triage-labels.md`. For any other label: `tools.lin
 
 - **Create an issue**:
   - Executor: `tools.linear.mutation_issueCreate`, `arguments: { input: { teamId, projectId, title, description, labelIds?, parentId? } }`, `select: "identifier url"`.
-  - CLI: `linear issue create --team SPI --project "Pi Extensions" --title "…" --description-file body.md [--label <name>] [--parent SPI-1] --no-input`.
+  - CLI: `linear issue create --team SPI --project 3595e88d-3e8b-4919-9260-f6c9c44bd989 --title "…" --description-file body.md [--label <name>] [--parent SPI-1] --no-input`.
 - **Read an issue**:
   - Executor: `tools.linear.query_issue`, `arguments: { id: "SPI-123" }`, `select: "identifier title description url state { name type } labels { nodes { name } } assignee { name } parent { identifier } children { nodes { identifier title state { type } } } comments { nodes { body createdAt user { name } } } attachments { nodes { url } }"`.
   - CLI: `linear issue view SPI-123 --json`.
   - From a GitHub number: Executor `tools.linear.query_attachmentsForURL`, `arguments: { url: "https://github.com/ian-pascoe/pi-extensions/issues/<n>" }`, `select: "nodes { sourceType issue { identifier } }"`; take the node whose `sourceType` is `github` (the sync's; another issue may link the same URL by hand). The CLI uses the same query through `linear api`.
 - **List issues**:
-  - Executor: `tools.linear.query_issues`, `arguments: { first: 100, filter: { project: { id: { eq: "<Pi Extensions>" } }, state: { type: { nin: ["completed", "canceled", "duplicate"] } }, labels: { name: { eq: "<label>" } } } }`, `select: "nodes { identifier title state { name } labels { nodes { name } } assignee { name } }"`.
-  - CLI: `linear issue query --team SPI --project "Pi Extensions" [--label <name>] [--state backlog --state unstarted --state started] --json`.
+  - Executor: `tools.linear.query_issues`, `arguments: { first: 100, filter: { project: { id: { eq: "3595e88d-3e8b-4919-9260-f6c9c44bd989" } }, state: { type: { nin: ["completed", "canceled", "duplicate"] } }, labels: { name: { eq: "<label>" } } } }`, `select: "nodes { identifier title state { name } labels { nodes { name } } assignee { name } }"`.
+  - CLI: `linear issue query --team SPI --project 3595e88d-3e8b-4919-9260-f6c9c44bd989 [--label <name>] [--state backlog --state unstarted --state started] --json`.
 - **Make an issue a sub-issue of a parent**:
   - Executor: `parentId: "SPI-1"` at creation, or `tools.linear.mutation_issueUpdate` with `arguments: { id, input: { parentId } }`.
   - CLI: `--parent SPI-1` on `issue create` / `issue update`.
@@ -65,7 +65,7 @@ Code and PRs stay on GitHub (`gh`, the `code-host` skill). To close an issue fro
 
 ## When a skill says "publish to the issue tracker"
 
-Create a Linear issue in team SPI, project Pi Extensions.
+Create a Linear issue in team SPI, project `3595e88d-3e8b-4919-9260-f6c9c44bd989` (Pi Extensions).
 
 ## When a skill says "fetch the relevant ticket"
 
@@ -75,7 +75,7 @@ Read it as in **Read an issue** above; a GitHub number resolves through its URL.
 
 Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.
 
-- **Map**: an issue labelled `wayfinder:map` in project Pi Extensions, holding the Notes / Decisions-so-far / Fog body.
+- **Map**: an issue labelled `wayfinder:map` in project `3595e88d-3e8b-4919-9260-f6c9c44bd989` (Pi Extensions), holding the Notes / Decisions-so-far / Fog body.
 - **Child ticket**: a sub-issue of the map (**Make an issue a sub-issue of a parent**), labelled `wayfinder:<type>` (`research` / `prototype` / `grilling` / `task`). Once claimed, it is assigned to the driving dev.
 - **Blocking**: Linear's `blocks` relation, from the blocker to the blocked ticket.
   - Executor: `tools.linear.mutation_issueRelationCreate`, `arguments: { input: { type: "blocks", issueId: "<blocker>", relatedIssueId: "<child>" } }`.
