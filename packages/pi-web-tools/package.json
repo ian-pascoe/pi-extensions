@@ -39,7 +39,7 @@
   "dependencies": {
     "@ian-pascoe/pi-utils": "^0.13.0",
     "htmlparser2": "12.0.0",
-    "turndown": "7.2.4"
+    "turndown": "7.2.5"
   },
   "devDependencies": {
     "@types/turndown": "5.0.6"
