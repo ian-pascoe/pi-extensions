@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-tps-tracker
 
+## 0.5.0
+
+### Minor Changes
+
+- a5e15d1: Skip loading when `PI_DISABLED_EXTENSIONS` names the package, so a launcher can turn it off for one process.
+
 ## 0.4.9
 
 ### Patch Changes
