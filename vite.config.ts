@@ -1,5 +1,15 @@
 // vp migrate: merged .oxlintrc.json (8c08590b256a6fb2454e3a7d777bcf30).
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite-plus";
+
+// oxlint's type-aware backend: tsrs's tsrs-lint, not the oxlint-tsgolint vite-plus bundles. Set here
+// rather than in the shell, so every Vite+ lint gets it and an inherited value is replaced. See ADR 0012.
+process.env.OXLINT_TSGOLINT_PATH = fileURLToPath(
+  new URL(
+    `node_modules/.bin/tsrs-lint${process.platform === "win32" ? ".cmd" : ""}`,
+    import.meta.url,
+  ),
+);
 
 // Agent and editor directories, and the vendored anti-slop plugin, are neither formatted nor linted.
 const ignorePatterns = [
@@ -22,9 +32,6 @@ export default defineConfig({
     tasks: {
       check: {
         command: "vp check",
-        // Cached tasks run in a clean environment. Pass mise's type-aware lint backend through, or
-        // lint falls back to the oxlint-tsgolint that vite-plus bundles. See ADR 0012.
-        cache: { env: ["OXLINT_TSGOLINT_PATH"] },
       },
     },
   },

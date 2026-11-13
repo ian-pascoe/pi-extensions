@@ -4,7 +4,3 @@ node = "22.23.5"
 pnpm = "12.18.0"
 # npm:vite-plus; the global `vp` delegates to the workspace's own vite-plus.
 viteplus = "1.6.0"
-
-[env]
-# oxlint's type-aware backend: tsrs's tsrs-lint instead of oxlint-tsgolint. See ADR 0012.
-OXLINT_TSGOLINT_PATH = "{{config_root}}/node_modules/.bin/tsrs-lint"

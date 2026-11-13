@@ -148,7 +148,7 @@ provenance.
 
 ## Contributing
 
-`mise.toml` pins the required Node, pnpm, and Vite+ (`vp`) versions; run `mise install` to get them, and keep mise active in the shell. pnpm installs dependencies, and Vite+ runs the tests, formatting, linting, Git hooks, and tasks: run scripts with `vp run <script>`, and format and lint with `vp check` (`vp check --fix` applies fixes). tsrs is the typechecker. See [ADR 0012](docs/adr/0012-vite-plus-runs-the-toolchain-pnpm-installs.md).
+`mise.toml` pins the required Node, pnpm, and Vite+ (`vp`) versions; run `mise install` to get them, and keep them on `PATH` (for example with `mise activate`). pnpm installs dependencies, and Vite+ runs the tests, formatting, linting, Git hooks, and tasks: run scripts with `vp run <script>`, and format and lint with `vp check` (`vp check --fix` applies fixes). tsrs is the typechecker. See [ADR 0012](docs/adr/0012-vite-plus-runs-the-toolchain-pnpm-installs.md).
 
 Published packages support Node `>=22.19.0` and Pi `>=0.99.0`, the first release with the tool exposure, output schema, and built-in extension APIs they use. The repository develops and tests against Pi `1.0.0`. Pi Command Deck reaches private editor fields and falls back to Pi's plain editor where they differ.
 
