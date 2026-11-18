@@ -12,7 +12,9 @@ updates:
       default-days: 1
     ignore:
       # Vite+ pins its toolchain in places Dependabot cannot update together (mise.toml, the
-      # pnpm-workspace.yaml overrides, pi-dap's vitest). Upgrade them by hand; see ADR 0012.
+      # pnpm-workspace.yaml overrides, pi-dap's vitest, the root tsrs that matches the one Vite+
+      # bundles). Upgrade them by hand; see ADR 0012.
       - dependency-name: vite-plus
       - dependency-name: vitest
       - dependency-name: "@voidzero-dev/vite-plus-core"
+      - dependency-name: tsrs
