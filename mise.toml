@@ -2,7 +2,8 @@
 # `vp staged` needs Node 22.22.1 or later on the 22.x line.
 node = "22.23.5"
 pnpm = "12.18.0"
-# npm:vite-plus; the global `vp` delegates to the workspace's own vite-plus. The tsrs exception
+# npm:vite-plus; the global `vp` delegates to the workspace's own vite-plus, but runs the lint
+# backend from its own bundled tsrs, so keep this equal to the root `vite-plus`. The tsrs exception
 # covers only the version Vite+ bundles: its trusted-publisher release ranks below the staged
 # bootstrap release under trust_policy=no-downgrade (oxc-project/tsrs#945). See ADR 0012.
 viteplus = { version = "1.7.0", trust_policy_excludes = ["tsrs@7.1.0-beta.tsrs2"] }
