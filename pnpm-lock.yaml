@@ -37,8 +37,8 @@ importers:
         specifier: 7.1.0-beta.tsrs2
         version: 7.1.0-beta.tsrs2
       typebox:
-        specifier: ^1.4.3
-        version: 1.4.6
+        specifier: ^1.4.7
+        version: 1.4.7
       vite-plus:
         specifier: 1.7.0
         version: 1.7.0(@types/node@26.6.6)(@vitest/ui@5.1.0)(jiti@2.7.0)(yaml@2.9.1)
@@ -62,7 +62,7 @@ importers:
         version: link:../pi-utils
       typebox:
         specifier: '>=1'
-        version: 1.4.6
+        version: 1.4.7
 
   packages/pi-bible-verses:
     dependencies:
@@ -101,7 +101,7 @@ importers:
         version: link:../pi-utils
       typebox:
         specifier: '>=1'
-        version: 1.4.6
+        version: 1.4.7
 
   packages/pi-dap:
     dependencies:
@@ -116,7 +116,7 @@ importers:
         version: link:../pi-utils
       typebox:
         specifier: '>=1'
-        version: 1.4.6
+        version: 1.4.7
     devDependencies:
       '@vscode/debugprotocol':
         specifier: ^1.68.0
@@ -135,7 +135,7 @@ importers:
         version: link:../pi-utils
       typebox:
         specifier: '>=1'
-        version: 1.4.6
+        version: 1.4.7
 
   packages/pi-git-checkpoints:
     dependencies:
@@ -147,7 +147,7 @@ importers:
         version: link:../pi-utils
       typebox:
         specifier: '>=1'
-        version: 1.4.6
+        version: 1.4.7
 
   packages/pi-guardian:
     dependencies:
@@ -165,7 +165,7 @@ importers:
         version: link:../pi-utils
       typebox:
         specifier: '>=1'
-        version: 1.4.6
+        version: 1.4.7
 
   packages/pi-issues-selector:
     dependencies:
@@ -180,7 +180,7 @@ importers:
         version: link:../pi-utils
       typebox:
         specifier: '>=1'
-        version: 1.4.6
+        version: 1.4.7
       yaml:
         specifier: ^2.9.1
         version: 2.9.1
@@ -201,7 +201,7 @@ importers:
         version: 7.0.6
       typebox:
         specifier: '>=1'
-        version: 1.4.6
+        version: 1.4.7
       vscode-languageserver-protocol:
         specifier: ^3.18.5
         version: 3.18.5
@@ -244,7 +244,7 @@ importers:
         version: 11.0.8
       typebox:
         specifier: '>=1'
-        version: 1.4.6
+        version: 1.4.7
 
   packages/pi-secret:
     dependencies:
@@ -262,7 +262,7 @@ importers:
         version: link:../pi-utils
       typebox:
         specifier: '>=1'
-        version: 1.4.6
+        version: 1.4.7
 
   packages/pi-skills-selector:
     dependencies:
@@ -292,7 +292,7 @@ importers:
         version: 1.2.1(vitest@5.1.0)
       typebox:
         specifier: '>=1'
-        version: 1.4.6
+        version: 1.4.7
 
   packages/pi-todo:
     dependencies:
@@ -310,7 +310,7 @@ importers:
         version: link:../pi-utils
       typebox:
         specifier: '>=1'
-        version: 1.4.6
+        version: 1.4.7
 
   packages/pi-tps-tracker:
     dependencies:
@@ -341,7 +341,7 @@ importers:
         version: 4.1.2
       typebox:
         specifier: '>=1'
-        version: 1.4.6
+        version: 1.4.7
     devDependencies:
       '@types/proper-lockfile':
         specifier: ^4.1.4
@@ -369,7 +369,7 @@ importers:
         version: 7.2.4
       typebox:
         specifier: '>=1'
-        version: 1.4.6
+        version: 1.4.7
     devDependencies:
       '@types/turndown':
         specifier: 5.0.6
@@ -1914,8 +1914,8 @@ packages:
   typebox@1.3.27:
     resolution: {integrity: sha512-zu+jc1pcy4UiNThxikUr36f0Rybk9PEeCg/NE6adeWr/SKsdNO4EzZHYRDlv2YCVAfj3Odq3dESSo/jNyoBXzA==}
 
-  typebox@1.4.6:
-    resolution: {integrity: sha512-Yh8Mi4hzD7gqcuv9ZIk6HK1KVJKubTlfxaNxkrYK35HCvxoCjCuWVr8cBjQ/ChfA7yliPteJEBWHGFVGWDuF5Q==}
+  typebox@1.4.7:
+    resolution: {integrity: sha512-KonYdBj3gOgG/rH96TlUs/f+eaEDqiKRW7KU4/LE/tEjEnRCcfpYLofBfHfNMBAiBosmY55e4YeCPuE+NXmJtg==}
 
   undici-types@8.9.0:
     resolution: {integrity: sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg==}
@@ -3441,7 +3441,7 @@ snapshots:
 
   typebox@1.3.27: {}
 
-  typebox@1.4.6: {}
+  typebox@1.4.7: {}
 
   undici-types@8.9.0: {}
 

@@ -33,7 +33,7 @@
     "@types/node": "^26.6.6",
     "fast-check": "^4.10.2",
     "tsrs": "7.1.0-beta.tsrs2",
-    "typebox": "^1.4.3",
+    "typebox": "^1.4.7",
     "vite-plus": "1.7.0"
   },
   "peerDependencies": {
