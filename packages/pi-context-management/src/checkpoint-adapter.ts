@@ -1,3 +1,4 @@
+import type { Api, Model } from "@earendil-works/pi-ai";
 import {
   AgentSession,
   SessionManager,
@@ -87,6 +88,13 @@ export interface CheckpointAdapter {
     details: T,
     signal?: AbortSignal,
   ): CompactionEntry<T>;
+  /** The selected model as Pi resolved it, before any Context Limit. */
+  readonly declaredModel: Model<Api> | undefined;
+  /**
+   * Present every model declaring a larger context window to Pi as declaring `maxContextTokens`, so
+   * Pi's own accounting, compaction threshold, and overflow detection use that Context Limit.
+   */
+  limitContext(maxContextTokens: number): void;
   /** True while the guarded dispatch of this event will run the owned compaction handler itself. */
   dispatches(event: SessionBeforeCompactEvent): boolean;
   /** Returns a real cutoff for a native compaction hook; an absent Tail creates a neutral entry. */
@@ -139,9 +147,13 @@ function capture(pi: Pick<ExtensionAPI, "getAllTools">): AgentSession {
   }
   if (
     !writable(session.agent, "prepareNextTurnWithContext") ||
-    !writable(session.agent, "transformContext")
+    !writable(session.agent, "transformContext") ||
+    !writable(session.agent, "prepareRequest")
   ) {
     throw new Error("Context Management capability unavailable: writable native next-turn hook");
+  }
+  if (Object.getOwnPropertyDescriptor(session.agent.state, "model")?.configurable !== true) {
+    throw new Error("Context Management capability unavailable: configurable native model state");
   }
   return session;
 }
@@ -240,6 +252,44 @@ export function captureCheckpointAdapter(
       for (const restore of restoreHandlers.reverse()) restore();
     }
   };
+  // Pi reads the selected model's context window from agent state for usage, the compaction
+  // threshold, and overflow detection; every selection path assigns that one property. Requests
+  // still carry the declared model, so the provider's output clamp keeps the model's real window.
+  const state = agent.state;
+  const modelDescriptor = Object.getOwnPropertyDescriptor(state, "model")!;
+  let storedModel: Model<Api> | undefined = modelDescriptor.value;
+  const readModel = (): Model<Api> | undefined =>
+    modelDescriptor.get ? modelDescriptor.get.call(state) : storedModel;
+  const writeModel = (model: Model<Api> | undefined) => {
+    if (modelDescriptor.get) modelDescriptor.set?.call(state, model);
+    else storedModel = model;
+  };
+  let ceiling: number | undefined;
+  let limitedCopies = new WeakMap<Model<Api>, Model<Api>>();
+  const declaredModels = new WeakMap<Model<Api>, Model<Api>>();
+  const modelWithinLimit = (): Model<Api> | undefined => {
+    const model = readModel();
+    if (!active || ceiling === undefined || !model) return model;
+    if (!(model.contextWindow > ceiling)) return model;
+    let limited = limitedCopies.get(model);
+    if (!limited) {
+      limited = { ...model, contextWindow: ceiling };
+      limitedCopies.set(model, limited);
+      declaredModels.set(limited, model);
+    }
+    return limited;
+  };
+  const previousPrepareRequest = agent.prepareRequest;
+  const prepareRequestWrapper: NonNullable<typeof agent.prepareRequest> = async (
+    request,
+    signal,
+  ) => {
+    // A hook may return nothing (void); normalize it so the update reads as optional.
+    const prepared = (await previousPrepareRequest?.call(agent, request, signal)) ?? undefined;
+    const model = prepared?.model ?? request.model;
+    const declared = declaredModels.get(model);
+    return declared ? { ...prepared, model: declared } : prepared;
+  };
   const appendCompaction = manager.appendCompaction.bind(manager);
   const appendWrapper: SessionManager["appendCompaction"] = (...args) => {
     const id = appendCompaction(...args);
@@ -304,6 +354,13 @@ export function captureCheckpointAdapter(
     session,
     get lastCommittedCheckpointId() {
       return committedCheckpointId;
+    },
+    get declaredModel() {
+      return readModel();
+    },
+    limitContext(maxContextTokens) {
+      ceiling = maxContextTokens;
+      limitedCopies = new WeakMap();
     },
     dispatches(event) {
       return active && dispatching === event;
@@ -386,6 +443,17 @@ export function captureCheckpointAdapter(
       }
       if (agent.prepareNextTurnWithContext === wrapper) agent.prepareNextTurnWithContext = previous;
       if (agent.transformContext === transformWrapper) agent.transformContext = previousTransform;
+      if (agent.prepareRequest === prepareRequestWrapper) {
+        if (previousPrepareRequest) agent.prepareRequest = previousPrepareRequest;
+        else Reflect.deleteProperty(agent, "prepareRequest");
+      }
+      if (Object.getOwnPropertyDescriptor(state, "model")?.get === modelWithinLimit) {
+        Object.defineProperty(
+          state,
+          "model",
+          modelDescriptor.get ? modelDescriptor : { ...modelDescriptor, value: storedModel },
+        );
+      }
       if (Object.getOwnPropertyDescriptor(agent, AdapterSlot)?.value === adapter)
         Reflect.deleteProperty(agent, AdapterSlot);
       // A later extension may wrap us. Leave that chain intact; our inactive wrapper only delegates.
@@ -397,5 +465,12 @@ export function captureCheckpointAdapter(
   manager.appendCompaction = appendWrapper;
   agent.prepareNextTurnWithContext = wrapper;
   agent.transformContext = transformWrapper;
+  agent.prepareRequest = prepareRequestWrapper;
+  Object.defineProperty(state, "model", {
+    configurable: true,
+    enumerable: modelDescriptor.enumerable ?? true,
+    get: modelWithinLimit,
+    set: writeModel,
+  });
   return adapter;
 }
