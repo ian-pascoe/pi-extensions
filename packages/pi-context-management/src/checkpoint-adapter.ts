@@ -91,10 +91,10 @@ export interface CheckpointAdapter {
   /** The selected model as Pi resolved it, before any Context Limit. */
   readonly declaredModel: Model<Api> | undefined;
   /**
-   * Present every model declaring a larger context window to Pi as declaring `maxTokens`, so
+   * Present every model declaring a larger context window to Pi as declaring `contextLimit`, so
    * Pi's own accounting, compaction threshold, and overflow detection use that Context Limit.
    */
-  limitContext(maxTokens: number): void;
+  limitContext(contextLimit: number): void;
   /** True while the guarded dispatch of this event will run the owned compaction handler itself. */
   dispatches(event: SessionBeforeCompactEvent): boolean;
   /** Returns a real cutoff for a native compaction hook; an absent Tail creates a neutral entry. */
@@ -147,7 +147,8 @@ function capture(pi: Pick<ExtensionAPI, "getAllTools">): AgentSession {
   }
   if (
     !writable(session.agent, "prepareNextTurnWithContext") ||
-    !writable(session.agent, "transformContext")
+    !writable(session.agent, "transformContext") ||
+    !writable(session.agent, "prepareRequest")
   ) {
     throw new Error("Context Management capability unavailable: writable native next-turn hook");
   }
@@ -252,7 +253,8 @@ export function captureCheckpointAdapter(
     }
   };
   // Pi reads the selected model's context window from agent state for usage, the compaction
-  // threshold, and overflow detection; every selection path assigns that one property.
+  // threshold, and overflow detection; every selection path assigns that one property. Requests
+  // still carry the declared model, so the provider's output clamp keeps the model's real window.
   const state = agent.state;
   const modelDescriptor = Object.getOwnPropertyDescriptor(state, "model")!;
   let storedModel: Model<Api> | undefined = modelDescriptor.value;
@@ -263,17 +265,29 @@ export function captureCheckpointAdapter(
     else storedModel = model;
   };
   let maxContextTokens: number | undefined;
-  let limitedModels = new WeakMap<Model<Api>, Model<Api>>();
-  const limitedModel = (): Model<Api> | undefined => {
+  let limitedCopies = new WeakMap<Model<Api>, Model<Api>>();
+  const declaredModels = new WeakMap<Model<Api>, Model<Api>>();
+  const modelWithinLimit = (): Model<Api> | undefined => {
     const model = readModel();
     if (!active || maxContextTokens === undefined || !model) return model;
     if (!(model.contextWindow > maxContextTokens)) return model;
-    let limited = limitedModels.get(model);
+    let limited = limitedCopies.get(model);
     if (!limited) {
       limited = { ...model, contextWindow: maxContextTokens };
-      limitedModels.set(model, limited);
+      limitedCopies.set(model, limited);
+      declaredModels.set(limited, model);
     }
     return limited;
+  };
+  const previousPrepareRequest = agent.prepareRequest;
+  const prepareRequestWrapper: NonNullable<typeof agent.prepareRequest> = async (
+    request,
+    signal,
+  ) => {
+    const prepared = (await previousPrepareRequest?.call(agent, request, signal)) ?? undefined;
+    const model = prepared?.model ?? request.model;
+    const declared = declaredModels.get(model);
+    return declared ? { ...prepared, model: declared } : prepared;
   };
   const appendCompaction = manager.appendCompaction.bind(manager);
   const appendWrapper: SessionManager["appendCompaction"] = (...args) => {
@@ -343,9 +357,9 @@ export function captureCheckpointAdapter(
     get declaredModel() {
       return readModel();
     },
-    limitContext(maxTokens) {
-      maxContextTokens = maxTokens;
-      limitedModels = new WeakMap();
+    limitContext(contextLimit) {
+      maxContextTokens = contextLimit;
+      limitedCopies = new WeakMap();
     },
     dispatches(event) {
       return active && dispatching === event;
@@ -428,7 +442,11 @@ export function captureCheckpointAdapter(
       }
       if (agent.prepareNextTurnWithContext === wrapper) agent.prepareNextTurnWithContext = previous;
       if (agent.transformContext === transformWrapper) agent.transformContext = previousTransform;
-      if (Object.getOwnPropertyDescriptor(state, "model")?.get === limitedModel) {
+      if (agent.prepareRequest === prepareRequestWrapper) {
+        if (previousPrepareRequest) agent.prepareRequest = previousPrepareRequest;
+        else Reflect.deleteProperty(agent, "prepareRequest");
+      }
+      if (Object.getOwnPropertyDescriptor(state, "model")?.get === modelWithinLimit) {
         Object.defineProperty(
           state,
           "model",
@@ -446,10 +464,11 @@ export function captureCheckpointAdapter(
   manager.appendCompaction = appendWrapper;
   agent.prepareNextTurnWithContext = wrapper;
   agent.transformContext = transformWrapper;
+  agent.prepareRequest = prepareRequestWrapper;
   Object.defineProperty(state, "model", {
     configurable: true,
     enumerable: modelDescriptor.enumerable ?? true,
-    get: limitedModel,
+    get: modelWithinLimit,
     set: writeModel,
   });
   return adapter;

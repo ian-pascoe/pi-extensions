@@ -51,6 +51,29 @@ function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
+/** One warning per session load for a `contextManagement` key skipped in the named settings files. */
+function warnInvalidSetting(
+  ctx: ExtensionContext,
+  key: string,
+  scopes: readonly string[],
+  expected: string,
+): void {
+  if (scopes.length === 0) return;
+  ctx.ui.notify(
+    noticeText(
+      "Context",
+      "Ignored invalid contextManagement." +
+        key +
+        " in " +
+        scopes.join(" and ") +
+        " settings; expected " +
+        expected +
+        ".",
+    ),
+    "warning",
+  );
+}
+
 /** Names the declared window when the Context Limit lowered it. */
 function contextLimitNote(owner: CheckpointAdapter): string {
   const declared = owner.declaredModel?.contextWindow;
@@ -246,40 +269,22 @@ export default function contextManagement(pi: ExtensionAPI): void {
           ),
           "warning",
         );
-      const tail = readTailTokens(adapter.session.settingsManager);
-      if (tail.invalid.length > 0)
-        ctx.ui.notify(
-          noticeText(
-            "Context",
-            "Ignored invalid contextManagement.tailTokens in " +
-              tail.invalid.join(" and ") +
-              " settings; expected a nonnegative integer.",
-          ),
-          "warning",
-        );
-      const limit = readMaxContextTokens(adapter.session.settingsManager);
+      const settings = adapter.session.settingsManager;
+      warnInvalidSetting(
+        ctx,
+        "tailTokens",
+        readTailTokens(settings).invalid,
+        "a nonnegative integer",
+      );
+      const limit = readMaxContextTokens(settings);
       adapter.limitContext(limit.maxContextTokens);
-      if (limit.invalid.length > 0)
-        ctx.ui.notify(
-          noticeText(
-            "Context",
-            "Ignored invalid contextManagement.maxContextTokens in " +
-              limit.invalid.join(" and ") +
-              " settings; expected a positive integer.",
-          ),
-          "warning",
-        );
-      const { invalid } = readIdleRolloverSettings(adapter.session.settingsManager);
-      if (invalid.length > 0)
-        ctx.ui.notify(
-          noticeText(
-            "Context",
-            "Ignored invalid contextManagement.idleRollover in " +
-              invalid.join(" and ") +
-              " settings; expected { enabled?: boolean, minTokens?: positive integer }.",
-          ),
-          "warning",
-        );
+      warnInvalidSetting(ctx, "maxContextTokens", limit.invalid, "a positive integer");
+      warnInvalidSetting(
+        ctx,
+        "idleRollover",
+        readIdleRolloverSettings(settings).invalid,
+        "{ enabled?: boolean, minTokens?: positive integer }",
+      );
       requireAdapter();
       ensureReferenceOrigin(pi, ctx.sessionManager);
     } catch (cause) {

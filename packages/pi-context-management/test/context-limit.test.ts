@@ -75,8 +75,15 @@ describe("Context Limit", () => {
       limit: 400_000,
       warned: true,
     },
+    {
+      label: "invalid project keeps global",
+      global: { maxContextTokens: 272_000 },
+      project: { maxContextTokens: 1.5 },
+      limit: 272_000,
+      warned: true,
+    },
   ])(
-    "caps the window Pi accounts against: $label",
+    "sets the Context Limit Pi accounts against: $label",
     async ({ global, project, trusted, contextWindow, limit, warned }) => {
       const f = await harness(global, project, { trusted, contextWindow });
       expect(f.session.model?.contextWindow).toBe(limit);
@@ -86,6 +93,12 @@ describe("Context Limit", () => {
           message.includes("invalid contextManagement.maxContextTokens"),
         ),
       ).toHaveLength(warned ? 1 : 0);
+      await f.session.prompt("/context");
+      const declared = contextWindow ?? 1_000_000;
+      const report = f.notices.at(-1);
+      if (declared > limit)
+        expect(report).toContain("/ " + limit + " tokens (limited from the model's " + declared);
+      else expect(report).not.toContain("limited from");
       expect(f.extensionErrors).toEqual([]);
     },
   );
@@ -97,6 +110,20 @@ describe("Context Limit", () => {
     expect(f.requests).toHaveLength(2);
     expect(JSON.stringify(f.requests[1]?.messages)).toContain("Prepare a Context Rollover");
     expect(f.providerRequests).toEqual([]);
+  });
+
+  it("sends the declared model, so the provider's output clamp keeps its real headroom", async () => {
+    const f = await harness(undefined, undefined);
+    const stream = f.session.agent.streamFunction;
+    const requested: number[] = [];
+    f.session.agent.streamFunction = (model, context, options) => {
+      requested.push(model.contextWindow);
+      return stream(model, context, options);
+    };
+    f.responses.push(reply("Done"));
+    await f.session.prompt("Task");
+    expect(requested).toEqual([1_000_000]);
+    expect(f.session.model?.contextWindow).toBe(400_000);
   });
 
   it("applies to a later model selection and leaves its identity intact", async () => {
