@@ -22,16 +22,3 @@ peerDependencyRules:
   allowedVersions:
     vite: "*"
     vitest: "*"
-# Temporary: Vite+ 1.7.0 was installed inside pnpm's one-day release-age delay. Delete this list
-# once it has passed (after 2026-11-18T03:35Z); see ADR 0012.
-minimumReleaseAgeExclude:
-  - "@voidzero-dev/vite-plus-core@8.3.8000"
-  - "@voidzero-dev/vite-plus-darwin-arm64@1.7.0"
-  - "@voidzero-dev/vite-plus-darwin-x64@1.7.0"
-  - "@voidzero-dev/vite-plus-linux-arm64-gnu@1.7.0"
-  - "@voidzero-dev/vite-plus-linux-arm64-musl@1.7.0"
-  - "@voidzero-dev/vite-plus-linux-x64-gnu@1.7.0"
-  - "@voidzero-dev/vite-plus-linux-x64-musl@1.7.0"
-  - "@voidzero-dev/vite-plus-win32-arm64-msvc@1.7.0"
-  - "@voidzero-dev/vite-plus-win32-x64-msvc@1.7.0"
-  - vite-plus@1.7.0
