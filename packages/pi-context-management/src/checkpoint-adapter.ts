@@ -91,10 +91,10 @@ export interface CheckpointAdapter {
   /** The selected model as Pi resolved it, before any Context Limit. */
   readonly declaredModel: Model<Api> | undefined;
   /**
-   * Present every model declaring a larger context window to Pi as declaring `contextLimit`, so
+   * Present every model declaring a larger context window to Pi as declaring `maxContextTokens`, so
    * Pi's own accounting, compaction threshold, and overflow detection use that Context Limit.
    */
-  limitContext(contextLimit: number): void;
+  limitContext(maxContextTokens: number): void;
   /** True while the guarded dispatch of this event will run the owned compaction handler itself. */
   dispatches(event: SessionBeforeCompactEvent): boolean;
   /** Returns a real cutoff for a native compaction hook; an absent Tail creates a neutral entry. */
@@ -264,16 +264,16 @@ export function captureCheckpointAdapter(
     if (modelDescriptor.get) modelDescriptor.set?.call(state, model);
     else storedModel = model;
   };
-  let maxContextTokens: number | undefined;
+  let ceiling: number | undefined;
   let limitedCopies = new WeakMap<Model<Api>, Model<Api>>();
   const declaredModels = new WeakMap<Model<Api>, Model<Api>>();
   const modelWithinLimit = (): Model<Api> | undefined => {
     const model = readModel();
-    if (!active || maxContextTokens === undefined || !model) return model;
-    if (!(model.contextWindow > maxContextTokens)) return model;
+    if (!active || ceiling === undefined || !model) return model;
+    if (!(model.contextWindow > ceiling)) return model;
     let limited = limitedCopies.get(model);
     if (!limited) {
-      limited = { ...model, contextWindow: maxContextTokens };
+      limited = { ...model, contextWindow: ceiling };
       limitedCopies.set(model, limited);
       declaredModels.set(limited, model);
     }
@@ -284,6 +284,7 @@ export function captureCheckpointAdapter(
     request,
     signal,
   ) => {
+    // A hook may return nothing (void); normalize it so the update reads as optional.
     const prepared = (await previousPrepareRequest?.call(agent, request, signal)) ?? undefined;
     const model = prepared?.model ?? request.model;
     const declared = declaredModels.get(model);
@@ -357,8 +358,8 @@ export function captureCheckpointAdapter(
     get declaredModel() {
       return readModel();
     },
-    limitContext(contextLimit) {
-      maxContextTokens = contextLimit;
+    limitContext(maxContextTokens) {
+      ceiling = maxContextTokens;
       limitedCopies = new WeakMap();
     },
     dispatches(event) {

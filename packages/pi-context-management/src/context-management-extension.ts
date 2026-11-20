@@ -32,6 +32,8 @@ import {
 } from "./context-window.js";
 
 import {
+  type ContextSettingKey,
+  type SettingsScope,
   hasLegacyContextSettings,
   readMaxContextTokens,
   readTailTokens,
@@ -54,8 +56,8 @@ function errorMessage(cause: unknown): string {
 /** One warning per session load for a `contextManagement` key skipped in the named settings files. */
 function warnInvalidSetting(
   ctx: ExtensionContext,
-  key: string,
-  scopes: readonly string[],
+  key: ContextSettingKey,
+  scopes: readonly SettingsScope[],
   expected: string,
 ): void {
   if (scopes.length === 0) return;

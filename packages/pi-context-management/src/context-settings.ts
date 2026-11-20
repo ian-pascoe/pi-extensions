@@ -35,7 +35,8 @@ export const DEFAULT_TAIL_TOKENS = 0;
 /** Models declaring a larger context window are treated as having this one. */
 export const DEFAULT_MAX_CONTEXT_TOKENS = 400_000;
 
-type SettingsScope = "global" | "project";
+export type SettingsScope = "global" | "project";
+export type ContextSettingKey = "tailTokens" | "maxContextTokens" | "idleRollover";
 const SettingsBlock = Type.Record(Type.String(), Type.Unknown());
 
 interface TokenSettingRead {
@@ -46,7 +47,7 @@ interface TokenSettingRead {
 /** One integer `contextManagement` key from global then trusted project settings; invalid layers are skipped. */
 function readTokenSetting(
   reader: SettingsReader,
-  key: "tailTokens" | "maxContextTokens",
+  key: Exclude<ContextSettingKey, "idleRollover">,
   minimum: number,
   fallback: number,
 ): TokenSettingRead {

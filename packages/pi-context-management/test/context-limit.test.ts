@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import contextManagement from "../src/context-management-extension.js";
-import { createSdkHarness, reply } from "./sdk-harness.js";
+import { createSdkHarness, reply, toolCall } from "./sdk-harness.js";
 
 /** The `contextManagement` block of one settings file. */
 interface ContextSettings {
@@ -120,10 +120,10 @@ describe("Context Limit", () => {
       requested.push(model.contextWindow);
       return stream(model, context, options);
     };
-    f.responses.push(reply("Done"));
+    // A tool turn makes a second request in the same run, after Pi resets the turn's model.
+    f.responses.push(toolCall("context_notes", { action: "list" }), reply("Done"));
     await f.session.prompt("Task");
-    expect(requested).toEqual([1_000_000]);
-    expect(f.session.model?.contextWindow).toBe(400_000);
+    expect(requested).toEqual([1_000_000, 1_000_000]);
   });
 
   it("applies to a later model selection and leaves its identity intact", async () => {
