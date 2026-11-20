@@ -4,7 +4,11 @@ import { Value } from "typebox/value";
 
 /** A `contextManagement` block that authors only current options. */
 const CurrentContextSettings = Type.Object(
-  { idleRollover: Type.Optional(Type.Unknown()), tailTokens: Type.Optional(Type.Unknown()) },
+  {
+    idleRollover: Type.Optional(Type.Unknown()),
+    maxContextTokens: Type.Optional(Type.Unknown()),
+    tailTokens: Type.Optional(Type.Unknown()),
+  },
   { additionalProperties: false },
 );
 
@@ -28,27 +32,65 @@ export function hasLegacyContextSettings(reader: SettingsReader): boolean {
 /** Normal Rollover keeps no Tail by default: the Handoff, Notes, and History carry continuity. */
 export const DEFAULT_TAIL_TOKENS = 0;
 
-const TailTokens = Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER });
-/** Any `contextManagement` object that authored `tailTokens`. */
-const AuthoredTail = Type.Object({ tailTokens: Type.Unknown() });
+/** Models declaring a larger context window are treated as having this one. */
+export const DEFAULT_MAX_CONTEXT_TOKENS = 400_000;
+
+type SettingsScope = "global" | "project";
+const SettingsBlock = Type.Record(Type.String(), Type.Unknown());
+
+interface TokenSettingRead {
+  value: number;
+  invalid: SettingsScope[];
+}
+
+/** One integer `contextManagement` key from global then trusted project settings; invalid layers are skipped. */
+function readTokenSetting(
+  reader: SettingsReader,
+  key: "tailTokens" | "maxContextTokens",
+  minimum: number,
+  fallback: number,
+): TokenSettingRead {
+  const Tokens = Type.Integer({ minimum, maximum: Number.MAX_SAFE_INTEGER });
+  let value = fallback;
+  const invalid: SettingsScope[] = [];
+  const layers: Array<[SettingsScope, object]> = [["global", reader.getGlobalSettings()]];
+  if (reader.isProjectTrusted()) layers.push(["project", reader.getProjectSettings()]);
+  for (const [scope, document] of layers) {
+    const block: unknown = Object.getOwnPropertyDescriptor(document, "contextManagement")?.value;
+    if (!Value.Check(SettingsBlock, block)) continue;
+    const authored = block[key];
+    if (authored === undefined) continue;
+    if (Value.Check(Tokens, authored)) value = authored;
+    else invalid.push(scope);
+  }
+  return { value, invalid };
+}
 
 /** Effective Tail budget and the scopes whose `tailTokens` value was invalid and skipped. */
 export interface TailTokensRead {
   tailTokens: number;
-  invalid: Array<"global" | "project">;
+  invalid: SettingsScope[];
 }
 
 /** `contextManagement.tailTokens` from global then trusted project settings; invalid layers are skipped. */
 export function readTailTokens(reader: SettingsReader): TailTokensRead {
-  let tailTokens = DEFAULT_TAIL_TOKENS;
-  const invalid: TailTokensRead["invalid"] = [];
-  const layers: Array<["global" | "project", object]> = [["global", reader.getGlobalSettings()]];
-  if (reader.isProjectTrusted()) layers.push(["project", reader.getProjectSettings()]);
-  for (const [scope, document] of layers) {
-    const block: unknown = Object.getOwnPropertyDescriptor(document, "contextManagement")?.value;
-    if (!Value.Check(AuthoredTail, block) || block.tailTokens === undefined) continue;
-    if (Value.Check(TailTokens, block.tailTokens)) tailTokens = block.tailTokens;
-    else invalid.push(scope);
-  }
-  return { tailTokens, invalid };
+  const { value, invalid } = readTokenSetting(reader, "tailTokens", 0, DEFAULT_TAIL_TOKENS);
+  return { tailTokens: value, invalid };
+}
+
+/** Effective Context Limit ceiling and the scopes whose `maxContextTokens` value was invalid and skipped. */
+export interface MaxContextTokensRead {
+  maxContextTokens: number;
+  invalid: SettingsScope[];
+}
+
+/** `contextManagement.maxContextTokens` from global then trusted project settings; invalid layers are skipped. */
+export function readMaxContextTokens(reader: SettingsReader): MaxContextTokensRead {
+  const { value, invalid } = readTokenSetting(
+    reader,
+    "maxContextTokens",
+    1,
+    DEFAULT_MAX_CONTEXT_TOKENS,
+  );
+  return { maxContextTokens: value, invalid };
 }

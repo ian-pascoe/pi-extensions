@@ -31,7 +31,11 @@ import {
   savedHandoff,
 } from "./context-window.js";
 
-import { hasLegacyContextSettings, readTailTokens } from "./context-settings.js";
+import {
+  hasLegacyContextSettings,
+  readMaxContextTokens,
+  readTailTokens,
+} from "./context-settings.js";
 import {
   cacheRefreshDelayMs,
   decideIdle,
@@ -45,6 +49,15 @@ import { expandMessageOnClick, noticeText } from "@ian-pascoe/pi-utils/ui";
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+/** Names the declared window when the Context Limit lowered it. */
+function contextLimitNote(owner: CheckpointAdapter): string {
+  const declared = owner.declaredModel?.contextWindow;
+  const limited = owner.session.model?.contextWindow;
+  return declared !== undefined && limited !== undefined && declared > limited
+    ? " (limited from the model's " + declared + " by contextManagement.maxContextTokens)"
+    : "";
 }
 
 const RolloverParameters = Type.Object(
@@ -244,6 +257,18 @@ export default function contextManagement(pi: ExtensionAPI): void {
           ),
           "warning",
         );
+      const limit = readMaxContextTokens(adapter.session.settingsManager);
+      adapter.limitContext(limit.maxContextTokens);
+      if (limit.invalid.length > 0)
+        ctx.ui.notify(
+          noticeText(
+            "Context",
+            "Ignored invalid contextManagement.maxContextTokens in " +
+              limit.invalid.join(" and ") +
+              " settings; expected a positive integer.",
+          ),
+          "warning",
+        );
       const { invalid } = readIdleRolloverSettings(adapter.session.settingsManager);
       if (invalid.length > 0)
         ctx.ui.notify(
@@ -328,7 +353,9 @@ export default function contextManagement(pi: ExtensionAPI): void {
               (usage?.tokens ?? "unavailable after transition") +
               " / " +
               (usage?.contextWindow ?? owner.session.model?.contextWindow ?? "unknown") +
-              " tokens.",
+              " tokens" +
+              contextLimitNote(owner) +
+              ".",
             "Rollover Tail: " +
               readTailTokens(owner.session.settingsManager).tailTokens +
               " tokens; Emergency Rollover keeps native recent-history retention: " +

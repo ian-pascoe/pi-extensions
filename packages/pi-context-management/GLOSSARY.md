@@ -32,6 +32,10 @@ _Avoid_: Summary, Notes
 The conversation material currently presented to the model during a continuing Pi session.
 _Avoid_: Session, context archive
 
+**Context Limit**:
+The most tokens Pi accounts a Context Window against: the selected model's declared context window, lowered to `contextManagement.maxContextTokens` (default 400,000) when larger.
+_Avoid_: Context Window (the conversation material, not its size), context budget
+
 **Context Checkpoint**:
 The durable definition of a new Context Window, consisting of its Handoff and retained-History boundary. It is the common continuity point used when resuming, forking, or inheriting session context.
 _Avoid_: Git Checkpoint, virtual-only boundary

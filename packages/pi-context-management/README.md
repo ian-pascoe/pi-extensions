@@ -71,7 +71,11 @@ Actual native overflow is the exception: an Emergency Rollover immediately uses 
 
 Manual and threshold compaction are claimed before other `session_before_compact` hooks run, as if Context Management cancelled first. Other hooks therefore cannot veto or delay Rollover preparation, and summarizer overrides such as `pi-claude-bridge` never spend a request on a discarded summary. During native overflow, other hooks may still observe or cancel recovery. If one supplies compaction content, the Emergency Rollover replaces it regardless of load order, and a warning names that extension. Empty observer results cannot trigger Pi's native summarizer fallback. Every Context Checkpoint, including one committed directly by `context_rollover`, emits Pi's `session_compact` event so provider session caches and other listeners observe the new Context Window.
 
-Pi alone owns context accounting, automatic compaction timing, and Emergency Rollover retention. The extension owns only the normal Rollover Tail size and the Idle Rollover below. There are no extension-owned 80%/90% thresholds or fit checks. Pi owns overflow retry and permits at most one rebuilt request. User cancellation does not trigger recovery, and completed tools are not replayed.
+Pi alone owns context accounting, automatic compaction timing, and Emergency Rollover retention. The extension owns only the normal Rollover Tail size, the Context Limit, and the Idle Rollover below. There are no extension-owned 80%/90% thresholds or fit checks. Pi owns overflow retry and permits at most one rebuilt request. User cancellation does not trigger recovery, and completed tools are not replayed.
+
+## Context Limit
+
+Notes, History, and Rollover make a very large Context Window unnecessary, and a smaller one is cheaper per request and keeps the model's attention on current work. Context Management therefore presents the selected model to Pi with its declared context window lowered to `contextManagement.maxContextTokens` (default 400,000) when it is larger; a smaller window is unchanged. Pi then applies its own accounting to that Context Limit: the footer and `/context` usage, the automatic compaction threshold (`reserveTokens` below the limit), and overflow detection, where a response whose input exceeds the limit is handled like a native overflow (Emergency Rollover). It applies to every selection path, including `/model`, cycling, resume, and SDK `setModel`, and lasts while the extension is loaded. Requests behave as for a model whose real window is the limit: Pi clamps each request's maximum output so input and output fit within it. Model lists such as `/model` and `pi --list-models` still show the declared window. `/context` names the declared window when the limit lowered it. A virtual model's routed physical models are not limited.
 
 ## Idle Rollover
 
@@ -99,20 +103,21 @@ Use Pi's native `compaction` settings in global `~/.pi/agent/settings.json` or t
 
 These are Pi's defaults: `enabled` controls automatic compaction, `reserveTokens` controls its headroom, and `keepRecentTokens` controls recent-history retention for native compaction and Emergency Rollover. Disabling automatic compaction leaves manual compaction and explicit Rollover available. `/context` reports native usage and settings, not a separate estimate.
 
-The normal Rollover Tail and Idle Rollover are configured under `contextManagement` in the same files; a trusted project overrides global settings key by key:
+The normal Rollover Tail, the Context Limit, and Idle Rollover are configured under `contextManagement` in the same files; a trusted project overrides global settings key by key:
 
 ```json
 {
   "contextManagement": {
     "tailTokens": 0,
+    "maxContextTokens": 400000,
     "idleRollover": { "enabled": true, "minTokens": 200000 }
   }
 }
 ```
 
-All keys are optional and default to the values shown. `tailTokens` is a nonnegative integer budget for recent History kept after a normal Rollover, measured with Pi's own estimate, which also counts thinking text that providers may not replay. `contextManagement` is this extension's namespace, not a Pi setting. An invalid `tailTokens` or `idleRollover` value is ignored for that file, with one warning per session load.
+All keys are optional and default to the values shown. `tailTokens` is a nonnegative integer budget for recent History kept after a normal Rollover, measured with Pi's own estimate, which also counts thinking text that providers may not replay. `maxContextTokens` is a positive integer; set it at or above a model's declared window to leave that model unlimited. `contextManagement` is this extension's namespace, not a Pi setting. An invalid `tailTokens`, `maxContextTokens`, or `idleRollover` value is ignored for that file, with one warning per session load.
 
-The other, obsolete `contextManagement` keys are ignored: `warningThreshold`, `emergencyThreshold`, `safetyMarginTokens`, and `outputReserveTokens`. A block holding anything but `tailTokens` and `idleRollover` (or one that is not an object) in global or trusted-project settings produces one warning per session load pointing to native compaction settings. The extension neither edits configuration nor blocks continuation, even if the obsolete block is malformed. Remove it when convenient; there is no one-to-one migration of percentage thresholds.
+The other, obsolete `contextManagement` keys are ignored: `warningThreshold`, `emergencyThreshold`, `safetyMarginTokens`, and `outputReserveTokens`. A block holding anything but `tailTokens`, `maxContextTokens`, and `idleRollover` (or one that is not an object) in global or trusted-project settings produces one warning per session load pointing to native compaction settings. The extension neither edits configuration nor blocks continuation, even if the obsolete block is malformed. Remove it when convenient; there is no one-to-one migration of percentage thresholds.
 
 Pi's usage is not an exact outgoing-request measurement. Initial oversized input or later growth in standing instructions, tool declarations, or other extensions' projections can still reach the provider limit. Native overflow recovery is the backstop; the extension does not intercept provider payloads, add a sizing margin, or promise that a fresh Handoff will fit.
 
