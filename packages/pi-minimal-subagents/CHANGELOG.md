@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.22.2
+
+### Patch Changes
+
+- 315f3d8: Update runtime dependencies: Pi Minimal Subagents to minimatch 11.0.9, and Pi Web Tools to turndown 7.2.5.
+
 ## 0.22.1
 
 ### Patch Changes
