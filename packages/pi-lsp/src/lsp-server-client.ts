@@ -440,6 +440,14 @@ export class LspServerClient {
     return this.options.stderrPath;
   }
 
+  /** Whether this server can produce per-document diagnostics, by pull request or by push. */
+  get supportsDocumentDiagnostics(): boolean {
+    return (
+      this.documentPullRegistration() !== undefined ||
+      this.textDocumentSyncKind !== TextDocumentSyncKind.None
+    );
+  }
+
   /** Whether a static or dynamically registered LSP method is available. */
   hasCapability(method: string): boolean {
     if (
@@ -685,6 +693,35 @@ export class LspServerClient {
     return [...this.openDocuments.keys()].map((uri) => fileURLToPath(uri));
   }
 
+  /**
+   * Re-sync every document this server currently holds, so a file changed outside Pi
+   * (a bash edit, codegen, or a git checkout) is sent to the server before another
+   * document's diagnostics are read. Returns whether any document's content changed.
+   * A document that has since been deleted is closed and counts as a change.
+   */
+  private async resynchronizeDocuments(): Promise<boolean> {
+    let changed = false;
+    for (const [uri, document] of [...this.openDocuments.entries()]) {
+      const filePath = fileURLToPath(uri);
+      try {
+        const resynchronized = await this.synchronizeDocument(filePath, document.languageId);
+        if (resynchronized.version !== document.version) changed = true;
+      } catch (cause) {
+        if (
+          cause instanceof Error &&
+          "code" in cause &&
+          (cause.code === "ENOENT" || cause.code === "ENOTDIR")
+        ) {
+          await this.closeDocument(filePath).catch(() => undefined);
+          changed = true;
+        } else {
+          throw cause;
+        }
+      }
+    }
+    return changed;
+  }
+
   /** Close an open document if this client currently owns it. */
   async closeDocument(filePath: string): Promise<void> {
     const uri = pathToFileURL(resolve(filePath)).href;
@@ -710,6 +747,13 @@ export class LspServerClient {
     languageId: string,
     signal?: AbortSignal,
   ): Promise<LspDocumentDiagnosticResult> {
+    // Send out-of-band changes to documents the server already holds before answering,
+    // and drop the cached pushes: they may describe bytes read before the change.
+    const workspaceChanged = await this.resynchronizeDocuments();
+    if (workspaceChanged) {
+      this.pushDiagnostics.clear();
+      this.silentDocumentVersions.clear();
+    }
     const document = await this.synchronizeDocument(filePath, languageId);
     return this.awaitDocumentDiagnostics(document, signal);
   }
