@@ -243,7 +243,7 @@ class ManagerPostEditDiagnosticsRunner {
         undefined,
         {
           method: DocumentDiagnosticRequest.method,
-          isSupportedBy: (client) => client.hasCapability(DocumentDiagnosticRequest.method),
+          isSupportedBy: (client) => client.supportsDocumentDiagnostics,
         },
         async (client, route): Promise<readonly PostEditDiagnosticOutcome[]> => {
           const serverOutcomes = await this.pullServer(
