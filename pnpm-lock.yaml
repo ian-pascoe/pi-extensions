@@ -25,8 +25,8 @@ importers:
         specifier: 1.5.2
         version: 1.5.2(@aws-sdk/credential-provider-node@3.972.97)(@smithy/signature-v4@5.7.5)(ws@8.23.0)
       '@earendil-works/pi-tui':
-        specifier: ^1.5.2
-        version: 1.5.2
+        specifier: ^1.6.0
+        version: 1.6.0
       '@types/node':
         specifier: ^26.6.6
         version: 26.6.6
@@ -56,7 +56,7 @@ importers:
         version: 1.5.2(@aws-sdk/credential-provider-node@3.972.97)(@smithy/signature-v4@5.7.5)(ws@8.23.0)
       '@earendil-works/pi-tui':
         specifier: '>=1.1.0'
-        version: 1.5.2
+        version: 1.6.0
       '@ian-pascoe/pi-utils':
         specifier: ^0.13.0
         version: link:../pi-utils
@@ -77,7 +77,7 @@ importers:
         version: 1.5.2(@aws-sdk/credential-provider-node@3.972.97)(@smithy/signature-v4@5.7.5)(ws@8.23.0)
       '@earendil-works/pi-tui':
         specifier: '>=1.1.0'
-        version: 1.5.2
+        version: 1.6.0
       '@ian-pascoe/pi-utils':
         specifier: ^0.13.0
         version: link:../pi-utils
@@ -95,7 +95,7 @@ importers:
         version: 1.5.2(@aws-sdk/credential-provider-node@3.972.97)(@smithy/signature-v4@5.7.5)(ws@8.23.0)
       '@earendil-works/pi-tui':
         specifier: '>=1.1.0'
-        version: 1.5.2
+        version: 1.6.0
       '@ian-pascoe/pi-utils':
         specifier: ^0.13.0
         version: link:../pi-utils
@@ -110,7 +110,7 @@ importers:
         version: 1.5.2(@aws-sdk/credential-provider-node@3.972.97)(@smithy/signature-v4@5.7.5)(ws@8.23.0)
       '@earendil-works/pi-tui':
         specifier: '>=1.1.0'
-        version: 1.5.2
+        version: 1.6.0
       '@ian-pascoe/pi-utils':
         specifier: ^0.13.0
         version: link:../pi-utils
@@ -159,7 +159,7 @@ importers:
         version: 1.5.2(@aws-sdk/credential-provider-node@3.972.97)(@smithy/signature-v4@5.7.5)(ws@8.23.0)
       '@earendil-works/pi-tui':
         specifier: '>=1.1.0'
-        version: 1.5.2
+        version: 1.6.0
       '@ian-pascoe/pi-utils':
         specifier: ^0.13.0
         version: link:../pi-utils
@@ -174,7 +174,7 @@ importers:
         version: 1.5.2(@aws-sdk/credential-provider-node@3.972.97)(@smithy/signature-v4@5.7.5)(ws@8.23.0)
       '@earendil-works/pi-tui':
         specifier: '>=1.1.0'
-        version: 1.5.2
+        version: 1.6.0
       '@ian-pascoe/pi-utils':
         specifier: ^0.13.0
         version: link:../pi-utils
@@ -192,7 +192,7 @@ importers:
         version: 1.5.2(@aws-sdk/credential-provider-node@3.972.97)(@smithy/signature-v4@5.7.5)(ws@8.23.0)
       '@earendil-works/pi-tui':
         specifier: '>=1.1.0'
-        version: 1.5.2
+        version: 1.6.0
       '@ian-pascoe/pi-utils':
         specifier: ^0.13.0
         version: link:../pi-utils
@@ -217,7 +217,7 @@ importers:
         version: 1.5.2(@aws-sdk/credential-provider-node@3.972.97)(@smithy/signature-v4@5.7.5)(ws@8.23.0)
       '@earendil-works/pi-tui':
         specifier: '>=1.1.0'
-        version: 1.5.2
+        version: 1.6.0
       '@ian-pascoe/pi-utils':
         specifier: ^0.13.0
         version: link:../pi-utils
@@ -235,7 +235,7 @@ importers:
         version: 1.5.2(@aws-sdk/credential-provider-node@3.972.97)(@smithy/signature-v4@5.7.5)(ws@8.23.0)
       '@earendil-works/pi-tui':
         specifier: '>=1.1.0'
-        version: 1.5.2
+        version: 1.6.0
       '@ian-pascoe/pi-utils':
         specifier: ^0.13.0
         version: link:../pi-utils
@@ -256,7 +256,7 @@ importers:
         version: 1.5.2(@aws-sdk/credential-provider-node@3.972.97)(@smithy/signature-v4@5.7.5)(ws@8.23.0)
       '@earendil-works/pi-tui':
         specifier: '>=1.1.0'
-        version: 1.5.2
+        version: 1.6.0
       '@ian-pascoe/pi-utils':
         specifier: ^0.13.0
         version: link:../pi-utils
@@ -271,7 +271,7 @@ importers:
         version: 1.5.2(@aws-sdk/credential-provider-node@3.972.97)(@smithy/signature-v4@5.7.5)(ws@8.23.0)
       '@earendil-works/pi-tui':
         specifier: '>=1.1.0'
-        version: 1.5.2
+        version: 1.6.0
       '@ian-pascoe/pi-utils':
         specifier: ^0.13.0
         version: link:../pi-utils
@@ -283,7 +283,7 @@ importers:
         version: 1.5.2(@aws-sdk/credential-provider-node@3.972.97)(@smithy/signature-v4@5.7.5)(ws@8.23.0)
       '@earendil-works/pi-tui':
         specifier: '>=1.1.0'
-        version: 1.5.2
+        version: 1.6.0
       '@ian-pascoe/pi-utils':
         specifier: ^0.13.0
         version: link:../pi-utils
@@ -304,7 +304,7 @@ importers:
         version: 1.5.2(@aws-sdk/credential-provider-node@3.972.97)(@smithy/signature-v4@5.7.5)(ws@8.23.0)
       '@earendil-works/pi-tui':
         specifier: '>=1.1.0'
-        version: 1.5.2
+        version: 1.6.0
       '@ian-pascoe/pi-utils':
         specifier: ^0.13.0
         version: link:../pi-utils
@@ -335,7 +335,7 @@ importers:
         version: 1.5.2(@aws-sdk/credential-provider-node@3.972.97)(@smithy/signature-v4@5.7.5)(ws@8.23.0)
       '@earendil-works/pi-tui':
         specifier: '>=1.1.0'
-        version: 1.5.2
+        version: 1.6.0
       proper-lockfile:
         specifier: ^4.1.2
         version: 4.1.2
@@ -357,7 +357,7 @@ importers:
         version: 1.5.2(@aws-sdk/credential-provider-node@3.972.97)(@smithy/signature-v4@5.7.5)(ws@8.23.0)
       '@earendil-works/pi-tui':
         specifier: '>=1.1.0'
-        version: 1.5.2
+        version: 1.6.0
       '@ian-pascoe/pi-utils':
         specifier: ^0.13.0
         version: link:../pi-utils
@@ -582,6 +582,10 @@ packages:
 
   '@earendil-works/pi-tui@1.5.2':
     resolution: {integrity: sha512-WK8ih+c88GWizaB79y7Pq3PV7ySf5VI1pZ1i/6aBBjDOAiG2EE3ojKjl+pxQqLfyQGnzHYu4VfakOBJgumuoyw==}
+    engines: {node: '>=22.19.0'}
+
+  '@earendil-works/pi-tui@1.6.0':
+    resolution: {integrity: sha512-nVtWZ4rYr3KHDla3skGAWG5XoITEUJCoEx1AsWv1yKxV7+v86ulD2hxVn/P+COI6jsoeQmj3orqHbCHZwAUsUg==}
     engines: {node: '>=22.19.0'}
 
   '@google/genai@2.21.0':
@@ -2444,6 +2448,12 @@ snapshots:
   '@earendil-works/pi-telemetry@1.5.2': {}
 
   '@earendil-works/pi-tui@1.5.2':
+    dependencies:
+      get-east-asian-width: 1.6.0
+      marked: 18.0.11
+      marked-cjk-friendly: 0.1.2(marked@18.0.11)
+
+  '@earendil-works/pi-tui@1.6.0':
     dependencies:
       get-east-asian-width: 1.6.0
       marked: 18.0.11
