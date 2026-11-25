@@ -1,2 +1,0 @@
-unset $(git rev-parse --local-env-vars)
-vp run verify:push

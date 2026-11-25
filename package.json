@@ -21,7 +21,6 @@
     "typecheck": "vp run --cache typecheck:root && vp run --cache -r typecheck",
     "typecheck:root": "tsrs --noEmit -p tsconfig.json",
     "verify": "vp run check && vp run typecheck && vp run test",
-    "verify:push": "vp run check && vp run typecheck",
     "version-packages": "changeset version && pnpm install --lockfile-only"
   },
   "devDependencies": {

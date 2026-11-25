@@ -157,7 +157,7 @@ pnpm install
 vp run verify
 ```
 
-`vp run verify` caches each step by the files it reads, including other packages' sources and repository files, and a rerun on unchanged files replays from `node_modules/.vite/task-cache`. The pre-push hook runs `vp run verify:push`, the same checks without the test suites; CI runs the full `vp run verify`. The pre-commit hook runs `vp staged`, which checks the staged files' formatting and lint.
+`vp run verify` caches each step by the files it reads, including other packages' sources and repository files, and a rerun on unchanged files replays from `node_modules/.vite/task-cache`. CI runs the full `vp run verify`; there is no pre-push hook. The pre-commit hook runs `vp staged`, which checks the staged files' formatting and lint.
 
 Focused package checks (`vp run --filter` exits non-zero when a task fails and passes extra arguments, such as a test file name, through to the script):
 
