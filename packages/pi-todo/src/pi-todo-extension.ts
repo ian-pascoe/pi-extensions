@@ -175,7 +175,9 @@ export default function piTodoExtension(pi: ExtensionAPI): void {
   };
   pi.on("session_start", (_event, context) => restoreState(context));
   pi.on("session_tree", (_event, context) => restoreState(context));
-  pi.on("context", (event, context) => {
+  // Not `context`: when a `context` handler changes the list, Pi folds every mid-conversation system
+  // message into the leading one, so a prompt update would restart the prompt cache from the start.
+  pi.on("context_with_system", (event, context) => {
     try {
       assertTodoJournalReadable(context);
       return { messages: projectTodoContext(context.sessionManager.getBranch(), event.messages) };

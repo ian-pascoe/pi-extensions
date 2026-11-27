@@ -57,7 +57,10 @@ afterEach(async () => {
   );
 });
 
-async function createFixture({ defaultSystemPrompt = false } = {}): Promise<Fixture> {
+async function createFixture({
+  defaultSystemPrompt = false,
+  customPrompt = () => "Standing instructions: answer with the shortest correct turn.",
+}: { defaultSystemPrompt?: boolean; customPrompt?: () => string } = {}): Promise<Fixture> {
   const cwd = await mkdtemp(join(tmpdir(), "pi-todo-sdk-"));
   directories.push(cwd);
   const agentDir = join(cwd, "agent");
@@ -77,8 +80,7 @@ async function createFixture({ defaultSystemPrompt = false } = {}): Promise<Fixt
     noThemes: true,
     noContextFiles: true,
     extensionFactories: [createCodemodeExtension(), piTodoExtension],
-    systemPromptOverride: (base) =>
-      defaultSystemPrompt ? base : "Standing instructions: answer with the shortest correct turn.",
+    systemPromptOverride: (base) => (defaultSystemPrompt ? base : customPrompt()),
   });
   await loader.reload();
   const errors = loader.getExtensions().errors;
@@ -312,5 +314,50 @@ describe("one Todo List snapshot per tool group", () => {
     }
     for (let index = 1; index < requests.length; index++)
       expectByteIdenticalPrefix(requests[index - 1]!, requests[index]!);
+  }, 30_000);
+});
+
+describe("system prompt changes after a Todo List snapshot", () => {
+  test("a changed prompt arrives after the history and the projected request keeps its prefix", async () => {
+    let prompt = "Standing instructions: work in the first checkout.";
+    const { session, requests, responses } = await createFixture({ customPrompt: () => prompt });
+    responses.push(
+      toolCalls(
+        fauxToolCall(
+          "todo",
+          { action: "add", tasks: [{ title: "One" }, { title: "Two" }] },
+          { id: "full" },
+        ),
+      ),
+      fauxAssistantMessage("Planned."),
+      toolCalls(
+        fauxToolCall("todo", { action: "update", id: 1, status: "completed" }, { id: "partial" }),
+      ),
+      fauxAssistantMessage("Advanced."),
+      fauxAssistantMessage("Moved."),
+    );
+    await session.prompt("Plan");
+    await session.prompt("Advance");
+    // Like moving the session to another worktree: only the prompt text changes.
+    prompt = "Standing instructions: work in the second checkout.";
+    await session.reload();
+    await session.prompt("Continue here");
+    expect(requests).toHaveLength(5);
+    const before = requests[3]!;
+    const after = requests[4]!;
+    expect(snapshotIndexes(before.messages)).toHaveLength(1);
+
+    // The earlier request is the later one's prefix, its leading system message included (compared
+    // structurally, as in `expectByteIdenticalPrefix`).
+    expect(after.messages[0]).toEqual(before.messages[0]);
+    expect(JSON.stringify(after.messages.slice(1, before.messages.length))).toBe(
+      JSON.stringify(before.messages.slice(1)),
+    );
+    const update = after.messages
+      .slice(before.messages.length)
+      .find((message) => message.role === "system");
+    expect(update).toBeDefined();
+    expect(after.systemPrompt).toContain("work in the second checkout");
+    expect(after.messages.filter((message) => message.role === "system")).toHaveLength(2);
   }, 30_000);
 });

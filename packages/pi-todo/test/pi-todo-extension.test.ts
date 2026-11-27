@@ -1,6 +1,6 @@
 import type { JsonValue } from "@earendil-works/pi-ai";
 import type {
-  ContextEvent,
+  ContextWithSystemEvent,
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
@@ -24,7 +24,7 @@ type TodoToolResult = {
   readonly structuredContent?: JsonValue;
 };
 type TodoWidgetFactory = (tui: TUI, theme: Theme) => Component;
-type ContextEventResult = { readonly messages?: ContextEvent["messages"] };
+type ContextEventResult = { readonly messages?: ContextWithSystemEvent["messages"] };
 type ExtensionMode = ExtensionContext["mode"];
 type RegisteredTodoTool = {
   readonly name: string;
@@ -51,7 +51,7 @@ type RegisteredTodoCommand = {
   ) => AutocompleteItem[] | null | Promise<AutocompleteItem[] | null>;
   handler(args: string, context: ExtensionCommandContext): Promise<void>;
 };
-type ExtensionEvent = ContextEvent | SessionStartEvent | SessionTreeEvent;
+type ExtensionEvent = ContextWithSystemEvent | SessionStartEvent | SessionTreeEvent;
 type ExtensionEventHandler = (
   event: ExtensionEvent,
   context: ExtensionContext,
@@ -597,7 +597,11 @@ describe("Pi Todo extension", () => {
 
     await harness.emit("session_start", { type: "session_start", reason: "resume" }, context);
     const listed = await harness.execute({ action: "list" }, context);
-    const contextResult = await harness.emit("context", { type: "context", messages: [] }, context);
+    const contextResult = await harness.emit(
+      "context_with_system",
+      { type: "context_with_system", messages: [] },
+      context,
+    );
 
     expect(resultText(listed)).toBe(
       "[ ] #2 Pending work\n[>] #4 Current work\n    Keep the cache warm.\n    Then continue.",
@@ -654,7 +658,7 @@ describe("Pi Todo extension", () => {
       harness.emit("session_start", { type: "session_start", reason: "reload" }, context),
     ).rejects.toThrow("Todo is disabled in this loaded session");
     await expect(
-      harness.emit("context", { type: "context", messages: [] }, context),
+      harness.emit("context_with_system", { type: "context_with_system", messages: [] }, context),
     ).rejects.toThrow("Todo is disabled in this loaded session");
     await expect(harness.execute({ action: "list" }, context)).rejects.toThrow(
       "Todo is disabled in this loaded session",

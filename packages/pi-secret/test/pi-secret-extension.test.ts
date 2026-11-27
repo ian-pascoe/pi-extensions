@@ -397,4 +397,31 @@ describe("provider requests", () => {
     expect(last).toContain("echo: user={{secret:DEPLOY_USER}}");
     expect(last).toContain("Was it {{secret:DEPLOY_USER}}?");
   });
+
+  it("leaves system messages as Pi built them, so redaction never rewrites the prompt", async () => {
+    const value = "prompt-quoted-4f1d";
+    let prompt = "Standing instructions: finish the user's task.";
+    const harness = await createSecretHarness({
+      dialogs: [[keys.paste(value), keys.enter]],
+      systemPrompt: () => prompt,
+    });
+    harness.responses.push(
+      toolCalls(["secret_ask", { names: ["STAGING"] }, "call-ask"]),
+      reply("Stored."),
+    );
+    await harness.session.prompt("Store my token.");
+    // A prompt update sent after the Secret is held, such as a project context file quoting it.
+    prompt = `Standing instructions: the staging token is ${value}.`;
+    await harness.session.reload();
+    await harness.session.prompt(`It is ${value}.`);
+
+    // Later system messages stay in place; only the leading one is left out here.
+    const messages = harness.requestMessages.at(-1) ?? [];
+    const system = messages.filter((message) => message.role === "system");
+    const conversation = messages.filter((message) => message.role !== "system");
+    expect(system).toHaveLength(1);
+    expect(JSON.stringify(system)).toContain(`the staging token is ${value}.`);
+    expect(JSON.stringify(conversation)).toContain("It is {{secret:STAGING}}.");
+    expect(JSON.stringify(conversation)).not.toContain(value);
+  });
 });

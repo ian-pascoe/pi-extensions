@@ -1,9 +1,9 @@
 import type { JsonObject, JsonValue } from "@earendil-works/pi-ai";
-import { SessionManager, type ContextEvent } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type ContextWithSystemEvent } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vite-plus/test";
 import { CHECKPOINT_INSTRUCTION, projectTodoContext } from "../src/todo-context.js";
 
-type Message = ContextEvent["messages"][number];
+type Message = ContextWithSystemEvent["messages"][number];
 const HEADER = "Todo List state from the pi-todo extension (not a user message):\n";
 const CHECKPOINT = `\n\n${CHECKPOINT_INSTRUCTION}`;
 function state(manager: SessionManager, title: string | null): string {
@@ -430,5 +430,22 @@ describe("immutable Todo journal projection", () => {
     expect(() => project(manager, manager.buildSessionContext().messages.toReversed())).toThrow(
       "anchors are reordered",
     );
+  });
+});
+
+describe("system messages in the projected transcript", () => {
+  it("places an unanchored Snapshot after the leading system message and keeps later ones in place", () => {
+    const manager = SessionManager.inMemory();
+    state(manager, "First");
+    user(manager, "Start");
+    state(manager, "Second");
+    const head: Message = { role: "system", content: "Prompt", timestamp: 0 };
+    const update: Message = { role: "system", content: "", sections: { cwd: "/b" }, timestamp: 3 };
+    const result = project(manager, [head, ...manager.buildSessionContext().messages, update]);
+    expect(
+      result.map((message) => (message.role === "custom" ? message.content : `${message.role}`)),
+    ).toEqual(["system", `${HEADER}[ ] #1 First`, "user", `${HEADER}[ ] #1 Second`, "system"]);
+    expect(result[0]).toBe(head);
+    expect(result.at(-1)).toBe(update);
   });
 });
