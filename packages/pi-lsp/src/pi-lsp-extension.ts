@@ -228,12 +228,20 @@ class ManagerPostEditDiagnosticsRunner {
   }
 
   /**
-   * Pull each path's diagnostics from every capable Server Instance. `onServerOutcomes` sees each
-   * server's outcomes as soon as it answers, before slower servers finish.
+   * Pull each path's diagnostics from every capable Server Instance: each that may report document
+   * diagnostics, push-only ones included, or with `pullServersOnly` only those that answer pulls.
+   * `onServerOutcomes` sees each server's outcomes as soon as it answers, before slower servers
+   * finish.
    */
   async run(
     paths: readonly PostEditDiagnosticPath[],
-    onServerOutcomes?: (outcomes: readonly PostEditDiagnosticOutcome[]) => void,
+    {
+      onServerOutcomes,
+      pullServersOnly = false,
+    }: {
+      readonly onServerOutcomes?: (outcomes: readonly PostEditDiagnosticOutcome[]) => void;
+      readonly pullServersOnly?: boolean;
+    } = {},
   ): Promise<readonly PostEditDiagnosticOutcome[]> {
     const outcomes: PostEditDiagnosticOutcome[] = [];
     for (const { path } of paths) {
@@ -243,7 +251,10 @@ class ManagerPostEditDiagnosticsRunner {
         undefined,
         {
           method: DocumentDiagnosticRequest.method,
-          isSupportedBy: (client) => client.hasCapability(DocumentDiagnosticRequest.method),
+          isSupportedBy: (client) =>
+            pullServersOnly
+              ? client.hasCapability(DocumentDiagnosticRequest.method)
+              : client.reportsDocumentDiagnostics,
         },
         async (client, route): Promise<readonly PostEditDiagnosticOutcome[]> => {
           const serverOutcomes = await this.pullServer(
@@ -277,7 +288,10 @@ class ManagerPostEditDiagnosticsRunner {
   ): Promise<readonly PostEditDiagnosticOutcome[]> {
     const diagnostics = await client.documentDiagnostics(filePath, languageId, this.signal);
     if (diagnostics.status === "timeout") {
-      return [{ kind: "timeout", path: filePath, serverId }];
+      // A push-only server's silence is how it reports a clean file, not a failure, unless it has
+      // never published, such as a formatting-only server: then it checked nothing.
+      if (!diagnostics.pushOnly) return [{ kind: "timeout", path: filePath, serverId }];
+      if (!client.reportsDocumentDiagnostics) return [];
     }
     if (diagnostics.diagnostics.length === 0) {
       return [{ kind: "no_diagnostics", path: filePath, serverId }];
@@ -340,7 +354,9 @@ async function pullPreEditBaseline(
   collected: PostEditDiagnosticOutcome[],
 ): Promise<void> {
   const runner = new ManagerPostEditDiagnosticsRunner(session, signal);
-  await runner.run([{ path: target.path }], (outcomes) => collected.push(...outcomes));
+  await runner.run([{ path: target.path }], {
+    onServerOutcomes: (outcomes) => collected.push(...outcomes),
+  });
 }
 
 /**
@@ -408,12 +424,18 @@ interface DependentPull {
   readonly texts: FileTexts;
 }
 
-/** Pull the dependent files' diagnostics concurrently. */
+/**
+ * Pull the dependent files' diagnostics concurrently, from pull-capable servers only, as before
+ * push-only servers took part in Post-edit Diagnostics: a push-only server could answer for a
+ * dependent only with a push sent before Pi's edit of the changed file.
+ */
 async function pullDependentFiles(
   runner: ManagerPostEditDiagnosticsRunner,
   files: readonly string[],
 ): Promise<DependentPull> {
-  const outcomes = (await Promise.all(files.map((path) => runner.run([{ path }])))).flat();
+  const outcomes = (
+    await Promise.all(files.map((path) => runner.run([{ path }], { pullServersOnly: true })))
+  ).flat();
   return { outcomes, texts: runner.texts };
 }
 

@@ -155,6 +155,56 @@ describe("Post-edit Diagnostics against the changed file's Pre-edit Baseline", (
     );
   }, 30_000);
 
+  test("compares a push-only server's findings once it has published", async () => {
+    const session = await startContentSession(
+      { "src/a.ts": warnings },
+      // Pushes each opened or changed document's findings and answers no pulls.
+      { servers: { pushOnly: contentServer({ FAKE_NO_PULL: "1", FAKE_PUSH: "each" }) } },
+    );
+    const added = "const d = 4; // diag:warning:w3:first new warning";
+    const first = await session.edit({
+      toolCallId: "first-edit",
+      path: "src/a.ts",
+      oldText: "const c = 3;",
+      newText: `const c = 3;\n${added}`,
+    });
+    expect(first).toContain("warning [pushOnly] fake(w3): first new warning");
+
+    const marker = "diag:error:e1:second new error";
+    const second = await session.edit({
+      toolCallId: "second-edit",
+      path: "src/a.ts",
+      oldText: "const c = 3;",
+      newText: `const c = 3; // ${marker}`,
+    });
+    const after = warnings.replace("const c = 3;", `const c = 3; // ${marker}\n${added}`);
+    expect(second).toBe(
+      [
+        "Edited src/a.ts",
+        "",
+        "LSP diagnostics",
+        `src/a.ts:${markerRange(after, marker)} error [pushOnly] fake(e1): second new error`,
+        "src/a.ts: 1 new; unchanged: 3 warnings",
+      ].join("\n"),
+    );
+  }, 30_000);
+
+  test("leaves a push-only server that has never published out of the result", async () => {
+    const session = await startContentSession(
+      { "src/a.ts": "" },
+      // Answers no pulls and publishes nothing, like a formatting-only server.
+      { servers: { silent: contentServer({ FAKE_NO_PULL: "1" }) } },
+    );
+    const text = await session.write({
+      toolCallId: "write",
+      path: "src/new.ts",
+      content: warnings,
+    });
+
+    // No diagnostics section is appended, so the result is left unchanged.
+    expect(text).toBe("");
+  }, 30_000);
+
   test("drops unchanged hints uncounted and counts only new hints as omitted", async () => {
     const session = await startContentSession({
       "src/a.ts":

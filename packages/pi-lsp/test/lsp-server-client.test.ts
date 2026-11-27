@@ -2,6 +2,7 @@ import { writeFileSync } from "node:fs";
 import { readFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, test } from "vite-plus/test";
 import {
   LspServerClient,
@@ -405,6 +406,32 @@ describe("LspServerClient", () => {
       }
     });
 
+    test.each([
+      ["push-only, never published, after its first silence", pushOnly, false, false],
+      ["push-only, published before, after a silence", pushOnly, true, true],
+      ["answering pulls, after a silence", { FAKE_DELAY_DIAGNOSTICS: "1" }, false, true],
+    ])(
+      "offers document diagnostics only while it may report them: %s",
+      async (_label, environment, publishFirst, expected) => {
+        const directory = await createTemporaryDirectory();
+        const filePath = resolve(directory, "formatted.md");
+        await writeFile(filePath, "# formatted\n");
+        const client = await startFakeServer(directory, {
+          diagnosticsMs: 100,
+          environment: { ...environment, FAKE_PUSH: "none" },
+        });
+        expect(client.reportsDocumentDiagnostics).toBe(true);
+        if (publishFirst) {
+          await client.request("fake/publishDiagnostics", {
+            uri: pathToFileURL(resolve(directory, "other.md")).href,
+          });
+        }
+
+        await client.documentDiagnostics(filePath, "markdown");
+        expect(client.reportsDocumentDiagnostics).toBe(expected);
+      },
+    );
+
     test("forgets the silence when the document is closed", async () => {
       const directory = await createTemporaryDirectory();
       const filePath = resolve(directory, "closed.md");
@@ -421,6 +448,76 @@ describe("LspServerClient", () => {
         remembered: false,
       });
     });
+  });
+
+  describe("Out-of-band Changes", () => {
+    /** Open a module and its importer on a push-only fake server that publishes one finding per open or change. */
+    async function openImporterAndModule(diagnosticsMs: number) {
+      const directory = await createTemporaryDirectory();
+      const modulePath = resolve(directory, "module.ts");
+      const importerPath = resolve(directory, "importer.ts");
+      await writeFile(modulePath, "export const value = 1;\n");
+      await writeFile(importerPath, "import { value } from './module';\n");
+      const client = await startFakeServer(directory, {
+        diagnosticsMs,
+        environment: { FAKE_DIAGNOSTICS: "one", FAKE_NO_PULL: "1" },
+      });
+      await client.documentDiagnostics(modulePath, "typescript");
+      const importer = await client.synchronizeDocument(importerPath, "typescript");
+      await client.documentDiagnostics(importerPath, "typescript");
+      return { client, modulePath, importerPath, importer };
+    }
+
+    test("sends a held module's new text before answering for its importer", async () => {
+      const { client, modulePath, importerPath, importer } = await openImporterAndModule(5_000);
+      await writeFile(modulePath, "export const renamed = 1;\n");
+
+      const answer = client.documentDiagnostics(importerPath, "typescript");
+      const deadline = Date.now() + 5_000;
+      let state = await client.request<FakeServerState>("fake/state", {});
+      while (state.changed.length === 0 && Date.now() < deadline) {
+        state = await client.request<FakeServerState>("fake/state", {});
+      }
+      expect(state.changed).toMatchObject([
+        { contentChanges: [{ text: "export const renamed = 1;\n" }] },
+      ]);
+      // The server re-checks the importer against the module's new text and publishes for it.
+      await client.request("fake/publishDiagnostics", {
+        uri: importer.uri,
+        version: importer.version,
+      });
+
+      const result = await answer;
+      expect(result.status).toBe("fresh");
+      expect(result.diagnostics.map(({ message }) => message)).toEqual([
+        "unsynchronized diagnostic",
+      ]);
+    });
+
+    test("keeps the importer's last push when the server stays silent about it", async () => {
+      const { client, modulePath, importerPath } = await openImporterAndModule(100);
+      await writeFile(modulePath, "export const renamed = 1;\n");
+
+      const result = await client.documentDiagnostics(importerPath, "typescript");
+      expect(result).toMatchObject({ status: "fresh", source: "push" });
+      expect(result.diagnostics.map(({ message }) => message)).toEqual(["fake diagnostic"]);
+    });
+
+    test.each([
+      ["deleted", (path: string) => rm(path)],
+      ["no longer UTF-8", (path: string) => writeFile(path, Buffer.from([0xff, 0xfe, 0xfd]))],
+    ])(
+      "closes a held module that is %s and still answers for its importer",
+      async (_label, change) => {
+        const { client, modulePath, importerPath } = await openImporterAndModule(100);
+        await change(modulePath);
+
+        const result = await client.documentDiagnostics(importerPath, "typescript");
+        expect(result.status).toBe("fresh");
+        const state = await client.request<FakeServerState>("fake/state", {});
+        expect(state.closed).toEqual([{ uri: pathToFileURL(modulePath).href }]);
+      },
+    );
   });
 
   test("ignores stale versioned pushes until diagnostics for the synchronized version arrive", async () => {
