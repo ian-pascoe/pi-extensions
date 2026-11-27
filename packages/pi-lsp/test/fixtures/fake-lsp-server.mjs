@@ -341,7 +341,11 @@ function publishDiagnostics(document) {
   send({
     jsonrpc: "2.0",
     method: "textDocument/publishDiagnostics",
-    params: { uri: document.uri, version: document.version, diagnostics: diagnostics() },
+    params: {
+      uri: document.uri,
+      version: document.version,
+      diagnostics: diagnostics(undefined, document.uri),
+    },
   });
 }
 

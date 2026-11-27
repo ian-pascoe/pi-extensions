@@ -303,7 +303,12 @@ Diagnostics, hover, status, code actions, and apply results are compact text too
   (`no diagnostics received from <server>`) instead. For a push-only server (no document pull),
   that silence is remembered per document version: a repeat query of the unchanged file answers at
   once (`remembered: true`, reading `for this unchanged file`) instead of waiting again. A later push for the file, any edit to it, closing it, or a Server Instance
-  restart forgets it; a pull-capable server's timeout is never remembered. Workspace
+  restart forgets it; a pull-capable server's timeout is never remembered.
+  Before answering for a file, Pi re-reads every other file the server holds and sends any that
+  changed outside Pi (a shell command, codegen, or a checkout), closing one it can no longer read,
+  so the server sees a changed dependency first. The file's next answer then waits for a push
+  made after that change; if none comes within the diagnostics timeout, the server's last push for
+  the file stands, and a remembered silence is remembered again. Workspace
   diagnostics start with the server's coverage message, if any, and count clean files on one
   `N files: no diagnostics` line. A malformed diagnostic is shown as JSON on its own line.
 - `lsp_hover` shows only the hover's markdown or plaintext contents, under the `Query position:`
@@ -557,8 +562,12 @@ section is one line: `LSP diagnostics: no diagnostics`. Otherwise clean files sh
 `no diagnostics: a.ts, b.ts` line that leaves out any file a server reported a finding for, even
 when another server found it clean. Diagnostics preserve
 duplicates from independent servers and never change the original tool's success or error state.
-Only servers that advertise document diagnostics participate; formatting-only servers remain
-available for explicit LSP formatting operations without appearing in Post-edit Diagnostics. A
+Servers that answer document diagnostics pulls participate, as do push-only servers
+(typescript-language-server, gopls, pyright). A push-only server that stays silent for a file is
+left out of that file's result rather than reported as a timeout, since silence is how such
+servers report a clean file. A push-only server that ends one wait in silence without ever having
+published, such as a formatting-only server, stops participating, so it costs at most one
+diagnostics timeout; it remains available for explicit LSP formatting operations. A
 file that no Server Definition covers, because none handles its language or every one that does
 fails its Activation Gate, is skipped silently, as is a file whose only matching Server
 Definitions are disabled. When no changed file is covered by an enabled Server Definition, no

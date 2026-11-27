@@ -243,7 +243,7 @@ class ManagerPostEditDiagnosticsRunner {
         undefined,
         {
           method: DocumentDiagnosticRequest.method,
-          isSupportedBy: (client) => client.supportsDocumentDiagnostics,
+          isSupportedBy: (client) => client.reportsDocumentDiagnostics,
         },
         async (client, route): Promise<readonly PostEditDiagnosticOutcome[]> => {
           const serverOutcomes = await this.pullServer(
@@ -277,7 +277,8 @@ class ManagerPostEditDiagnosticsRunner {
   ): Promise<readonly PostEditDiagnosticOutcome[]> {
     const diagnostics = await client.documentDiagnostics(filePath, languageId, this.signal);
     if (diagnostics.status === "timeout") {
-      return [{ kind: "timeout", path: filePath, serverId }];
+      // A push-only server's silence is how it reports a clean file, not a failure.
+      return diagnostics.pushOnly ? [] : [{ kind: "timeout", path: filePath, serverId }];
     }
     if (diagnostics.diagnostics.length === 0) {
       return [{ kind: "no_diagnostics", path: filePath, serverId }];
