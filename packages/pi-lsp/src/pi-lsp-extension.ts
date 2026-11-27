@@ -235,8 +235,13 @@ class ManagerPostEditDiagnosticsRunner {
    */
   async run(
     paths: readonly PostEditDiagnosticPath[],
-    onServerOutcomes?: (outcomes: readonly PostEditDiagnosticOutcome[]) => void,
-    pullServersOnly = false,
+    {
+      onServerOutcomes,
+      pullServersOnly = false,
+    }: {
+      readonly onServerOutcomes?: (outcomes: readonly PostEditDiagnosticOutcome[]) => void;
+      readonly pullServersOnly?: boolean;
+    } = {},
   ): Promise<readonly PostEditDiagnosticOutcome[]> {
     const outcomes: PostEditDiagnosticOutcome[] = [];
     for (const { path } of paths) {
@@ -282,9 +287,11 @@ class ManagerPostEditDiagnosticsRunner {
     filePath: string,
   ): Promise<readonly PostEditDiagnosticOutcome[]> {
     const diagnostics = await client.documentDiagnostics(filePath, languageId, this.signal);
-    // A push-only server's silence is how it reports a clean file, not a failure.
-    if (diagnostics.status === "timeout" && !diagnostics.pushOnly) {
-      return [{ kind: "timeout", path: filePath, serverId }];
+    if (diagnostics.status === "timeout") {
+      // A push-only server's silence is how it reports a clean file, not a failure, unless it has
+      // never published, such as a formatting-only server: then it checked nothing.
+      if (!diagnostics.pushOnly) return [{ kind: "timeout", path: filePath, serverId }];
+      if (!client.reportsDocumentDiagnostics) return [];
     }
     if (diagnostics.diagnostics.length === 0) {
       return [{ kind: "no_diagnostics", path: filePath, serverId }];
@@ -347,7 +354,9 @@ async function pullPreEditBaseline(
   collected: PostEditDiagnosticOutcome[],
 ): Promise<void> {
   const runner = new ManagerPostEditDiagnosticsRunner(session, signal);
-  await runner.run([{ path: target.path }], (outcomes) => collected.push(...outcomes));
+  await runner.run([{ path: target.path }], {
+    onServerOutcomes: (outcomes) => collected.push(...outcomes),
+  });
 }
 
 /**
@@ -416,15 +425,16 @@ interface DependentPull {
 }
 
 /**
- * Pull the dependent files' diagnostics concurrently, from pull-capable servers only: Pi's edit of
- * the changed file does not mark a push-only server's earlier pushes for its dependents as stale.
+ * Pull the dependent files' diagnostics concurrently, from pull-capable servers only, as before
+ * push-only servers took part in Post-edit Diagnostics: a push-only server could answer for a
+ * dependent only with a push sent before Pi's edit of the changed file.
  */
 async function pullDependentFiles(
   runner: ManagerPostEditDiagnosticsRunner,
   files: readonly string[],
 ): Promise<DependentPull> {
   const outcomes = (
-    await Promise.all(files.map((path) => runner.run([{ path }], undefined, true)))
+    await Promise.all(files.map((path) => runner.run([{ path }], { pullServersOnly: true })))
   ).flat();
   return { outcomes, texts: runner.texts };
 }

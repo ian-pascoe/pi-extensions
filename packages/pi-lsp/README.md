@@ -566,7 +566,8 @@ Servers that answer document diagnostics pulls participate, as do push-only serv
 such as typescript-language-server. A push-only server that stays silent for a file counts it as
 clean rather than timed out, since silence is how such servers report a clean file. A push-only
 server that ends one wait in silence without ever having published, such as a formatting-only
-server, stops participating, so it costs at most one diagnostics timeout; it remains available for
+server, is left out of that result and stops participating, so it costs at most one diagnostics
+timeout; it remains available for
 explicit LSP formatting operations. Dependent-file Diagnostics still use only servers that answer
 pulls. A
 file that no Server Definition covers, because none handles its language or every one that does

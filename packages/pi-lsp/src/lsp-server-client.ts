@@ -344,7 +344,7 @@ export class LspServerClient {
    */
   private outOfBandChangeRevision = 0;
   /** Whether the server has published diagnostics, or ended a wait in silence before it ever did. */
-  private publishing: "unknown" | "published" | "silent" = "unknown";
+  private publishHistory: "unknown" | "published" | "silent" = "unknown";
   /**
    * Document version of each URI whose diagnostics wait ended in silence from a push-only server,
    * and the diagnostics revision when it did.
@@ -476,7 +476,7 @@ export class LspServerClient {
   get reportsDocumentDiagnostics(): boolean {
     if (this.documentPullRegistration() !== undefined) return true;
     if (this.textDocumentSyncKind === TextDocumentSyncKind.None) return false;
-    return this.publishing !== "silent";
+    return this.publishHistory !== "silent";
   }
 
   /** Whether a static or dynamically registered LSP method is available. */
@@ -734,7 +734,6 @@ export class LspServerClient {
     requestedUri: string,
     signal: AbortSignal | undefined,
   ): Promise<void> {
-    let changedAt: number | undefined;
     // A snapshot: synchronizing a document moves it to the end of the map, and closing removes it.
     const heldDocuments = Array.from(this.openDocuments);
     for (const [uri, held] of heldDocuments) {
@@ -745,19 +744,24 @@ export class LspServerClient {
         const current = await this.synchronizeDocument(filePath, held.languageId);
         if (current.version !== held.version) {
           // The revision before the new text was sent, so the server's answer to it is current.
-          const sentAt =
-            this.openDocuments.get(uri)?.synchronizedRevision ?? this.diagnosticsRevision;
-          changedAt = Math.max(changedAt ?? 0, sentAt);
+          this.markOutOfBandChange(
+            this.openDocuments.get(uri)?.synchronizedRevision ?? this.diagnosticsRevision,
+          );
         }
       } catch (cause) {
         if (!isUnreadableDocumentError(cause)) throw cause;
-        changedAt = Math.max(changedAt ?? 0, this.diagnosticsRevision);
+        this.markOutOfBandChange(this.diagnosticsRevision);
         await this.closeDocument(filePath);
       }
     }
-    if (changedAt !== undefined) {
-      this.outOfBandChangeRevision = Math.max(this.outOfBandChangeRevision, changedAt);
-    }
+  }
+
+  /**
+   * Record an out-of-band change as soon as it is sent, so a concurrent request that finds the
+   * document already re-synchronized still treats earlier pushes as possibly stale.
+   */
+  private markOutOfBandChange(revision: number): void {
+    this.outOfBandChangeRevision = Math.max(this.outOfBandChangeRevision, revision);
   }
 
   /** Close an open document if this client currently owns it. */
@@ -907,7 +911,7 @@ export class LspServerClient {
       this.pushDiagnostics.set(document.uri, { ...standing, revision: ++this.diagnosticsRevision });
       return { status: "fresh", source: "push", diagnostics: standing.diagnostics };
     }
-    if (pushOnly && this.publishing === "unknown") this.publishing = "silent";
+    if (pushOnly && this.publishHistory === "unknown") this.publishHistory = "silent";
     if (pushOnly && stillOpen) {
       // A revision of its own, so a later out-of-band change is always after it.
       this.silentDocumentVersions.set(document.uri, {
@@ -1052,7 +1056,7 @@ export class LspServerClient {
   private bindProtocolHandlers(): void {
     this.connection.onNotification(PublishDiagnosticsNotification.type, (parameters) => {
       this.diagnosticsRevision++;
-      this.publishing = "published";
+      this.publishHistory = "published";
       this.silentDocumentVersions.delete(parameters.uri);
       const state: PushDiagnosticsState = {
         diagnostics: parameters.diagnostics,

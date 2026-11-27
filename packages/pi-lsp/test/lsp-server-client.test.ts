@@ -450,7 +450,7 @@ describe("LspServerClient", () => {
     });
   });
 
-  describe("documents changed outside Pi", () => {
+  describe("Out-of-band Changes", () => {
     /** Open a module and its importer on a push-only fake server that publishes one finding per open or change. */
     async function openImporterAndModule(diagnosticsMs: number) {
       const directory = await createTemporaryDirectory();
