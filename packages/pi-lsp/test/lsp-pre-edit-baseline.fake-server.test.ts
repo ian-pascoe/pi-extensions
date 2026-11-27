@@ -189,6 +189,22 @@ describe("Post-edit Diagnostics against the changed file's Pre-edit Baseline", (
     );
   }, 30_000);
 
+  test("leaves a push-only server that has never published out of the result", async () => {
+    const session = await startContentSession(
+      { "src/a.ts": "" },
+      // Answers no pulls and publishes nothing, like a formatting-only server.
+      { servers: { silent: contentServer({ FAKE_NO_PULL: "1" }) } },
+    );
+    const text = await session.write({
+      toolCallId: "write",
+      path: "src/new.ts",
+      content: warnings,
+    });
+
+    // No diagnostics section is appended, so the result is left unchanged.
+    expect(text).toBe("");
+  }, 30_000);
+
   test("drops unchanged hints uncounted and counts only new hints as omitted", async () => {
     const session = await startContentSession({
       "src/a.ts":
