@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-secret
 
+## 0.4.3
+
+### Patch Changes
+
+- 05a5650: Redact provider requests on Pi's `context_with_system` event, after Pi Todo's Snapshots are in place, and leave Pi's system messages unchanged so redaction never rewrites the prompt. Other extensions' `context` handlers now run before redaction.
+
 ## 0.4.2
 
 ### Patch Changes
