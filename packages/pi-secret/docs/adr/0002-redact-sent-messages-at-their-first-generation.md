@@ -10,7 +10,6 @@ Pi Secret scrubs every provider request in the `context_with_system` hook, becau
 ## Consequences
 
 - System messages are never redacted: rewriting the prompt would change the request's cached prefix. A held value quoted in the prompt, such as in a project context file, reaches the provider there.
-
 - A value seen before it was held stays in the messages that already carried it, in every later request in that process.
 - A message another extension rewrites gets a new hash, so it is redacted at the current generation, like a new message.
 - After a restart the records are empty, so every message is redacted at the generation when it is first sent in the new process. That request starts a fresh cache anyway.

@@ -360,6 +360,6 @@ describe("system prompt changes after a Todo List snapshot", () => {
     expect(update).toBeDefined();
     expect(after.systemPrompt).toContain("work in the second checkout");
     expect(after.messages.filter((message) => message.role === "system")).toHaveLength(2);
-    // A session with five model requests and a reload, like the other SDK tests in this file.
+    // Timeout: five model requests and a reload through a real session, beyond the 20 s default.
   }, 30_000);
 });

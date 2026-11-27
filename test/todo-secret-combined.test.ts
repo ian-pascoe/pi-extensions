@@ -182,6 +182,7 @@ describe("Pi Todo with Pi Secret", () => {
       mode: "tui",
       uiContext: {
         ...runner.getUIContext(),
+        // Accepts `/todo clear`'s confirmation.
         confirm: async () => true,
         custom: (factory) =>
           new Promise((resolveDialog) => {
