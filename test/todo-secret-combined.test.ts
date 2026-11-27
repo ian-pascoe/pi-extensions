@@ -110,6 +110,10 @@ function snapshotTexts(messages: readonly Message[]): string[] {
 }
 
 describe("Pi Todo with Pi Secret", () => {
+  test("the collection loads Pi Todo before Pi Secret", () => {
+    expect(collectionOrder).toEqual([TODO_ENTRYPOINT, SECRET_ENTRYPOINT]);
+  });
+
   test("a Snapshot holds only the Secret Reference, and a later prompt change keeps the request prefix", async () => {
     const value = "tok-todo-secret-8e21";
     const dir = await mkdtemp(join(tmpdir(), "pi-todo-secret-"));
@@ -151,7 +155,8 @@ describe("Pi Todo with Pi Secret", () => {
         "call-add",
       ),
       toolCall("todo", { action: "update", id: 2, status: "active" }, "call-update"),
-      fauxAssistantMessage("Planned."),
+      // The session keeps this reply as written; only the request carries the Secret Reference.
+      fauxAssistantMessage(`Planned the rotation of ${value}.`),
       fauxAssistantMessage("Moved."),
     ];
     const requests: Message[][] = [];
@@ -177,6 +182,7 @@ describe("Pi Todo with Pi Secret", () => {
       mode: "tui",
       uiContext: {
         ...runner.getUIContext(),
+        confirm: async () => true,
         custom: (factory) =>
           new Promise((resolveDialog) => {
             void (async () => {
@@ -201,6 +207,8 @@ describe("Pi Todo with Pi Secret", () => {
 
     await session.prompt("Store my staging token.");
     await session.prompt("Plan the rotation.");
+    // Todo state outside a tool group, anchored on the reply that holds the raw value.
+    await session.prompt("/todo clear");
     // Like moving the session to another worktree: only the prompt text changes.
     prompt = "Standing instructions: work in the second checkout.";
     await session.reload();
@@ -215,17 +223,29 @@ describe("Pi Todo with Pi Secret", () => {
     expect(snapshotTexts(after)).toEqual([
       `${SNAPSHOT_HEADER}\n[ ] #1 Rotate {{secret:STAGING}}\n[ ] #2 Verify`,
       `${SNAPSHOT_HEADER}\n[ ] #1 Rotate {{secret:STAGING}}\n[>] #2 Verify`,
+      `${SNAPSHOT_HEADER}\nTodo List is empty`,
     ]);
+    const cleared = after.findIndex((message) =>
+      snapshotTexts([message])[0]?.endsWith("Todo List is empty"),
+    );
+    expect(JSON.stringify(after[cleared - 1])).toContain(
+      "Planned the rotation of {{secret:STAGING}}.",
+    );
     expect(JSON.stringify(requests)).not.toContain(value);
 
     // The earlier request is the later one's prefix. Pi may re-serialize the leading system message
     // with another key order, so it is compared structurally (see pi-todo's cache-prefix test).
     expect(after[0]).toEqual(before[0]);
     expect(JSON.stringify(after.slice(1, before.length))).toBe(JSON.stringify(before.slice(1)));
-    // The prompt change follows the history, and both system messages are Pi's own.
+    // The prompt change follows the history, and both system messages are Pi's own: the update
+    // byte for byte, the leading one structurally for the reason above.
     const system = after.filter((message) => message.role === "system");
+    const recorded = session.messages.filter((message) => message.role === "system");
     expect(system).toHaveLength(2);
     expect(after.indexOf(system[1]!)).toBeGreaterThanOrEqual(before.length);
-    expect(system).toEqual(session.messages.filter((message) => message.role === "system"));
+    expect(system[0]).toEqual(recorded[0]);
+    expect(JSON.stringify(system[1])).toBe(JSON.stringify(recorded[1]));
+    // Six model requests through two real extensions, beyond the 20 s default under a cold
+    // `vp run verify`; `beforeAll` takes the compile cost, this only guards against a hang.
   }, 60_000);
 });

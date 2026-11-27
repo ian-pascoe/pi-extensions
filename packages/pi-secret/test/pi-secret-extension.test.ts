@@ -415,7 +415,7 @@ describe("provider requests", () => {
     await harness.session.reload();
     await harness.session.prompt(`It is ${value}.`);
 
-    // Later system messages stay in place; only the leading one is left out here.
+    // `requestMessages` drops the leading system message, so the one left is the prompt update.
     const messages = harness.requestMessages.at(-1) ?? [];
     const system = messages.filter((message) => message.role === "system");
     const conversation = messages.filter((message) => message.role !== "system");
