@@ -8,7 +8,7 @@ import {
   defineTool,
   getAgentDir,
   SettingsManager,
-  type ContextEvent,
+  type ContextWithSystemEvent,
   type ExtensionAPI,
   type ExtensionContext,
   type ExtensionFactory,
@@ -534,7 +534,10 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
      * held later never rewrites it and breaks the provider's cached prompt prefix. That value
      * already reached the provider in this message (ADR-0002).
      */
-    function sentGeneration(message: ContextEvent["messages"][number], current: number): number {
+    function sentGeneration(
+      message: ContextWithSystemEvent["messages"][number],
+      current: number,
+    ): number {
       let key: string;
       try {
         key = createHash("sha256").update(JSON.stringify(message)).digest("base64");
@@ -783,10 +786,15 @@ export function createPiSecretExtension(options: PiSecretOptions = {}): Extensio
       }
     });
 
-    pi.on("context", (event) => {
+    // `context_with_system`, not `context`: a changed list from a `context` handler makes Pi fold
+    // every mid-conversation system message into the leading one, and Pi Todo projects on this
+    // event, so redaction must see its Todo List Snapshots and anchor messages in the same order.
+    pi.on("context_with_system", (event) => {
       const current = redactionGeneration();
       let changed = false;
       const messages = event.messages.map((message) => {
+        // Pi's prompt and tool state: rewriting it would change the request's cached prefix.
+        if (message.role === "system") return message;
         const next = redactSecrets(message, sentGeneration(message, current));
         if (next !== message) changed = true;
         return next;

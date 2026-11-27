@@ -286,7 +286,7 @@ describe("Todo in a real Pi session", () => {
     expect(fetches).toBe(0);
     expect(f.extensionErrors).toContainEqual(
       expect.objectContaining({
-        event: "context",
+        event: "context_with_system",
         error: expect.stringContaining("Todo context anchor is missing or ambiguous"),
       }),
     );

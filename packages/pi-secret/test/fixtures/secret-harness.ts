@@ -65,6 +65,8 @@ export interface SecretHarnessOptions {
   clock?: TestClock;
   /** Activate Pi's built-in tools on the workspace. */
   builtinTools?: boolean;
+  /** The system prompt, read on every reload; a fixed instruction by default. */
+  systemPrompt?: () => string;
   /** Extensions loaded before Pi Secret. */
   before?: ExtensionFactory[];
   /**
@@ -186,7 +188,8 @@ export async function createSecretHarness(options: SecretHarnessOptions = {}) {
       // Last, after Pi Secret's redaction, so it records the value scripts receive.
       toolOutputs.extension,
     ],
-    systemPromptOverride: () => "Standing instructions: finish the user's task.",
+    systemPromptOverride: () =>
+      options.systemPrompt?.() ?? "Standing instructions: finish the user's task.",
   });
   await loader.reload();
   const loadErrors = loader.getExtensions().errors;

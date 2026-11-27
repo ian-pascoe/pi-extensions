@@ -57,7 +57,12 @@ afterEach(async () => {
   );
 });
 
-async function createFixture({ defaultSystemPrompt = false } = {}): Promise<Fixture> {
+async function createFixture({
+  systemPrompt = () => "Standing instructions: answer with the shortest correct turn.",
+}: {
+  /** Read on every reload; `null` keeps Pi's default prompt. */
+  systemPrompt?: (() => string) | null;
+} = {}): Promise<Fixture> {
   const cwd = await mkdtemp(join(tmpdir(), "pi-todo-sdk-"));
   directories.push(cwd);
   const agentDir = join(cwd, "agent");
@@ -77,8 +82,7 @@ async function createFixture({ defaultSystemPrompt = false } = {}): Promise<Fixt
     noThemes: true,
     noContextFiles: true,
     extensionFactories: [createCodemodeExtension(), piTodoExtension],
-    systemPromptOverride: (base) =>
-      defaultSystemPrompt ? base : "Standing instructions: answer with the shortest correct turn.",
+    systemPromptOverride: (base) => (systemPrompt ? systemPrompt() : base),
   });
   await loader.reload();
   const errors = loader.getExtensions().errors;
@@ -158,20 +162,24 @@ function snapshotIndexes(messages: readonly Message[]): number[] {
  * the first time it rebuilds the context after a persisted turn, which can fall on any request
  * pair, so it is compared structurally.
  */
-function expectByteIdenticalPrefix(earlier: CapturedRequest, later: CapturedRequest): void {
+function expectByteIdenticalPrefix(
+  earlier: CapturedRequest,
+  later: CapturedRequest,
+  { samePrompt = true } = {},
+): void {
   const first = earlier.messages[0];
   const comparedFrom = first?.role === "system" ? 1 : 0;
   if (comparedFrom === 1) expect(later.messages[0]).toEqual(first);
   expect(JSON.stringify(later.messages.slice(comparedFrom, earlier.messages.length))).toBe(
     JSON.stringify(earlier.messages.slice(comparedFrom)),
   );
-  expect(later.systemPrompt).toBe(earlier.systemPrompt);
+  if (samePrompt) expect(later.systemPrompt).toBe(earlier.systemPrompt);
   expect(later.tools).toBe(earlier.tools);
 }
 
 describe("static Todo prompt guidance", () => {
   test("Pi's default system prompt lists the tool and its guideline, unchanged through mutations", async () => {
-    const { session, requests, responses } = await createFixture({ defaultSystemPrompt: true });
+    const { session, requests, responses } = await createFixture({ systemPrompt: null });
     responses.push(
       toolCalls(
         fauxToolCall("todo", { action: "add", tasks: [{ title: "One" }, { title: "Two" }] }),
@@ -312,5 +320,46 @@ describe("one Todo List snapshot per tool group", () => {
     }
     for (let index = 1; index < requests.length; index++)
       expectByteIdenticalPrefix(requests[index - 1]!, requests[index]!);
+  }, 30_000);
+});
+
+describe("system prompt changes after a Todo List snapshot", () => {
+  test("a changed prompt arrives after the history and the projected request keeps its prefix", async () => {
+    let prompt = "Standing instructions: work in the first checkout.";
+    const { session, requests, responses } = await createFixture({ systemPrompt: () => prompt });
+    responses.push(
+      toolCalls(
+        fauxToolCall(
+          "todo",
+          { action: "add", tasks: [{ title: "One" }, { title: "Two" }] },
+          { id: "full" },
+        ),
+      ),
+      fauxAssistantMessage("Planned."),
+      toolCalls(
+        fauxToolCall("todo", { action: "update", id: 1, status: "completed" }, { id: "partial" }),
+      ),
+      fauxAssistantMessage("Advanced."),
+      fauxAssistantMessage("Moved."),
+    );
+    await session.prompt("Plan");
+    await session.prompt("Advance");
+    // Like moving the session to another worktree: only the prompt text changes.
+    prompt = "Standing instructions: work in the second checkout.";
+    await session.reload();
+    await session.prompt("Continue here");
+    expect(requests).toHaveLength(5);
+    const before = requests[3]!;
+    const after = requests[4]!;
+    expect(snapshotIndexes(before.messages)).toHaveLength(1);
+
+    expectByteIdenticalPrefix(before, after, { samePrompt: false });
+    const update = after.messages
+      .slice(before.messages.length)
+      .find((message) => message.role === "system");
+    expect(update).toBeDefined();
+    expect(after.systemPrompt).toContain("work in the second checkout");
+    expect(after.messages.filter((message) => message.role === "system")).toHaveLength(2);
+    // Timeout: five model requests and a reload through a real session, beyond the 20 s default.
   }, 30_000);
 });

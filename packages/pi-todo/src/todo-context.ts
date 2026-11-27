@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import {
   buildSessionContext,
-  type ContextEvent,
+  type ContextWithSystemEvent,
   type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
@@ -14,7 +14,7 @@ import {
   type TodoStateSnapshot,
 } from "./todo-list.js";
 
-type Message = ContextEvent["messages"][number];
+type Message = ContextWithSystemEvent["messages"][number];
 /** Marks a snapshot as extension state so the model does not read it as user-authored. */
 const SNAPSHOT_HEADER = "Todo List state from the pi-todo extension (not a user message):";
 /** Closes a Checkpoint Snapshot: a Handoff's own plan otherwise silently replaces the Todo List. */
@@ -30,7 +30,7 @@ const ProjectionDetails = Type.Object(
   { additionalProperties: false },
 );
 
-/** Context handlers never receive system messages, so anchors must skip Pi's system state. */
+/** Anchors are conversation messages only, so Pi's system state never moves a Todo List Snapshot. */
 function conversationMessage(entry: SessionEntry): Message | undefined {
   return buildSessionContext([entry], entry.id).messages.find(
     (message) => message.role !== "system",
@@ -143,8 +143,8 @@ function snapshotMessage(
 /** Reprojects only Todo-owned snapshots at immutable journal boundaries, never at the live tail. */
 export function projectTodoContext(
   branch: readonly SessionEntry[],
-  incoming: ContextEvent["messages"],
-): ContextEvent["messages"] {
+  incoming: ContextWithSystemEvent["messages"],
+): ContextWithSystemEvent["messages"] {
   const messages = incoming.filter(
     (message) =>
       !(
@@ -266,8 +266,14 @@ export function projectTodoContext(
     }
   }
   if (pending) throw new Error("Todo mutation has an incomplete tool group");
+  // Providers read the prompt and the initial tools from a system message at index 0, so an
+  // unanchored Snapshot follows it. Every other system message keeps its position.
+  const head = messages[0]?.role === "system" ? 1 : 0;
   return [
+    ...messages.slice(0, head),
     ...(insertions.get(-1) ?? []),
-    ...messages.flatMap((message, index) => [message, ...(insertions.get(index) ?? [])]),
+    ...messages
+      .slice(head)
+      .flatMap((message, index) => [message, ...(insertions.get(index + head) ?? [])]),
   ];
 }
