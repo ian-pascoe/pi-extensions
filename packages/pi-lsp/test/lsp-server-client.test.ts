@@ -407,17 +407,18 @@ describe("LspServerClient", () => {
     });
 
     test.each([
-      ["never published, after its first silence", false, false],
-      ["published before, after a silence", true, true],
+      ["push-only, never published, after its first silence", pushOnly, false, false],
+      ["push-only, published before, after a silence", pushOnly, true, true],
+      ["answering pulls, after a silence", { FAKE_DELAY_DIAGNOSTICS: "1" }, false, true],
     ])(
       "offers document diagnostics only while it may report them: %s",
-      async (_label, publishFirst, expected) => {
+      async (_label, environment, publishFirst, expected) => {
         const directory = await createTemporaryDirectory();
         const filePath = resolve(directory, "formatted.md");
         await writeFile(filePath, "# formatted\n");
         const client = await startFakeServer(directory, {
           diagnosticsMs: 100,
-          environment: pushOnly,
+          environment: { ...environment, FAKE_PUSH: "none" },
         });
         expect(client.reportsDocumentDiagnostics).toBe(true);
         if (publishFirst) {

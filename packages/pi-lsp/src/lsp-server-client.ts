@@ -339,12 +339,12 @@ export class LspServerClient {
   private diagnosticsRevision = 0;
   private readonly diagnosticsLimiter: LspRequestLimiter;
   /**
-   * Diagnostics revision at which Pi last found a held document changed outside it. A push from
-   * before it may describe a document's dependencies as they were, so it is only a fallback.
+   * Diagnostics revision just before Pi last sent a held document's out-of-band change. A push
+   * from before it may describe a document's dependencies as they were, so it is only a fallback.
    */
   private outOfBandChangeRevision = 0;
-  private hasPublishedDiagnostics = false;
-  private stayedSilentBeforePublishing = false;
+  /** Whether the server has published diagnostics, or ended a wait in silence before it ever did. */
+  private publishing: "unknown" | "published" | "silent" = "unknown";
   /**
    * Document version of each URI whose diagnostics wait ended in silence from a push-only server,
    * and the diagnostics revision when it did.
@@ -476,7 +476,7 @@ export class LspServerClient {
   get reportsDocumentDiagnostics(): boolean {
     if (this.documentPullRegistration() !== undefined) return true;
     if (this.textDocumentSyncKind === TextDocumentSyncKind.None) return false;
-    return this.hasPublishedDiagnostics || !this.stayedSilentBeforePublishing;
+    return this.publishing !== "silent";
   }
 
   /** Whether a static or dynamically registered LSP method is available. */
@@ -734,7 +734,7 @@ export class LspServerClient {
     requestedUri: string,
     signal: AbortSignal | undefined,
   ): Promise<void> {
-    let changed = false;
+    let changedAt: number | undefined;
     // A snapshot: synchronizing a document moves it to the end of the map, and closing removes it.
     const heldDocuments = Array.from(this.openDocuments);
     for (const [uri, held] of heldDocuments) {
@@ -743,14 +743,21 @@ export class LspServerClient {
       const filePath = fileURLToPath(uri);
       try {
         const current = await this.synchronizeDocument(filePath, held.languageId);
-        if (current.version !== held.version) changed = true;
+        if (current.version !== held.version) {
+          // The revision before the new text was sent, so the server's answer to it is current.
+          const sentAt =
+            this.openDocuments.get(uri)?.synchronizedRevision ?? this.diagnosticsRevision;
+          changedAt = Math.max(changedAt ?? 0, sentAt);
+        }
       } catch (cause) {
         if (!isUnreadableDocumentError(cause)) throw cause;
+        changedAt = Math.max(changedAt ?? 0, this.diagnosticsRevision);
         await this.closeDocument(filePath);
-        changed = true;
       }
     }
-    if (changed) this.outOfBandChangeRevision = ++this.diagnosticsRevision;
+    if (changedAt !== undefined) {
+      this.outOfBandChangeRevision = Math.max(this.outOfBandChangeRevision, changedAt);
+    }
   }
 
   /** Close an open document if this client currently owns it. */
@@ -818,7 +825,7 @@ export class LspServerClient {
     const registration = this.documentPullRegistration();
     const pushOnly = registration === undefined;
     const silence = this.silentDocumentVersions.get(document.uri);
-    if (pushOnly && silence?.version === document.version && silence.revision >= currentRevision) {
+    if (pushOnly && silence?.version === document.version && silence.revision > currentRevision) {
       return this.silentWaitResult(pushOnly, true);
     }
     // The loser of the race, such as a pull still waiting in the queue, is cancelled with the winner.
@@ -889,8 +896,10 @@ export class LspServerClient {
     pushOnly: boolean,
     synchronizedRevision: number,
   ): LspDocumentDiagnosticResult {
+    const stillOpen = this.openDocuments.get(document.uri)?.version === document.version;
     const standing = this.pushDiagnostics.get(document.uri);
     if (
+      stillOpen &&
       standing !== undefined &&
       this.currentPushDiagnostics(document.uri, document.version, synchronizedRevision) !==
         undefined
@@ -898,11 +907,12 @@ export class LspServerClient {
       this.pushDiagnostics.set(document.uri, { ...standing, revision: ++this.diagnosticsRevision });
       return { status: "fresh", source: "push", diagnostics: standing.diagnostics };
     }
-    if (pushOnly && !this.hasPublishedDiagnostics) this.stayedSilentBeforePublishing = true;
-    if (pushOnly && this.openDocuments.get(document.uri)?.version === document.version) {
+    if (pushOnly && this.publishing === "unknown") this.publishing = "silent";
+    if (pushOnly && stillOpen) {
+      // A revision of its own, so a later out-of-band change is always after it.
       this.silentDocumentVersions.set(document.uri, {
         version: document.version,
-        revision: this.diagnosticsRevision,
+        revision: ++this.diagnosticsRevision,
       });
     }
     return this.silentWaitResult(pushOnly, false);
@@ -1042,7 +1052,7 @@ export class LspServerClient {
   private bindProtocolHandlers(): void {
     this.connection.onNotification(PublishDiagnosticsNotification.type, (parameters) => {
       this.diagnosticsRevision++;
-      this.hasPublishedDiagnostics = true;
+      this.publishing = "published";
       this.silentDocumentVersions.delete(parameters.uri);
       const state: PushDiagnosticsState = {
         diagnostics: parameters.diagnostics,
